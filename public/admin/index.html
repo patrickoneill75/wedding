@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
+<title>Dashboard — Wedding planner</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  .basis { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .basis .text { flex: 1 1 320px; }
+  .counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; }
+  .counts div { background: var(--wash); border-radius: 8px; padding: 8px 10px; }
+  .counts b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .counts span { font-size: 12px; color: var(--text-secondary); }
+  .empty { color: var(--text-muted); font-size: 13px; padding: 18px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar" id="topbar"></div>
+  <h1 id="title">Dashboard</h1>
+  <p class="sub" id="subtitle">Loading…</p>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="card basis" id="basisCard"></div>
+
+  <div class="card">
+    <h2>Original estimate vs. current projection, by category</h2>
+    <p class="desc">Projection is what each item will really cost: the latest quote or price, or what was paid once it's paid.
+      Hover a bar for paid and owed.</p>
+    <div class="legend" id="catLegend"></div>
+    <div class="chart" id="catChart"></div>
+    <details class="table-view"><summary>Show as a table</summary><div class="table-wrap" id="catTable"></div></details>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>Where the money is, by stage</h2>
+      <p class="desc">Projected cost of every item, grouped by how far along it is.</p>
+      <div class="chart" id="stageChart"></div>
+      <div class="legend" id="stageLegend" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <h2>Paid so far</h2>
+      <p class="desc">Running total of payments, against the projected total.</p>
+      <div class="chart" id="paidChart"></div>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:16px">
+    <div class="card">
+      <h2>Upcoming payments</h2>
+      <p class="desc">Items with a due date that aren't paid yet. Set due dates on the Expenses page.</p>
+      <div id="upcoming"></div>
+    </div>
+    <div class="card">
+      <h2>Guests</h2>
+      <p class="desc"><a href="/admin/guests.html">Open the guest list →</a></p>
+      <div class="counts" id="counts"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { api, initPage, h, money, compactMoney, fmtDate, showTooltip, hideTooltip } from "/admin/admin.js";
+
+let data;
+
+function render() {
+  const s = data.settings;
+  document.getElementById("title").textContent = s.couple_names ? `${s.couple_names}` : "Dashboard";
+  const bits = [];
+  if (s.wedding_date) {
+    const days = Math.ceil((new Date(`${s.wedding_date}T12:00:00`) - new Date()) / 86400000);
+    bits.push(`${fmtDate(s.wedding_date)}${days >= 0 ? ` · ${days} days to go` : ""}`);
+  }
+  if (s.venue) bits.push(s.venue);
+  bits.push(`${data.totals.items} budget items, ${data.totals.unpriced} still need a price`);
+  document.getElementById("subtitle").textContent = bits.join(" · ");
+  renderTiles();
+  renderBasis();
+  renderCharts();
+  renderUpcoming();
+  renderCounts();
+}
+
+function renderTiles() {
+  const t = data.totals;
+  const target = Number(data.settings.budget_target) || 0;
+  const tile = (label, value, note, extra) =>
+    h("div", { class: "tile" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value), note && h("div", { class: "note" }, note), extra);
+  let meter = null;
+  if (target > 0) {
+    const share = Math.min(t.projected / target, 1);
+    meter = h("div", { class: "meter-wrap", title: `${Math.round((t.projected / target) * 100)}% of budget` },
+      h("div", { class: "meter" }),
+      h("div", { class: "meter-fill", style: `width:${share * 100}%; top:8px; height:8px; background:${t.projected > target ? "var(--bad)" : t.projected > target * 0.9 ? "var(--warn)" : "var(--accent)"}` }));
+  }
+  const delta = t.projected - t.estimate;
+  document.getElementById("tiles").replaceChildren(
+    tile("Original estimate", money(t.estimate, true), "Every item's first estimate"),
+    tile("Projected total", money(t.projected, true),
+      target > 0 ? `${money(target - t.projected, true)} ${t.projected > target ? "over" : "under"} the ${money(target, true)} budget`
+                 : `${delta >= 0 ? "+" : "−"}${money(Math.abs(delta), true)} vs. estimate`, meter),
+    tile("Paid", money(t.paid, true), `${t.projected ? Math.round((t.paid / t.projected) * 100) : 0}% of projected`),
+    tile("Still owed", money(t.owed, true), data.upcoming.length ? `${data.upcoming.length} with a due date` : "No due dates set"),
+    tile("Guests used for costs", String(data.basis_count), data.basis === "confirmed" ? "Confirmed RSVPs" : "Weighted invites"),
+  );
+}
+
+function renderBasis() {
+  const c = data.counts;
+  const card = document.getElementById("basisCard");
+  const confirmed = data.basis === "confirmed";
+  const button = h("button", {
+    class: confirmed ? "" : "primary",
+    onclick: async () => {
+      const next = confirmed ? "weighted" : "confirmed";
+      const ok = confirm(confirmed
+        ? `Switch per-guest costs back to weighted invites (${c.weighted})?`
+        : `Re-price every per-guest expense and the drinks calculator on confirmed RSVPs (${c.confirmed} right now)?`);
+      if (!ok) return;
+      button.disabled = true;
+      await api("/api/admin/basis", { method: "POST", body: { basis: next } });
+      data = await api("/api/admin/summary");
+      render();
+    },
+  }, confirmed ? "Switch back to weighted invites" : "Convert all to confirmed RSVPs");
+  card.replaceChildren(
+    h("div", { class: "text" },
+      h("h2", {}, confirmed ? "Costs use confirmed RSVPs" : "Costs use weighted invites"),
+      h("p", { class: "desc", style: "margin:0" },
+        confirmed
+          ? `Every per-guest expense and the drinks calculator use the ${c.confirmed} guests who said yes. ${c.pending} haven't answered yet.`
+          : `Every per-guest expense and the drinks calculator use ${c.weighted} weighted invites (each invitee counted by priority). `
+            + `${c.confirmed} have confirmed so far and ${c.pending} haven't answered. Switch once RSVPs are mostly in.`)),
+    button,
+  );
+}
+
+/* ----------------------------------------------------------------- charts -- */
+
+const NS = "http://www.w3.org/2000/svg";
+function svg(tag, attrs = {}, ...children) {
+  const node = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v !== null && v !== undefined) node.setAttribute(k, v);
+  for (const c of children.flat()) if (c) node.append(c);
+  return node;
+}
+/** A bar with a 4px rounded data end and a square baseline end (horizontal). */
+function hBar(x, y, w, hgt, fill) {
+  const r = Math.min(4, w / 2, hgt / 2);
+  if (w <= 0) return null;
+  const d = `M${x},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + hgt - r} Q${x + w},${y + hgt} ${x + w - r},${y + hgt} H${x} Z`;
+  return svg("path", { d, fill });
+}
+function niceMax(v) {
+  if (v <= 0) return 1000;
+  const p = 10 ** Math.floor(Math.log10(v));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
+}
+
+function renderCharts() {
+  renderCategoryChart();
+  renderStageChart();
+  renderPaidChart();
+}
+
+function renderCategoryChart() {
+  const host = document.getElementById("catChart");
+  const cats = [...data.categories].sort((a, b) => b.projected - a.projected);
+  document.getElementById("catLegend").replaceChildren(
+    h("span", { style: "--swatch: var(--series-1)" }, "Original estimate"),
+    h("span", { style: "--swatch: var(--series-2)" }, "Current projection"),
+  );
+  if (!cats.length) {
+    host.replaceChildren(h("div", { class: "empty" }, "No expenses yet. Add some on the Expenses page or import the spreadsheet in Settings."));
+    return;
+  }
+  const width = Math.max(host.clientWidth, 300);
+  const labelW = Math.min(170, width * 0.34);
+  const valueW = 64;
+  const plotW = width - labelW - valueW;
+  const barH = 10, gap = 2, rowH = barH * 2 + gap + 18;
+  const height = cats.length * rowH + 24;
+  const max = niceMax(Math.max(...cats.map((c) => Math.max(c.estimate, c.projected))));
+  const x = (v) => labelW + (v / max) * plotW;
+  const root = svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "Original estimate and current projection by category" });
+  for (let i = 0; i <= 4; i++) {
+    const v = (max / 4) * i;
+    root.append(svg("line", { class: "gridline", x1: x(v), x2: x(v), y1: 0, y2: height - 20 }));
+    root.append(svg("text", { x: x(v), y: height - 4, "text-anchor": i === 0 ? "start" : "middle", class: "axis-label" }, document.createTextNode(compactMoney(v))));
+  }
+  cats.forEach((c, i) => {
+    const y = i * rowH + 8;
+    const label = c.category.length > 26 ? `${c.category.slice(0, 25)}…` : c.category;
+    root.append(svg("text", { x: labelW - 10, y: y + barH + 4, "text-anchor": "end" }, document.createTextNode(label)));
+    root.append(hBar(labelW, y, x(c.estimate) - labelW, barH, "var(--series-1)") || "");
+    root.append(hBar(labelW, y + barH + gap, x(c.projected) - labelW, barH, "var(--series-2)") || "");
+    root.append(svg("text", { x: x(Math.max(c.estimate, c.projected)) + 6, y: y + barH * 2 + gap - 1, style: "fill: var(--text-primary)" },
+      document.createTextNode(compactMoney(c.projected))));
+    const hit = svg("rect", { x: 0, y: y - 4, width, height: rowH, fill: "transparent" });
+    hit.addEventListener("mousemove", (e) => showTooltip(e, c.category, [
+      ["Original estimate", money(c.estimate)],
+      ["Current projection", money(c.projected)],
+      ["Paid", money(c.paid)],
+      ["Owed", money(c.owed)],
+      ["Items priced", `${c.priced_items} of ${c.items}`],
+    ]));
+    hit.addEventListener("mouseleave", hideTooltip);
+    root.append(hit);
+  });
+  host.replaceChildren(root);
+
+  document.getElementById("catTable").replaceChildren(h("table", {},
+    h("thead", {}, h("tr", {}, ["Category", "Estimate", "Projected", "Paid", "Owed", "Priced"].map((t, i) => h("th", { class: i ? "num" : "" }, t)))),
+    h("tbody", {}, cats.map((c) => h("tr", {},
+      h("td", {}, c.category), h("td", { class: "num" }, money(c.estimate)), h("td", { class: "num" }, money(c.projected)),
+      h("td", { class: "num" }, money(c.paid)), h("td", { class: "num" }, money(c.owed)), h("td", { class: "num" }, `${c.priced_items}/${c.items}`)))),
+  ));
+}
+
+function renderStageChart() {
+  const host = document.getElementById("stageChart");
+  const stages = data.statuses.filter((s) => s !== "cancelled");
+  const values = stages.map((s, i) => ({ status: s, label: data.status_labels[s], ...data.by_status[s], color: `var(--stage-${i + 1})` }));
+  const total = values.reduce((sum, v) => sum + v.current, 0);
+  document.getElementById("stageLegend").replaceChildren(
+    ...values.map((v) => h("span", { style: `--swatch: ${v.color}` }, `${v.label} ${compactMoney(v.current)} · ${v.count}`)),
+  );
+  if (!total) {
+    host.replaceChildren(h("div", { class: "empty" }, "Nothing priced yet."));
+    return;
+  }
+  const width = Math.max(host.clientWidth, 260);
+  const barH = 24, height = barH + 22;
+  const root = svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "Projected cost by stage" });
+  let x = 0;
+  const visible = values.filter((v) => v.current > 0);
+  visible.forEach((v, idx) => {
+    const w = (v.current / total) * width;
+    const last = idx === visible.length - 1;
+    const drawW = Math.max(w - (last ? 0 : 2), 1);
+    const rect = last ? hBar(x, 0, drawW, barH, v.color) : svg("rect", { x, y: 0, width: drawW, height: barH, fill: v.color });
+    const hit = svg("rect", { x, y: 0, width: w, height: barH + 4, fill: "transparent" });
+    hit.addEventListener("mousemove", (e) => showTooltip(e, v.label, [
+      ["Projected", money(v.current)], ["Paid", money(v.paid)], ["Items", String(v.count)], ["Share", `${Math.round((v.current / total) * 100)}%`],
+    ]));
+    hit.addEventListener("mouseleave", hideTooltip);
+    root.append(rect, hit);
+    x += w;
+  });
+  root.append(svg("text", { x: 0, y: height - 2, class: "axis-label" }, document.createTextNode("$0")));
+  root.append(svg("text", { x: width, y: height - 2, "text-anchor": "end", class: "axis-label" }, document.createTextNode(money(total, true))));
+  host.replaceChildren(root);
+}
+
+function renderPaidChart() {
+  const host = document.getElementById("paidChart");
+  const points = data.timeline;
+  const undated = points.filter((p) => !p.date).reduce((m, p) => Math.max(m, p.cumulative), 0);
+  const dated = points.filter((p) => p.date);
+  if (!dated.length) {
+    host.replaceChildren(h("div", { class: "empty" },
+      undated ? `${money(undated)} paid before tracking started. Payments you log with a date will chart here.` : "No payments logged yet."));
+    return;
+  }
+  const width = Math.max(host.clientWidth, 260);
+  const height = 200, left = 48, right = 12, top = 12, bottom = 24;
+  const t = (d) => new Date(`${d}T12:00:00`).getTime();
+  const start = t(dated[0].date) - 86400000 * 3;
+  const end = Math.max(t(dated[dated.length - 1].date), Date.now()) + 86400000 * 3;
+  const max = niceMax(Math.max(data.totals.projected, dated[dated.length - 1].cumulative));
+  const x = (ms) => left + ((ms - start) / (end - start)) * (width - left - right);
+  const y = (v) => top + (1 - v / max) * (height - top - bottom);
+  const root = svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "Cumulative paid over time" });
+  for (let i = 0; i <= 4; i++) {
+    const v = (max / 4) * i;
+    root.append(svg("line", { class: "gridline", x1: left, x2: width - right, y1: y(v), y2: y(v) }));
+    root.append(svg("text", { x: left - 6, y: y(v) + 4, "text-anchor": "end", class: "axis-label" }, document.createTextNode(compactMoney(v))));
+  }
+  // Projected total as a reference line, labelled at its end.
+  root.append(svg("line", { x1: left, x2: width - right, y1: y(data.totals.projected), y2: y(data.totals.projected), stroke: "var(--text-muted)", "stroke-width": 1 }));
+  root.append(svg("text", { x: width - right, y: y(data.totals.projected) - 5, "text-anchor": "end" }, document.createTextNode(`Projected ${compactMoney(data.totals.projected)}`)));
+  // Step line: cumulative paid holds flat until the next payment.
+  let d = `M${x(start)},${y(undated)}`;
+  for (const p of dated) d += ` H${x(t(p.date))} V${y(p.cumulative)}`;
+  d += ` H${x(Math.min(Date.now(), end))}`;
+  root.append(svg("path", { d: `${d} V${y(0)} H${x(start)} Z`, fill: "var(--series-1)", opacity: 0.1 }));
+  root.append(svg("path", { d, fill: "none", stroke: "var(--series-1)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  for (const p of dated) {
+    const dot = svg("circle", { cx: x(t(p.date)), cy: y(p.cumulative), r: 4, fill: "var(--series-1)", stroke: "var(--surface-1)", "stroke-width": 2 });
+    const hit = svg("circle", { cx: x(t(p.date)), cy: y(p.cumulative), r: 12, fill: "transparent" });
+    hit.addEventListener("mousemove", (e) => showTooltip(e, fmtDate(p.date), [["Paid to date", money(p.cumulative)]]));
+    hit.addEventListener("mouseleave", hideTooltip);
+    root.append(dot, hit);
+  }
+  const last = dated[dated.length - 1];
+  root.append(svg("text", { x: Math.min(x(t(last.date)) + 8, width - 60), y: y(last.cumulative) - 8, style: "fill: var(--text-primary)" },
+    document.createTextNode(compactMoney(last.cumulative))));
+  root.append(svg("text", { x: left, y: height - 4, class: "axis-label" }, document.createTextNode(fmtDate(new Date(start).toISOString()))));
+  root.append(svg("text", { x: width - right, y: height - 4, "text-anchor": "end", class: "axis-label" }, document.createTextNode(fmtDate(new Date(end).toISOString()))));
+  host.replaceChildren(root);
+}
+
+function renderUpcoming() {
+  const host = document.getElementById("upcoming");
+  if (!data.upcoming.length) {
+    host.replaceChildren(h("div", { class: "empty" }, "Nothing scheduled."));
+    return;
+  }
+  host.replaceChildren(h("div", { class: "table-wrap" }, h("table", {},
+    h("thead", {}, h("tr", {}, h("th", {}, "Due"), h("th", {}, "Item"), h("th", { class: "num" }, "Amount"))),
+    h("tbody", {}, data.upcoming.slice(0, 12).map((u) => h("tr", { class: "clickable", onclick: () => (location.href = `/admin/expenses.html#${u.id}`) },
+      h("td", {}, u.overdue ? h("span", { class: "pill overdue" }, `Overdue · ${fmtDate(u.due_date)}`) : fmtDate(u.due_date)),
+      h("td", {}, u.item, u.vendor ? h("div", { class: "muted" }, u.vendor) : null),
+      h("td", { class: "num" }, money(u.due_amount))))))));
+}
+
+function renderCounts() {
+  const c = data.counts;
+  const cell = (n, label) => h("div", {}, h("b", {}, String(n)), h("span", {}, label));
+  document.getElementById("counts").replaceChildren(
+    cell(c.invited, "invited"), cell(c.weighted, "weighted"), cell(c.confirmed, "confirmed"),
+    cell(c.declined, "declined"), cell(c.pending, "awaiting reply"), cell(c.households, "households"),
+    cell(c.by_side.Bride, "bride's side"), cell(c.by_side.Groom, "groom's side"), cell(c.plus_ones_allowed, "plus-ones offered"),
+  );
+}
+
+await initPage("index.html");
+data = await api("/api/admin/summary");
+render();
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(renderCharts, 150);
+});
+</script>
+</body>
+</html>

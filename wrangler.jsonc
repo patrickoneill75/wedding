@@ -1,0 +1,38 @@
+{
+  // Worker with static assets: public/ is served by Cloudflare's asset layer and
+  // src/worker.js handles /api/*, which is what keeps every secret out of the browser.
+  // "name" must match the Worker's name in the Cloudflare dashboard (Workers & Pages).
+  // `wrangler secret put` and `wrangler deploy` target whatever this says, and a
+  // mismatch silently creates a second, never-served Worker instead of erroring.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wedding",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-09-03",
+  "assets": {
+    "directory": "./public/",
+    "binding": "ASSETS",
+    // /api/* always reaches the Worker, even if a same-named file lands in public/.
+    "run_worker_first": ["/api/*"]
+  },
+
+  // Everything lives in one D1 database: guests, expenses, payments, price history,
+  // settings and the Google Drive connection. The Worker creates its own tables on
+  // first request (src/db.js), so there is no migration step. Create the database
+  // once (see SETUP.md) and paste its ID below.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "wedding",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+    }
+  ],
+
+  // Every five minutes: push guests/expenses/payments to Google Drive if anything
+  // changed since the last sync (src/sync.js).
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}

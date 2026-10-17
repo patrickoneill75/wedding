@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/favicon.svg">
+<title>RSVP</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f7f4ee; --card: #fffdf9; --ink: #1f1c18; --soft: #5f5850; --muted: #948b80;
+    --line: rgba(31, 28, 24, 0.12); --accent: #5b6b4f; --accent-ink: #fff; --bad: #b3261e; --good: #2f6b2f;
+    --wash: rgba(31, 28, 24, 0.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #151412; --card: #1e1c19; --ink: #f2eee7; --soft: #c9c1b5; --muted: #8f877c;
+      --line: rgba(255, 255, 255, 0.12); --accent: #9db38c; --accent-ink: #151412; --bad: #f2b8b5; --good: #a6d49b;
+      --wash: rgba(255, 255, 255, 0.05);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 620px; margin: 0 auto; padding: 56px 16px 80px; }
+  header { text-align: center; margin-bottom: 32px; }
+  .eyebrow { letter-spacing: .22em; text-transform: uppercase; font-size: 12px; color: var(--muted); }
+  h1 { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; font-weight: 400; font-size: clamp(34px, 8vw, 52px);
+       line-height: 1.1; margin: 10px 0 12px; }
+  .when { color: var(--soft); }
+  .intro { color: var(--soft); margin-top: 14px; white-space: pre-line; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 24px; }
+  h2 { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; font-weight: 400; font-size: 24px; margin: 0 0 6px; }
+  p.help { color: var(--soft); margin: 0 0 18px; font-size: 15px; }
+  label { display: block; font-size: 14px; color: var(--soft); margin-bottom: 14px; }
+  input[type="text"], input[type="email"], textarea { display: block; width: 100%; margin-top: 5px; font: inherit; color: var(--ink);
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  textarea { min-height: 80px; resize: vertical; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 480px) { .two { grid-template-columns: 1fr; } }
+  button { font: inherit; border-radius: 999px; border: 1px solid var(--line); padding: 11px 22px; cursor: pointer; background: var(--card); color: var(--ink); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button:disabled { opacity: .55; cursor: wait; }
+  .msg { min-height: 1.4em; margin: 12px 0 0; font-size: 14px; color: var(--bad); }
+  .person { border-top: 1px solid var(--line); padding: 18px 0 4px; }
+  .person:first-of-type { border-top: 0; padding-top: 4px; }
+  .person .name { font-weight: 600; margin-bottom: 10px; }
+  .choice { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .choice label { margin: 0; }
+  .choice input { position: absolute; opacity: 0; pointer-events: none; }
+  .choice span { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 7px 16px; cursor: pointer; color: var(--ink); }
+  .choice input:checked + span { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .choice input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .plus { background: var(--wash); border-radius: 12px; padding: 14px 14px 2px; margin: 4px 0 12px; }
+  .match { display: block; width: 100%; text-align: left; margin-bottom: 10px; border-radius: 12px; }
+  .done { text-align: center; }
+  .done ul { list-style: none; padding: 0; margin: 14px 0 20px; color: var(--soft); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Kindly reply</div>
+    <h1 id="names">We're getting married</h1>
+    <div class="when" id="when"></div>
+    <div class="intro" id="intro"></div>
+  </header>
+
+  <form class="card" id="lookup">
+    <h2>Find your invitation</h2>
+    <p class="help" id="lookupHelp">Enter your name as it appears on your invitation.</p>
+    <div class="two">
+      <label>First name <input type="text" name="first" autocomplete="given-name" required></label>
+      <label>Last name <input type="text" name="last" autocomplete="family-name" required></label>
+    </div>
+    <button class="primary" type="submit">Find my invitation</button>
+    <p class="msg" id="lookupMsg"></p>
+  </form>
+
+  <div class="card" id="choose" hidden>
+    <h2>Which invitation is yours?</h2>
+    <p class="help">We found more than one.</p>
+    <div id="matches"></div>
+    <button type="button" class="back">Search again</button>
+  </div>
+
+  <form class="card" id="reply" hidden>
+    <h2 id="greeting"></h2>
+    <p class="help" id="replyHelp">Let us know who's coming.</p>
+    <div id="people"></div>
+    <label>Email, for updates (optional) <input type="email" name="email" autocomplete="email"></label>
+    <label>A note for us (optional) <textarea name="message"></textarea></label>
+    <button class="primary" type="submit">Send RSVP</button>
+    <button type="button" class="back">Not you?</button>
+    <p class="msg" id="replyMsg"></p>
+  </form>
+
+  <div class="card done" id="done" hidden>
+    <h2>Thank you!</h2>
+    <p class="help" id="doneText"></p>
+    <ul id="doneList"></ul>
+    <button type="button" id="edit">Change our answers</button>
+  </div>
+
+  <div class="card" id="closed" hidden>
+    <h2>RSVPs are closed</h2>
+    <p class="help">Please get in touch with us directly.</p>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const cards = ["lookup", "choose", "reply", "done", "closed"];
+const show = (id) => cards.forEach((c) => { $(c).hidden = c !== id; });
+let current = null;
+
+const el = (tag, attrs = {}, ...children) => {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === false || v == null) continue;
+    if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else if (k in node && typeof v !== "string") node[k] = v;
+    else node.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children.flat()) if (c != null && c !== false) node.append(c instanceof Node ? c : document.createTextNode(c));
+  return node;
+};
+
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({ error: "Something went wrong. Please try again." }));
+  if (!r.ok) throw new Error(data.error || "Something went wrong. Please try again.");
+  return data;
+}
+
+function fmtDate(iso) {
+  if (!iso) return "";
+  return new Date(`${iso}T12:00:00`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+}
+
+fetch("/api/public/info").then((r) => r.json()).then((info) => {
+  if (info.couple_names) {
+    $("names").textContent = info.couple_names;
+    document.title = `RSVP · ${info.couple_names}`;
+  }
+  $("when").textContent = [fmtDate(info.wedding_date), info.venue].filter(Boolean).join(" · ");
+  $("intro").textContent = info.rsvp_intro || "";
+  if (info.rsvp_deadline) $("lookupHelp").textContent += ` Please reply by ${fmtDate(info.rsvp_deadline)}.`;
+  if (!info.rsvp_open) show("closed");
+}).catch(() => {});
+
+$("lookup").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const button = ev.target.querySelector("button");
+  button.disabled = true;
+  $("lookupMsg").textContent = "";
+  try {
+    const { matches } = await post("/api/public/rsvp/lookup", { first: ev.target.first.value, last: ev.target.last.value });
+    if (matches.length === 1) return openReply(matches[0]);
+    $("matches").replaceChildren(...matches.map((m) => el("button", { type: "button", class: "match", onclick: () => openReply(m) },
+      el("b", {}, m.greeting), el("div", { style: "color:var(--soft);font-size:14px" }, m.guests.map((g) => g.first_name).join(", ")))));
+    show("choose");
+  } catch (error) {
+    $("lookupMsg").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+for (const b of document.querySelectorAll(".back")) b.addEventListener("click", () => show("lookup"));
+
+function choice(name, value, current) {
+  return el("div", { class: "choice", role: "radiogroup" },
+    el("label", {}, el("input", { type: "radio", name, value: "yes", checked: current === "yes", required: true }), el("span", {}, value[0])),
+    el("label", {}, el("input", { type: "radio", name, value: "no", checked: current === "no" }), el("span", {}, value[1])));
+}
+
+function openReply(household) {
+  current = household;
+  $("greeting").textContent = `Hi ${household.greeting}!`;
+  $("replyHelp").textContent = household.responded ? "You've already replied. Change anything below and send it again." : "Let us know who's coming.";
+  const form = $("reply");
+  form.email.value = household.email || "";
+  form.message.value = household.message || "";
+  $("people").replaceChildren(...household.guests.map((g) => {
+    const box = el("div", { class: "person" },
+      el("div", { class: "name" }, `${g.first_name} ${g.last_name}`),
+      choice(`rsvp_${g.id}`, ["Joyfully accepts", "Regretfully declines"], g.rsvp),
+      el("label", {}, "Dietary needs (optional)", el("input", { type: "text", name: `dietary_${g.id}`, value: g.dietary || "" })));
+    if (g.plus_one_allowed) {
+      const details = el("div", {},
+        el("label", {}, "Guest's name", el("input", { type: "text", name: `plus_name_${g.id}`, value: g.plus_one_name || "" })),
+        el("label", {}, "Their dietary needs (optional)", el("input", { type: "text", name: `plus_dietary_${g.id}`, value: g.plus_one_dietary || "" })));
+      const plus = el("div", { class: "plus" },
+        el("div", { style: "font-size:14px;color:var(--soft);margin-bottom:8px" }, `${g.first_name}, you're welcome to bring a guest.`),
+        choice(`plus_${g.id}`, ["Bringing a guest", "Coming alone"], g.plus_one_rsvp === "yes" ? "yes" : g.plus_one_rsvp === "no" ? "no" : null),
+        details);
+      const sync = () => {
+        const coming = form.querySelector(`input[name="rsvp_${g.id}"]:checked`)?.value === "yes";
+        const bringing = form.querySelector(`input[name="plus_${g.id}"]:checked`)?.value === "yes";
+        plus.hidden = !coming;
+        details.hidden = !bringing;
+        for (const r of plus.querySelectorAll(`input[name="plus_${g.id}"]`)) r.required = coming;
+        form.querySelector(`[name="plus_name_${g.id}"]`).required = coming && bringing;
+      };
+      box.addEventListener("change", sync);
+      box.append(plus);
+      queueMicrotask(sync);
+    }
+    return box;
+  }));
+  show("reply");
+}
+
+$("reply").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const form = ev.target;
+  const value = (name) => form.querySelector(`[name="${name}"]`);
+  const picked = (name) => form.querySelector(`input[name="${name}"]:checked`)?.value;
+  const guests = current.guests.map((g) => ({
+    id: g.id,
+    rsvp: picked(`rsvp_${g.id}`),
+    dietary: value(`dietary_${g.id}`).value,
+    ...(g.plus_one_allowed ? {
+      plus_one_rsvp: picked(`plus_${g.id}`) || "no",
+      plus_one_name: value(`plus_name_${g.id}`).value,
+      plus_one_dietary: value(`plus_dietary_${g.id}`).value,
+    } : {}),
+  }));
+  const button = form.querySelector("button.primary");
+  button.disabled = true;
+  $("replyMsg").textContent = "";
+  try {
+    const { household } = await post("/api/public/rsvp/submit", { token: current.token, guests, email: form.email.value, message: form.message.value });
+    current = { ...household, token: current.token };
+    const coming = household.guests.filter((g) => g.rsvp === "yes");
+    $("doneText").textContent = coming.length ? "We can't wait to celebrate with you." : "We'll miss you, and thank you for letting us know.";
+    $("doneList").replaceChildren(...household.guests.flatMap((g) => [
+      el("li", {}, `${g.first_name} ${g.last_name}: ${g.rsvp === "yes" ? "attending" : "not attending"}`),
+      g.plus_one_allowed && g.plus_one_rsvp === "yes" ? el("li", {}, `${g.plus_one_name}: attending`) : null,
+    ].filter(Boolean)));
+    show("done");
+  } catch (error) {
+    $("replyMsg").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+$("edit").addEventListener("click", () => openReply(current));
+</script>
+</body>
+</html>

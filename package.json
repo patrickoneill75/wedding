@@ -1,0 +1,13 @@
+{
+  "name": "wedding",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node tests/worker_test.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

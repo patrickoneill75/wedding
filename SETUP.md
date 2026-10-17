@@ -1,0 +1,99 @@
+# Setup
+
+One-time steps to get the Worker live on `workers.dev`, signed in with Google, and
+saving to Google Drive. Plan on about 30 minutes. Nothing here costs money: the Workers
+Free plan, D1 and a Google Cloud project with the Drive API are all free at this size.
+
+## 1. Create the D1 database (Cloudflare)
+
+1. Cloudflare dashboard → **Storage & Databases → D1 SQL Database → Create**.
+2. Name it `wedding`, leave the location on automatic, and create it.
+3. Copy its **Database ID** and paste it into `wrangler.jsonc`, replacing
+   `REPLACE_WITH_D1_DATABASE_ID`. Commit that change.
+
+You don't need to create any tables. The Worker creates them on its first request.
+
+(With Wrangler on your own machine, `npx wrangler d1 create wedding` does the same thing
+and prints the ID.)
+
+## 2. Create the Worker and connect it to this repo
+
+1. **Workers & Pages → Create → Import a repository** and pick `patrickoneill75/wedding`.
+2. Project name: `wedding`. This must match `"name"` in `wrangler.jsonc`.
+3. Build command: leave empty. Deploy command: `npx wrangler deploy`.
+4. Deploy. Every push to `main` deploys again from now on.
+5. Note the URL it gives you, something like `https://wedding.<your-subdomain>.workers.dev`.
+   It's `YOUR_URL` in the steps below.
+
+## 3. Google Cloud: sign-in and Drive
+
+1. Go to <https://console.cloud.google.com/>, create a project (for example "Wedding planner")
+   and select it.
+2. **APIs & Services → Library**: search for **Google Drive API** and enable it.
+3. **APIs & Services → OAuth consent screen** (now called **Google Auth Platform**):
+   - User type: **External**. Fill in the app name, your email as support and developer
+     contact, and save.
+   - **Audience**: click **Publish app** to move it from *Testing* to *In production*.
+     This matters. In Testing mode, Google expires the Drive connection every 7 days
+     and syncing silently stops. You don't need to submit for verification. Because
+     it's unverified, Google shows a "Google hasn't verified this app" screen the first
+     time each of you signs in: click **Advanced → Go to … (unsafe)**. That's expected
+     for a personal app.
+4. **APIs & Services → Credentials → Create credentials → OAuth client ID**:
+   - Application type: **Web application**.
+   - Authorized redirect URIs:
+     - `YOUR_URL/api/auth/callback`
+     - `http://localhost:8787/api/auth/callback` (only if you'll run it locally)
+   - Create, then copy the **Client ID** and **Client secret**.
+
+## 4. Add the Worker's secrets
+
+Worker → **Settings → Variables and Secrets → Add**. Add each one as a **Secret**:
+
+| Name | Value |
+|---|---|
+| `GOOGLE_CLIENT_ID` | from step 3 |
+| `GOOGLE_CLIENT_SECRET` | from step 3 |
+| `ADMIN_EMAILS` | both of your Google addresses, comma-separated, e.g. `you@gmail.com, partner@gmail.com` |
+
+`ADMIN_EMAILS` is a secret rather than a plain variable only because this repo is public.
+
+Check it worked: open `YOUR_URL/api/config-check`. It should say `"ready": true`. It
+reports whether each secret is set, never its value.
+
+## 5. First run
+
+1. Open `YOUR_URL/admin/` and **Sign in with Google**.
+2. **Settings → Import the planning spreadsheet**: upload `Wedding_Data.xlsx` with all three
+   boxes ticked. This brings in 82 households / 147 guests, all 53 budget lines, and the
+   weights and drink assumptions. Guest names and addresses go straight into the database,
+   never into this repo.
+3. **Settings → Google Drive → Log in with Google to connect Drive**, then **Pick a folder**
+   (or create one). The first sync runs right away. After that it runs every five
+   minutes whenever something changed, and **Sync now** forces one.
+4. **Settings → Wedding details**: names, date, venue and RSVP deadline for the public page.
+5. **Settings → Expense form link**: copy it and save it on both of your phones.
+
+The public RSVP page is `YOUR_URL/`.
+
+## Running it locally
+
+```sh
+npm install
+printf 'GOOGLE_CLIENT_ID=...\nGOOGLE_CLIENT_SECRET=...\nADMIN_EMAILS=you@gmail.com\n' > .dev.vars
+npx wrangler dev        # http://localhost:8787, with a local D1 database
+npm test                # the test suite (Node 22.5+)
+```
+
+`.dev.vars` is git-ignored.
+
+## Troubleshooting
+
+- **"isn't on the control panel's list of admins"**: the Google account you picked isn't in
+  `ADMIN_EMAILS`. Check the spelling, then redeploy or wait a minute after editing secrets.
+- **Drive sync says "token refresh failed"**: the app is probably still in Testing mode
+  (step 3). Publish it, then disconnect and reconnect Drive in Settings.
+- **`redirect_uri_mismatch` from Google**: the redirect URI in step 3 must match
+  `YOUR_URL/api/auth/callback` exactly, including `https://` and with no trailing slash.
+- **Secrets set but `config-check` says false**: the secrets were added to a different
+  Worker. The dashboard Worker's name must match `"name"` in `wrangler.jsonc`.
