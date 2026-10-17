@@ -152,6 +152,14 @@ const MIGRATIONS = [
                      WHERE h.household_id = guests.household_id
                        AND NOT (lower(trim(h.first_name)) = 'guest' AND lower(trim(h.last_name)) LIKE 'guest%'))`,
   ],
+  // 4 -- ceremony and reception are separate on/off invitations instead of one
+  // either/or invite_type (left in place, no longer read). A ceremony invite becomes
+  // both; a reception invite stays reception only.
+  [
+    `ALTER TABLE guests ADD COLUMN invite_ceremony INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE guests ADD COLUMN invite_reception INTEGER NOT NULL DEFAULT 1`,
+    `UPDATE guests SET invite_ceremony = 1 WHERE invite_type = 'ceremony'`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

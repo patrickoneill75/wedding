@@ -27,6 +27,8 @@
  *              amount if Cancelled (forfeited deposits), otherwise current
  *   paid       sum of payments
  *   owed       projected - paid, never negative
+ *   actual     the real cost once there is one: null while the item is still an
+ *              estimate, otherwise projected
  */
 
 export const STATUSES = ["estimate", "quote", "booked", "partially_paid", "paid", "cancelled"];
@@ -41,7 +43,6 @@ export const STATUS_LABELS = {
 export const PRIORITIES = ["High", "Medium", "Low"];
 export const SIDES = ["Bride", "Groom"];
 export const RSVP_VALUES = ["pending", "yes", "no"];
-export const INVITE_TYPES = ["ceremony", "reception"];
 
 export const QUANTITY_SOURCES = {
   guests: "Guest count (weighted or confirmed)",
@@ -119,7 +120,7 @@ export function guestCounts(guests, settings) {
   const households = new Set();
   const bySide = { Bride: 0, Groom: 0 };
   const byPriority = { High: 0, Medium: 0, Low: 0 };
-  const byInviteType = { ceremony: 0, reception: 0 };
+  const invites = { ceremony: 0, reception: 0 };
   // Invitees (plus-ones included, at their host's priority) -- what the weights multiply.
   const inviteesByPriority = { High: 0, Medium: 0, Low: 0 };
 
@@ -135,7 +136,8 @@ export function guestCounts(guests, settings) {
     weightedSum += weightOf(guest.priority);
     if (guest.side in bySide) bySide[guest.side]++;
     if (guest.priority in byPriority) byPriority[guest.priority]++;
-    byInviteType[guest.invite_type === "ceremony" ? "ceremony" : "reception"]++;
+    if (guest.invite_ceremony) invites.ceremony++;
+    if (guest.invite_reception) invites.reception++;
     tally(guest.rsvp);
     const weightKey = guest.priority in inviteesByPriority ? guest.priority : "High";
     inviteesByPriority[weightKey] += guest.plus_one_allowed ? 2 : 1;
@@ -159,7 +161,7 @@ export function guestCounts(guests, settings) {
     households: households.size,
     by_side: bySide,
     by_priority: byPriority,
-    by_invite_type: byInviteType,
+    invites,
     invitees_by_priority: inviteesByPriority,
   };
 }
@@ -253,6 +255,7 @@ export function enrichExpense(expense, paid, ctx) {
     projected: cents(projected),
     paid: paidAmount,
     owed: cents(Math.max(projected - paidAmount, 0)),
+    actual: expense.status === "estimate" ? null : cents(projected),
     priced: expense.unit_cost != null && num(expense.unit_cost) !== 0,
   };
 }
@@ -275,16 +278,17 @@ export function statusAfterPayment(expense, paid, ctx) {
 export function summarize(expenses, payments, ctx, today = new Date().toISOString().slice(0, 10)) {
   const byCategory = new Map();
   const byStatus = Object.fromEntries(STATUSES.map((s) => [s, { count: 0, current: 0, paid: 0 }]));
-  const totals = { estimate: 0, projected: 0, paid: 0, owed: 0, unpriced: 0, items: expenses.length };
+  const totals = { estimate: 0, projected: 0, actual: 0, paid: 0, owed: 0, unpriced: 0, items: expenses.length };
 
   for (const e of expenses) {
     const cat = e.category || "Uncategorized";
     if (!byCategory.has(cat)) {
-      byCategory.set(cat, { category: cat, estimate: 0, projected: 0, paid: 0, owed: 0, items: 0, priced_items: 0 });
+      byCategory.set(cat, { category: cat, estimate: 0, projected: 0, actual: 0, paid: 0, owed: 0, items: 0, priced_items: 0 });
     }
     const c = byCategory.get(cat);
     c.estimate += e.estimate;
     c.projected += e.projected;
+    c.actual += e.actual || 0;
     c.paid += e.paid;
     c.owed += e.owed;
     c.items++;
@@ -295,15 +299,17 @@ export function summarize(expenses, payments, ctx, today = new Date().toISOStrin
     s.paid += e.paid;
     totals.estimate += e.estimate;
     totals.projected += e.projected;
+    totals.actual += e.actual || 0;
     totals.paid += e.paid;
     totals.owed += e.owed;
     if (!e.priced && e.status !== "cancelled") totals.unpriced++;
   }
-  for (const key of ["estimate", "projected", "paid", "owed"]) totals[key] = cents(totals[key]);
+  for (const key of ["estimate", "projected", "actual", "paid", "owed"]) totals[key] = cents(totals[key]);
   const categories = [...byCategory.values()].map((c) => ({
     ...c,
     estimate: cents(c.estimate),
     projected: cents(c.projected),
+    actual: cents(c.actual),
     paid: cents(c.paid),
     owed: cents(c.owed),
   }));
@@ -337,6 +343,8 @@ export function summarize(expenses, payments, ctx, today = new Date().toISOStrin
       overdue: e.due_date < today,
     }))
     .sort((a, b) => a.due_date.localeCompare(b.due_date));
+  const late = upcoming.filter((u) => u.overdue);
+  const overdue = { count: late.length, amount: cents(late.reduce((sum, u) => sum + u.due_amount, 0)) };
 
-  return { totals, categories, by_status: byStatus, timeline, upcoming };
+  return { totals, categories, by_status: byStatus, timeline, upcoming, overdue };
 }

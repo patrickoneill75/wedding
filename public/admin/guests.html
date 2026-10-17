@@ -11,7 +11,8 @@
   .guest { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 2px 0; }
   .tag { font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; }
   button.invite { font-size: 11px; line-height: 1.5; padding: 0 6px; border-radius: 6px; color: var(--text-secondary); background: var(--surface-1); }
-  button.invite.ceremony { color: var(--accent); border-color: var(--accent); }
+  button.invite.on { color: var(--accent); border-color: var(--accent); }
+  button.invite.off { color: var(--text-muted); text-decoration: line-through; }
   .bulk .sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
   td.c { text-align: center; }
   .bulk { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; }
@@ -35,7 +36,13 @@
     <input type="search" id="search" placeholder="Search names, cities, notes…">
     <select id="side"><option value="">Both sides</option><option>Bride</option><option>Groom</option></select>
     <select id="priority"><option value="">Any priority</option><option>High</option><option>Medium</option><option>Low</option></select>
-    <select id="inviteType"><option value="">Ceremony or reception</option><option value="ceremony">Ceremony invites</option><option value="reception">Reception invites</option></select>
+    <select id="inviteType">
+      <option value="">Ceremony and reception</option>
+      <option value="ceremony:1">Invited to the ceremony</option>
+      <option value="ceremony:0">Not invited to the ceremony</option>
+      <option value="reception:1">Invited to the reception</option>
+      <option value="reception:0">Not invited to the reception</option>
+    </select>
     <select id="rsvp"><option value="">Any RSVP</option><option value="pending">Awaiting reply</option><option value="yes">Coming</option><option value="no">Not coming</option></select>
     <select id="track">
       <option value="">All households</option>
@@ -53,8 +60,10 @@
     <button class="small" data-field="invite_sent" data-value="1">Mark invite sent</button>
     <button class="small" data-field="thank_you_sent" data-value="1">Mark thank-you sent</button>
     <span class="sep"></span>
-    <button class="small" data-invite="ceremony">Set to ceremony</button>
-    <button class="small" data-invite="reception">Set to reception</button>
+    <button class="small" data-invite="invite_ceremony" data-on="1">Ceremony on</button>
+    <button class="small" data-invite="invite_ceremony" data-on="0">Ceremony off</button>
+    <button class="small" data-invite="invite_reception" data-on="1">Reception on</button>
+    <button class="small" data-invite="invite_reception" data-on="0">Reception off</button>
     <span class="sep"></span>
     <button class="small danger" id="resetRsvp">Reset RSVP</button>
     <button class="small link" id="clearSel">Clear selection</button>
@@ -86,7 +95,7 @@ async function load() {
   document.getElementById("summary").replaceChildren(
     item(c.invited, "invited"), item(c.weighted, "weighted"), item(c.confirmed, "coming"), item(c.declined, "not coming"),
     item(c.pending, "awaiting reply"), item(c.households, "households"), item(c.plus_ones_allowed, "plus-ones offered"),
-    item(c.by_invite_type.ceremony, "ceremony invites"), item(c.by_invite_type.reception, "reception invites"),
+    item(c.invites.ceremony, "invited to the ceremony"), item(c.invites.reception, "invited to the reception"),
   );
   render();
 }
@@ -105,7 +114,10 @@ function matches(hh) {
   }
   if (side && !hh.guests.some((g) => g.side === side)) return false;
   if (priority && !hh.guests.some((g) => g.priority === priority)) return false;
-  if (inviteType && !hh.guests.some((g) => g.invite_type === inviteType)) return false;
+  if (inviteType) {
+    const [event, on] = inviteType.split(":");
+    if (!hh.guests.some((g) => Boolean(g[`invite_${event}`]) === (on === "1"))) return false;
+  }
   if (rsvp && !hh.guests.some((g) => g.rsvp === rsvp || (g.plus_one_allowed && g.plus_one_rsvp === rsvp))) return false;
   if (track === "std" && hh.save_the_date_sent) return false;
   if (track === "invite" && hh.invite_sent) return false;
@@ -137,8 +149,11 @@ function render() {
         h("span", { class: "tag" }, g.priority),
         g.wedding_party ? h("span", { class: "tag" }, "wedding party") : null,
         g.immediate_family ? h("span", { class: "tag" }, "immediate family") : g.extended_family ? h("span", { class: "tag" }, "extended family") : null,
-        h("button", { class: `invite ${g.invite_type}`, title: "Click to switch between ceremony and reception", onclick: () => toggleInvite(g) },
-          g.invite_type === "ceremony" ? "Ceremony" : "Reception"),
+        ...["ceremony", "reception"].map((event) => {
+          const on = Boolean(g[`invite_${event}`]);
+          return h("button", { class: `invite ${on ? "on" : "off"}`, title: `${on ? "Invited to" : "Not invited to"} the ${event}. Click to change.`,
+            onclick: () => toggleInvite(g, `invite_${event}`) }, event === "ceremony" ? "Ceremony" : "Reception");
+        }),
         g.table_name ? h("span", { class: "tag" }, `table ${g.table_name}`) : null,
         g.plus_one_allowed ? h("span", { class: `pill ${g.plus_one_rsvp}` }, `+1${g.plus_one_name ? ` ${g.plus_one_name}` : ""}: ${RSVP_LABEL[g.plus_one_rsvp]}`) : null,
       ))),
@@ -158,10 +173,9 @@ function updateBulk() {
   document.getElementById("bulkCount").textContent = `${selected.size} selected`;
 }
 
-async function toggleInvite(g) {
-  const next = g.invite_type === "ceremony" ? "reception" : "ceremony";
+async function toggleInvite(g, fieldName) {
   try {
-    await api(`/api/admin/guests/${g.id}`, { method: "PUT", body: { invite_type: next } });
+    await api(`/api/admin/guests/${g.id}`, { method: "PUT", body: { [fieldName]: !g[fieldName] } });
     await load();
   } catch (error) {
     alert(error.message);
@@ -184,7 +198,7 @@ for (const button of document.querySelectorAll("#bulk [data-field]")) {
 }
 for (const button of document.querySelectorAll("#bulk [data-invite]")) {
   button.addEventListener("click", async () => {
-    await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: [...selected], field: "invite_type", value: button.dataset.invite } });
+    await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: [...selected], field: button.dataset.invite, value: button.dataset.on === "1" } });
     await load();
   });
 }
@@ -214,7 +228,10 @@ function guestCard(g, onRemove) {
       field("Last name", "last_name", { value: g.last_name || "" }),
       field("Side", "side", { options: [["", "—"], ["Bride", "Bride"], ["Groom", "Groom"]], value: g.side || "" }),
       field("Priority", "priority", { options: [["High", "High"], ["Medium", "Medium"], ["Low", "Low"]], value: g.priority || "High" }),
-      field("Invite type", "invite_type", { options: [["reception", "Reception"], ["ceremony", "Ceremony"]], value: g.invite_type || "reception" }),
+    ),
+    h("div", { class: "flags" },
+      check("Invited to the ceremony", "invite_ceremony", g.invite_ceremony),
+      check("Invited to the reception", "invite_reception", g.invite_reception ?? 1),
     ),
     h("div", { class: "flags" },
       check("Wedding party", "wedding_party", g.wedding_party),

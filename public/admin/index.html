@@ -8,13 +8,43 @@
 <title>Dashboard — Wedding planner</title>
 <link rel="stylesheet" href="/admin/admin.css">
 <style>
-  .basis { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
-  .basis .text { flex: 1 1 320px; }
-  .counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; }
+  .card-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+  .card-head h2 { margin: 0; }
+  .card-head .spacer { flex: 1; }
+  .counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px; }
   .counts div { background: var(--wash); border-radius: 8px; padding: 8px 10px; }
-  .counts b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .counts b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
   .counts span { font-size: 12px; color: var(--text-secondary); }
-  .empty { color: var(--text-muted); font-size: 13px; padding: 18px 0; }
+  .basis { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .basis .text { flex: 1 1 320px; font-size: 13px; color: var(--text-secondary); }
+  .basis .text b { color: var(--text-primary); }
+  .tiles { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  .tile.alert .value { color: var(--bad); }
+  .empty { color: var(--text-muted); font-size: 13px; padding: 12px 0; }
+  /* pie */
+  .pie-wrap { display: flex; gap: 28px; align-items: center; flex-wrap: wrap; }
+  .pie-wrap .chart { width: 240px; flex: 0 0 240px; }
+  .pie-legend { flex: 0 1 440px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+  .pie-legend .row { display: grid; grid-template-columns: 12px 1fr auto 48px; gap: 10px; align-items: center; padding: 4px 6px; border-radius: 6px; }
+  .pie-legend .row:hover { background: var(--wash); }
+  .pie-legend .swatch { width: 12px; height: 12px; border-radius: 3px; }
+  .pie-legend .amt { font-variant-numeric: tabular-nums; }
+  .pie-legend .share { color: var(--text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 5px 11px; font-size: 12.5px; color: var(--text-secondary); }
+  .seg button.on { background: var(--wash); color: var(--text-primary); font-weight: 600; }
+  .chart .center-value { fill: var(--text-primary); font-size: 20px; font-weight: 650; }
+  /* pivot */
+  .pivot td.label { white-space: normal; }
+  .pivot tr.lvl0 td { background: var(--surface-2); font-weight: 650; }
+  .pivot tr.lvl1 td { font-weight: 600; }
+  .pivot tr.lvl1 td.label { padding-left: 28px; }
+  .pivot tr.lvl2 td.label { padding-left: 52px; color: var(--text-secondary); }
+  .pivot tr.lvl2 { cursor: pointer; }
+  .pivot tr.lvl2:hover td { background: var(--wash); }
+  .pivot button.toggle { border: 0; background: none; padding: 0 6px 0 0; color: var(--text-muted); font-size: 11px; width: 18px; }
+  .pivot tfoot td { font-weight: 650; background: var(--surface-2); }
+  .pivot .num { width: 140px; }
 </style>
 </head>
 <body>
@@ -23,55 +53,56 @@
   <h1 id="title">Dashboard</h1>
   <p class="sub" id="subtitle">Loading…</p>
 
+  <div class="card" id="guestsCard">
+    <div class="card-head"><h2>Guests</h2><span class="spacer"></span><a href="/admin/guests.html">Open the guest list →</a></div>
+    <div class="counts" id="counts"></div>
+    <div class="basis" id="basis"></div>
+  </div>
+
   <div class="tiles" id="tiles"></div>
 
-  <div class="card basis" id="basisCard"></div>
+  <div class="card">
+    <div class="card-head"><h2>Upcoming payments</h2><span class="spacer"></span><a href="/admin/expenses.html">All expenses →</a></div>
+    <div id="upcoming"></div>
+  </div>
 
   <div class="card">
-    <h2>Original estimate vs. current projection, by category</h2>
-    <p class="desc">Projection is what each item will really cost: the latest quote or price, or what was paid once it's paid.
-      Hover a bar for paid and owed.</p>
-    <div class="legend" id="catLegend"></div>
-    <div class="chart" id="catChart"></div>
-    <details class="table-view"><summary>Show as a table</summary><div class="table-wrap" id="catTable"></div></details>
+    <div class="card-head"><h2 id="pieTitle">Expenses by category</h2><span class="spacer"></span>
+      <div class="seg" id="pieMode"><button data-mode="category" class="on">By category</button><button data-mode="subcategory">By subcategory</button></div>
+    </div>
+    <p class="desc">Projected cost: the latest quote or price, or what was paid once it's paid. Hover a slice for details.</p>
+    <div class="pie-wrap"><div class="chart" id="pie"></div><div class="pie-legend" id="pieLegend"></div></div>
   </div>
 
-  <div class="grid2">
-    <div class="card">
-      <h2>Where the money is, by stage</h2>
-      <p class="desc">Projected cost of every item, grouped by how far along it is.</p>
-      <div class="chart" id="stageChart"></div>
-      <div class="legend" id="stageLegend" style="margin-top:10px"></div>
+  <div class="card">
+    <div class="card-head">
+      <h2>Estimated vs. actual cost</h2><span class="spacer"></span>
+      <button class="small" id="expandAll">Expand all</button>
+      <button class="small" id="collapseAll">Collapse all</button>
     </div>
-    <div class="card">
-      <h2>Paid so far</h2>
-      <p class="desc">Running total of payments, against the projected total.</p>
-      <div class="chart" id="paidChart"></div>
-    </div>
-  </div>
-
-  <div class="grid2" style="margin-top:16px">
-    <div class="card">
-      <h2>Upcoming payments</h2>
-      <p class="desc">Items with a due date that aren't paid yet. Set due dates on the Expenses page.</p>
-      <div id="upcoming"></div>
-    </div>
-    <div class="card">
-      <h2>Guests</h2>
-      <p class="desc"><a href="/admin/guests.html">Open the guest list →</a></p>
-      <div class="counts" id="counts"></div>
+    <p class="desc">Estimated is each item's original estimate. Actual is its real cost once it's quoted, booked or paid;
+      items still at the estimate stage show a dash. Click an item to open it.</p>
+    <div class="table-wrap">
+      <table class="pivot">
+        <thead><tr><th>Category / subcategory / item</th><th class="num">Estimated cost</th><th class="num">Actual cost</th></tr></thead>
+        <tbody id="pivotBody"></tbody>
+        <tfoot id="pivotFoot"></tfoot>
+      </table>
     </div>
   </div>
 </div>
 
 <script type="module">
-import { api, initPage, h, money, compactMoney, fmtDate, showTooltip, hideTooltip } from "/admin/admin.js";
+import { api, initPage, h, money, fmtDate, showTooltip, hideTooltip } from "/admin/admin.js";
 
 let data;
+// Subcategories start collapsed; categories open. Keys: "c:<category>" / "s:<category>\u0000<subcategory>".
+const collapsed = new Set();
+let collapsedSeeded = false;
 
 function render() {
   const s = data.settings;
-  document.getElementById("title").textContent = s.couple_names ? `${s.couple_names}` : "Dashboard";
+  document.getElementById("title").textContent = s.couple_names || "Dashboard";
   const bits = [];
   if (s.wedding_date) {
     const days = Math.ceil((new Date(`${s.wedding_date}T12:00:00`) - new Date()) / 86400000);
@@ -80,43 +111,28 @@ function render() {
   if (s.venue) bits.push(s.venue);
   bits.push(`${data.totals.items} budget items, ${data.totals.unpriced} still need a price`);
   document.getElementById("subtitle").textContent = bits.join(" · ");
+  renderGuests();
   renderTiles();
-  renderBasis();
-  renderCharts();
   renderUpcoming();
-  renderCounts();
+  renderPie();
+  renderPivot();
 }
 
-function renderTiles() {
-  const t = data.totals;
-  const target = Number(data.settings.budget_target) || 0;
-  const tile = (label, value, note, extra) =>
-    h("div", { class: "tile" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value), note && h("div", { class: "note" }, note), extra);
-  let meter = null;
-  if (target > 0) {
-    const share = Math.min(t.projected / target, 1);
-    meter = h("div", { class: "meter-wrap", title: `${Math.round((t.projected / target) * 100)}% of budget` },
-      h("div", { class: "meter" }),
-      h("div", { class: "meter-fill", style: `width:${share * 100}%; top:8px; height:8px; background:${t.projected > target ? "var(--bad)" : t.projected > target * 0.9 ? "var(--warn)" : "var(--accent)"}` }));
-  }
-  const delta = t.projected - t.estimate;
-  document.getElementById("tiles").replaceChildren(
-    tile("Original estimate", money(t.estimate, true), "Every item's first estimate"),
-    tile("Projected total", money(t.projected, true),
-      target > 0 ? `${money(target - t.projected, true)} ${t.projected > target ? "over" : "under"} the ${money(target, true)} budget`
-                 : `${delta >= 0 ? "+" : "−"}${money(Math.abs(delta), true)} vs. estimate`, meter),
-    tile("Paid", money(t.paid, true), `${t.projected ? Math.round((t.paid / t.projected) * 100) : 0}% of projected`),
-    tile("Still owed", money(t.owed, true), data.upcoming.length ? `${data.upcoming.length} with a due date` : "No due dates set"),
-    tile("Guests used for costs", String(data.basis_count), data.basis === "confirmed" ? "Confirmed RSVPs" : "Weighted invites"),
-  );
-}
+/* ----------------------------------------------------------------- guests -- */
 
-function renderBasis() {
+function renderGuests() {
   const c = data.counts;
-  const card = document.getElementById("basisCard");
+  const cell = (n, label) => h("div", {}, h("b", {}, String(n)), h("span", {}, label));
+  document.getElementById("counts").replaceChildren(
+    cell(c.invited, "invited"), cell(c.weighted, "weighted"), cell(c.confirmed, "confirmed"),
+    cell(c.declined, "declined"), cell(c.pending, "awaiting reply"), cell(c.households, "households"),
+    cell(c.plus_ones_allowed, "plus-ones offered"), cell(c.invites.ceremony, "invited to the ceremony"),
+    cell(c.invites.reception, "invited to the reception"), cell(c.by_side.Bride, "bride's side"), cell(c.by_side.Groom, "groom's side"),
+  );
+
   const confirmed = data.basis === "confirmed";
   const button = h("button", {
-    class: confirmed ? "" : "primary",
+    class: confirmed ? "small" : "small primary",
     onclick: async () => {
       const next = confirmed ? "weighted" : "confirmed";
       const ok = confirm(confirmed
@@ -129,216 +145,201 @@ function renderBasis() {
       render();
     },
   }, confirmed ? "Switch back to weighted invites" : "Convert all to confirmed RSVPs");
-  card.replaceChildren(
-    h("div", { class: "text" },
-      h("h2", {}, confirmed ? "Costs use confirmed RSVPs" : "Costs use weighted invites"),
-      h("p", { class: "desc", style: "margin:0" },
-        confirmed
-          ? `Every per-guest expense and the drinks calculator use the ${c.confirmed} guests who said yes. ${c.pending} haven't answered yet.`
-          : `Every per-guest expense and the drinks calculator use ${c.weighted} weighted invites (each invitee counted by priority). `
-            + `${c.confirmed} have confirmed so far and ${c.pending} haven't answered. Switch once RSVPs are mostly in.`)),
+  document.getElementById("basis").replaceChildren(
+    h("div", { class: "text" }, "Per-guest costs use ",
+      h("b", {}, confirmed ? `${c.confirmed} confirmed RSVPs` : `${c.weighted} weighted invites`),
+      confirmed ? "." : ". Switch once RSVPs are mostly in."),
     button,
   );
 }
 
-/* ----------------------------------------------------------------- charts -- */
+/* ------------------------------------------------------------------ money -- */
 
-const NS = "http://www.w3.org/2000/svg";
-function svg(tag, attrs = {}, ...children) {
-  const node = document.createElementNS(NS, tag);
-  for (const [k, v] of Object.entries(attrs)) if (v !== null && v !== undefined) node.setAttribute(k, v);
-  for (const c of children.flat()) if (c) node.append(c);
-  return node;
-}
-/** A bar with a 4px rounded data end and a square baseline end (horizontal). */
-function hBar(x, y, w, hgt, fill) {
-  const r = Math.min(4, w / 2, hgt / 2);
-  if (w <= 0) return null;
-  const d = `M${x},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + hgt - r} Q${x + w},${y + hgt} ${x + w - r},${y + hgt} H${x} Z`;
-  return svg("path", { d, fill });
-}
-function niceMax(v) {
-  if (v <= 0) return 1000;
-  const p = 10 ** Math.floor(Math.log10(v));
-  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
-  return 10 * p;
-}
-
-function renderCharts() {
-  renderCategoryChart();
-  renderStageChart();
-  renderPaidChart();
-}
-
-function renderCategoryChart() {
-  const host = document.getElementById("catChart");
-  const cats = [...data.categories].sort((a, b) => b.projected - a.projected);
-  document.getElementById("catLegend").replaceChildren(
-    h("span", { style: "--swatch: var(--series-1)" }, "Original estimate"),
-    h("span", { style: "--swatch: var(--series-2)" }, "Current projection"),
+function renderTiles() {
+  const t = data.totals;
+  const target = Number(data.settings.budget_target) || 0;
+  const tile = (label, value, note, cls = "") =>
+    h("div", { class: `tile ${cls}` }, h("div", { class: "label" }, label), h("div", { class: "value" }, value), note && h("div", { class: "note" }, note));
+  const o = data.overdue;
+  document.getElementById("tiles").replaceChildren(
+    tile("Projected total", money(t.projected, true),
+      target > 0 ? `${money(Math.abs(target - t.projected), true)} ${t.projected > target ? "over" : "under"} the ${money(target, true)} budget` : null),
+    tile("Paid", money(t.paid, true), `${t.projected ? Math.round((t.paid / t.projected) * 100) : 0}% of projected`),
+    tile("Still owed", money(t.owed, true), null),
+    o.count
+      ? tile("Overdue", money(o.amount, true), `${o.count} payment${o.count === 1 ? "" : "s"} past due`, "alert")
+      : tile("Overdue", "$0", "Nothing past due"),
   );
-  if (!cats.length) {
-    host.replaceChildren(h("div", { class: "empty" }, "No expenses yet. Add some on the Expenses page or import the spreadsheet in Settings."));
-    return;
-  }
-  const width = Math.max(host.clientWidth, 300);
-  const labelW = Math.min(170, width * 0.34);
-  const valueW = 64;
-  const plotW = width - labelW - valueW;
-  const barH = 10, gap = 2, rowH = barH * 2 + gap + 18;
-  const height = cats.length * rowH + 24;
-  const max = niceMax(Math.max(...cats.map((c) => Math.max(c.estimate, c.projected))));
-  const x = (v) => labelW + (v / max) * plotW;
-  const root = svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "Original estimate and current projection by category" });
-  for (let i = 0; i <= 4; i++) {
-    const v = (max / 4) * i;
-    root.append(svg("line", { class: "gridline", x1: x(v), x2: x(v), y1: 0, y2: height - 20 }));
-    root.append(svg("text", { x: x(v), y: height - 4, "text-anchor": i === 0 ? "start" : "middle", class: "axis-label" }, document.createTextNode(compactMoney(v))));
-  }
-  cats.forEach((c, i) => {
-    const y = i * rowH + 8;
-    const label = c.category.length > 26 ? `${c.category.slice(0, 25)}…` : c.category;
-    root.append(svg("text", { x: labelW - 10, y: y + barH + 4, "text-anchor": "end" }, document.createTextNode(label)));
-    root.append(hBar(labelW, y, x(c.estimate) - labelW, barH, "var(--series-1)") || "");
-    root.append(hBar(labelW, y + barH + gap, x(c.projected) - labelW, barH, "var(--series-2)") || "");
-    root.append(svg("text", { x: x(Math.max(c.estimate, c.projected)) + 6, y: y + barH * 2 + gap - 1, style: "fill: var(--text-primary)" },
-      document.createTextNode(compactMoney(c.projected))));
-    const hit = svg("rect", { x: 0, y: y - 4, width, height: rowH, fill: "transparent" });
-    hit.addEventListener("mousemove", (e) => showTooltip(e, c.category, [
-      ["Original estimate", money(c.estimate)],
-      ["Current projection", money(c.projected)],
-      ["Paid", money(c.paid)],
-      ["Owed", money(c.owed)],
-      ["Items priced", `${c.priced_items} of ${c.items}`],
-    ]));
-    hit.addEventListener("mouseleave", hideTooltip);
-    root.append(hit);
-  });
-  host.replaceChildren(root);
-
-  document.getElementById("catTable").replaceChildren(h("table", {},
-    h("thead", {}, h("tr", {}, ["Category", "Estimate", "Projected", "Paid", "Owed", "Priced"].map((t, i) => h("th", { class: i ? "num" : "" }, t)))),
-    h("tbody", {}, cats.map((c) => h("tr", {},
-      h("td", {}, c.category), h("td", { class: "num" }, money(c.estimate)), h("td", { class: "num" }, money(c.projected)),
-      h("td", { class: "num" }, money(c.paid)), h("td", { class: "num" }, money(c.owed)), h("td", { class: "num" }, `${c.priced_items}/${c.items}`)))),
-  ));
-}
-
-function renderStageChart() {
-  const host = document.getElementById("stageChart");
-  const stages = data.statuses.filter((s) => s !== "cancelled");
-  const values = stages.map((s, i) => ({ status: s, label: data.status_labels[s], ...data.by_status[s], color: `var(--stage-${i + 1})` }));
-  const total = values.reduce((sum, v) => sum + v.current, 0);
-  document.getElementById("stageLegend").replaceChildren(
-    ...values.map((v) => h("span", { style: `--swatch: ${v.color}` }, `${v.label} ${compactMoney(v.current)} · ${v.count}`)),
-  );
-  if (!total) {
-    host.replaceChildren(h("div", { class: "empty" }, "Nothing priced yet."));
-    return;
-  }
-  const width = Math.max(host.clientWidth, 260);
-  const barH = 24, height = barH + 22;
-  const root = svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "Projected cost by stage" });
-  let x = 0;
-  const visible = values.filter((v) => v.current > 0);
-  visible.forEach((v, idx) => {
-    const w = (v.current / total) * width;
-    const last = idx === visible.length - 1;
-    const drawW = Math.max(w - (last ? 0 : 2), 1);
-    const rect = last ? hBar(x, 0, drawW, barH, v.color) : svg("rect", { x, y: 0, width: drawW, height: barH, fill: v.color });
-    const hit = svg("rect", { x, y: 0, width: w, height: barH + 4, fill: "transparent" });
-    hit.addEventListener("mousemove", (e) => showTooltip(e, v.label, [
-      ["Projected", money(v.current)], ["Paid", money(v.paid)], ["Items", String(v.count)], ["Share", `${Math.round((v.current / total) * 100)}%`],
-    ]));
-    hit.addEventListener("mouseleave", hideTooltip);
-    root.append(rect, hit);
-    x += w;
-  });
-  root.append(svg("text", { x: 0, y: height - 2, class: "axis-label" }, document.createTextNode("$0")));
-  root.append(svg("text", { x: width, y: height - 2, "text-anchor": "end", class: "axis-label" }, document.createTextNode(money(total, true))));
-  host.replaceChildren(root);
-}
-
-function renderPaidChart() {
-  const host = document.getElementById("paidChart");
-  const points = data.timeline;
-  const undated = points.filter((p) => !p.date).reduce((m, p) => Math.max(m, p.cumulative), 0);
-  const dated = points.filter((p) => p.date);
-  if (!dated.length) {
-    host.replaceChildren(h("div", { class: "empty" },
-      undated ? `${money(undated)} paid before tracking started. Payments you log with a date will chart here.` : "No payments logged yet."));
-    return;
-  }
-  const width = Math.max(host.clientWidth, 260);
-  const height = 200, left = 48, right = 12, top = 12, bottom = 24;
-  const t = (d) => new Date(`${d}T12:00:00`).getTime();
-  const start = t(dated[0].date) - 86400000 * 3;
-  const end = Math.max(t(dated[dated.length - 1].date), Date.now()) + 86400000 * 3;
-  const max = niceMax(Math.max(data.totals.projected, dated[dated.length - 1].cumulative));
-  const x = (ms) => left + ((ms - start) / (end - start)) * (width - left - right);
-  const y = (v) => top + (1 - v / max) * (height - top - bottom);
-  const root = svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "Cumulative paid over time" });
-  for (let i = 0; i <= 4; i++) {
-    const v = (max / 4) * i;
-    root.append(svg("line", { class: "gridline", x1: left, x2: width - right, y1: y(v), y2: y(v) }));
-    root.append(svg("text", { x: left - 6, y: y(v) + 4, "text-anchor": "end", class: "axis-label" }, document.createTextNode(compactMoney(v))));
-  }
-  // Projected total as a reference line, labelled at its end.
-  root.append(svg("line", { x1: left, x2: width - right, y1: y(data.totals.projected), y2: y(data.totals.projected), stroke: "var(--text-muted)", "stroke-width": 1 }));
-  root.append(svg("text", { x: width - right, y: y(data.totals.projected) - 5, "text-anchor": "end" }, document.createTextNode(`Projected ${compactMoney(data.totals.projected)}`)));
-  // Step line: cumulative paid holds flat until the next payment.
-  let d = `M${x(start)},${y(undated)}`;
-  for (const p of dated) d += ` H${x(t(p.date))} V${y(p.cumulative)}`;
-  d += ` H${x(Math.min(Date.now(), end))}`;
-  root.append(svg("path", { d: `${d} V${y(0)} H${x(start)} Z`, fill: "var(--series-1)", opacity: 0.1 }));
-  root.append(svg("path", { d, fill: "none", stroke: "var(--series-1)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
-  for (const p of dated) {
-    const dot = svg("circle", { cx: x(t(p.date)), cy: y(p.cumulative), r: 4, fill: "var(--series-1)", stroke: "var(--surface-1)", "stroke-width": 2 });
-    const hit = svg("circle", { cx: x(t(p.date)), cy: y(p.cumulative), r: 12, fill: "transparent" });
-    hit.addEventListener("mousemove", (e) => showTooltip(e, fmtDate(p.date), [["Paid to date", money(p.cumulative)]]));
-    hit.addEventListener("mouseleave", hideTooltip);
-    root.append(dot, hit);
-  }
-  const last = dated[dated.length - 1];
-  root.append(svg("text", { x: Math.min(x(t(last.date)) + 8, width - 60), y: y(last.cumulative) - 8, style: "fill: var(--text-primary)" },
-    document.createTextNode(compactMoney(last.cumulative))));
-  root.append(svg("text", { x: left, y: height - 4, class: "axis-label" }, document.createTextNode(fmtDate(new Date(start).toISOString()))));
-  root.append(svg("text", { x: width - right, y: height - 4, "text-anchor": "end", class: "axis-label" }, document.createTextNode(fmtDate(new Date(end).toISOString()))));
-  host.replaceChildren(root);
 }
 
 function renderUpcoming() {
   const host = document.getElementById("upcoming");
   if (!data.upcoming.length) {
-    host.replaceChildren(h("div", { class: "empty" }, "Nothing scheduled."));
+    host.replaceChildren(h("div", { class: "empty" }, "No due dates set. Add them to expenses on the Expenses page."));
     return;
   }
   host.replaceChildren(h("div", { class: "table-wrap" }, h("table", {},
-    h("thead", {}, h("tr", {}, h("th", {}, "Due"), h("th", {}, "Item"), h("th", { class: "num" }, "Amount"))),
-    h("tbody", {}, data.upcoming.slice(0, 12).map((u) => h("tr", { class: "clickable", onclick: () => (location.href = `/admin/expenses.html#${u.id}`) },
+    h("thead", {}, h("tr", {}, h("th", {}, "Due"), h("th", {}, "Item"), h("th", {}, "Category"), h("th", { class: "num" }, "Amount due"))),
+    h("tbody", {}, data.upcoming.slice(0, 10).map((u) => h("tr", { class: "clickable", onclick: () => (location.href = `/admin/expenses.html#${u.id}`) },
       h("td", {}, u.overdue ? h("span", { class: "pill overdue" }, `Overdue · ${fmtDate(u.due_date)}`) : fmtDate(u.due_date)),
       h("td", {}, u.item, u.vendor ? h("div", { class: "muted" }, u.vendor) : null),
-      h("td", { class: "num" }, money(u.due_amount))))))));
+      h("td", { class: "muted" }, u.category || ""),
+      h("td", { class: "num" }, money(u.due_amount))))))),
+    data.upcoming.length > 10 ? h("p", { class: "desc", style: "margin:8px 0 0" }, `And ${data.upcoming.length - 10} more on the Expenses page.`) : "");
 }
 
-function renderCounts() {
-  const c = data.counts;
-  const cell = (n, label) => h("div", {}, h("b", {}, String(n)), h("span", {}, label));
-  document.getElementById("counts").replaceChildren(
-    cell(c.invited, "invited"), cell(c.weighted, "weighted"), cell(c.confirmed, "confirmed"),
-    cell(c.declined, "declined"), cell(c.pending, "awaiting reply"), cell(c.households, "households"),
-    cell(c.by_side.Bride, "bride's side"), cell(c.by_side.Groom, "groom's side"), cell(c.plus_ones_allowed, "plus-ones offered"),
-  );
+/* -------------------------------------------------------------------- pie -- */
+
+const NS = "http://www.w3.org/2000/svg";
+function svg(tag, attrs = {}, ...children) {
+  const node = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v !== null && v !== undefined) node.setAttribute(k, v);
+  for (const c of children.flat()) if (c) node.append(typeof c === "string" ? document.createTextNode(c) : c);
+  return node;
 }
+
+let pieMode = "category";
+for (const b of document.querySelectorAll("#pieMode button")) {
+  b.addEventListener("click", () => {
+    pieMode = b.dataset.mode;
+    for (const other of document.querySelectorAll("#pieMode button")) other.classList.toggle("on", other === b);
+    document.getElementById("pieTitle").textContent = `Expenses by ${pieMode}`;
+    renderPie();
+  });
+}
+
+function renderPie() {
+  const host = document.getElementById("pie");
+  const legend = document.getElementById("pieLegend");
+  // Biggest first, colors in fixed slot order; past seven slices the rest fold into "Other".
+  const groups = new Map();
+  for (const it of data.items) {
+    if (!(it.projected > 0)) continue;
+    const cat = it.category || "Uncategorized";
+    const key = pieMode === "subcategory" ? `${cat}\u0000${it.subcategory || "Other"}` : cat;
+    if (!groups.has(key)) groups.set(key, { name: pieMode === "subcategory" ? it.subcategory || "Other" : cat, category: cat, value: 0, items: 0 });
+    const g = groups.get(key);
+    g.value += it.projected;
+    g.items++;
+  }
+  let slices = [...groups.values()].sort((a, b) => b.value - a.value);
+  // The same subcategory name under two categories gets its category added.
+  const seen = new Map();
+  for (const s of slices) seen.set(s.name, (seen.get(s.name) || 0) + 1);
+  for (const s of slices) if (seen.get(s.name) > 1) s.name = `${s.name} (${s.category})`;
+  if (slices.length > 8) {
+    const rest = slices.slice(7);
+    slices = [...slices.slice(0, 7), { name: `Other (${rest.length})`, category: "", value: rest.reduce((s, r) => s + r.value, 0), items: rest.reduce((s, r) => s + r.items, 0) }];
+  }
+  const total = slices.reduce((s, x) => s + x.value, 0);
+  if (!total) {
+    host.replaceChildren(h("div", { class: "empty" }, "Nothing priced yet."));
+    legend.replaceChildren();
+    return;
+  }
+  const size = 240, r = 110, inner = 66, cx = size / 2, cy = size / 2;
+  const root = svg("svg", { viewBox: `0 0 ${size} ${size}`, role: "img", "aria-label": "Projected cost by category" });
+  const point = (angle, radius) => [cx + radius * Math.sin(angle), cy - radius * Math.cos(angle)];
+  let start = 0;
+  const tip = (e, s) => showTooltip(e, s.name, [
+    ...(pieMode === "subcategory" && s.category ? [["Category", s.category]] : []),
+    ["Projected", money(s.value)], ["Share", `${Math.round((s.value / total) * 1000) / 10}%`], ["Items", String(s.items)]]);
+  slices.forEach((s, i) => {
+    s.color = `var(--series-${i + 1})`;
+    const sweep = (s.value / total) * Math.PI * 2;
+    let shape;
+    if (slices.length === 1) {
+      shape = svg("path", { d: `M${cx},${cy - r} A${r},${r} 0 1 1 ${cx - 0.01},${cy - r} L${cx - 0.01},${cy - inner} A${inner},${inner} 0 1 0 ${cx},${cy - inner} Z`, fill: s.color });
+    } else {
+      const end = start + sweep;
+      const large = sweep > Math.PI ? 1 : 0;
+      const [x1, y1] = point(start, r), [x2, y2] = point(end, r), [x3, y3] = point(end, inner), [x4, y4] = point(start, inner);
+      // A 2px surface-colored edge separates touching slices.
+      shape = svg("path", { d: `M${x1},${y1} A${r},${r} 0 ${large} 1 ${x2},${y2} L${x3},${y3} A${inner},${inner} 0 ${large} 0 ${x4},${y4} Z`,
+        fill: s.color, stroke: "var(--surface-1)", "stroke-width": 2, "stroke-linejoin": "round" });
+      start = end;
+    }
+    shape.addEventListener("mousemove", (e) => tip(e, s));
+    shape.addEventListener("mouseleave", hideTooltip);
+    root.append(shape);
+  });
+  root.append(svg("text", { x: cx, y: cy + 2, "text-anchor": "middle", class: "center-value" }, money(total, true)));
+  root.append(svg("text", { x: cx, y: cy + 20, "text-anchor": "middle" }, "projected"));
+  host.replaceChildren(root);
+  legend.replaceChildren(...slices.map((s) => {
+    const row = h("div", { class: "row" },
+      h("span", { class: "swatch", style: `background:${s.color}` }), h("span", {}, s.name),
+      h("span", { class: "amt" }, money(s.value, true)), h("span", { class: "share" }, `${Math.round((s.value / total) * 100)}%`));
+    row.addEventListener("mousemove", (e) => tip(e, s));
+    row.addEventListener("mouseleave", hideTooltip);
+    return row;
+  }));
+}
+
+/* ------------------------------------------------------------------ pivot -- */
+
+function buildTree(items) {
+  const cats = new Map();
+  for (const it of items) {
+    if (it.status === "cancelled" && !it.actual) continue;
+    const cat = it.category || "Uncategorized";
+    const sub = it.subcategory || "—";
+    if (!cats.has(cat)) cats.set(cat, new Map());
+    const subs = cats.get(cat);
+    if (!subs.has(sub)) subs.set(sub, []);
+    subs.get(sub).push(it);
+  }
+  return cats;
+}
+
+// A group's actual is the sum of the actuals it has; a dash only when none are known yet.
+function sums(items) {
+  const known = items.filter((i) => i.actual != null);
+  return { estimate: items.reduce((s, i) => s + (i.estimate || 0), 0), actual: known.length ? known.reduce((s, i) => s + i.actual, 0) : null };
+}
+
+function renderPivot() {
+  const tree = buildTree(data.items);
+  if (!collapsedSeeded) {
+    for (const [cat, subs] of tree) for (const sub of subs.keys()) collapsed.add(`s:${cat}\u0000${sub}`);
+    collapsedSeeded = true;
+  }
+  const rows = [];
+  const toggle = (key) => h("button", { class: "toggle", "aria-label": collapsed.has(key) ? "Expand" : "Collapse",
+    onclick: (e) => { e.stopPropagation(); collapsed.has(key) ? collapsed.delete(key) : collapsed.add(key); renderPivot(); } },
+    collapsed.has(key) ? "▶" : "▼");
+  const cell = (v) => h("td", { class: "num" }, v == null ? h("span", { class: "muted" }, "—") : money(v));
+  for (const [cat, subs] of tree) {
+    const catKey = `c:${cat}`;
+    const catSum = sums([...subs.values()].flat());
+    rows.push(h("tr", { class: "lvl0" }, h("td", { class: "label" }, toggle(catKey), cat), cell(catSum.estimate), cell(catSum.actual)));
+    if (collapsed.has(catKey)) continue;
+    for (const [sub, items] of subs) {
+      const subKey = `s:${cat}\u0000${sub}`;
+      const subSum = sums(items);
+      rows.push(h("tr", { class: "lvl1" }, h("td", { class: "label" }, toggle(subKey), sub), cell(subSum.estimate), cell(subSum.actual)));
+      if (collapsed.has(subKey)) continue;
+      for (const it of items) {
+        rows.push(h("tr", { class: "lvl2", onclick: () => (location.href = `/admin/expenses.html#${it.id}`) },
+          h("td", { class: "label" }, it.item), cell(it.estimate), cell(it.actual)));
+      }
+    }
+  }
+  if (!rows.length) rows.push(h("tr", {}, h("td", { colspan: 3, class: "muted" }, "No expenses yet.")));
+  document.getElementById("pivotBody").replaceChildren(...rows);
+  const all = sums(data.items.filter((i) => !(i.status === "cancelled" && !i.actual)));
+  document.getElementById("pivotFoot").replaceChildren(h("tr", {}, h("td", {}, "Total"), cell(all.estimate), cell(all.actual)));
+}
+
+document.getElementById("expandAll").addEventListener("click", () => { collapsed.clear(); renderPivot(); });
+document.getElementById("collapseAll").addEventListener("click", () => {
+  for (const cat of buildTree(data.items).keys()) collapsed.add(`c:${cat}`);
+  renderPivot();
+});
 
 await initPage("index.html");
 data = await api("/api/admin/summary");
 render();
-let resizeTimer;
-window.addEventListener("resize", () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(renderCharts, 150);
-});
 </script>
 </body>
 </html>

@@ -286,8 +286,9 @@ async function openPicker(body) {
           h("button", { class: "link", onclick: () => { trail.length = i + 1; show(); } }, t.name)])),
         here.id !== "root" ? h("div", { class: "row", style: "margin-bottom:8px" },
           h("button", { class: "primary small", onclick: () => choose(here) }, `Use "${here.name}"`)) : "",
-        folders.length ? folders.map((f) => h("div", { class: "folder-row", onclick: () => { trail.push(f); show(); } },
-          h("span", {}, `📁 ${f.name}`), h("span", { class: "muted" }, "open ›"))) : h("p", { class: "muted" }, "No folders here."),
+        // Wrapped in a div: replaceChildren() would print an array as "[object …]" text.
+        h("div", {}, folders.length ? folders.map((f) => h("div", { class: "folder-row", onclick: () => { trail.push(f); show(); } },
+          h("span", {}, `📁 ${f.name}`), h("span", { class: "muted" }, "open ›"))) : h("p", { class: "muted" }, "No folders here.")),
         h("div", { class: "row", style: "margin-top:10px" }, newName, h("button", { class: "small", onclick: async () => {
           if (!newName.value.trim()) return;
           const { folder } = await api("/api/admin/drive/folder/create", { method: "POST", body: { name: newName.value.trim(), parent: here.id } });
