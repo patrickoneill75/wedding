@@ -13,12 +13,15 @@
   .summary { background: var(--wash); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
   h3.part { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 18px 0 8px; }
   .done { text-align: center; padding: 30px 18px; }
+  .modes { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+  .modes label.check { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+  .modes label.check:has(input:checked) { border-color: var(--accent); background: var(--wash); }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Add an expense</h1>
-  <p class="sub">New items, updated prices, payments and receipts. Everything shows up in the control panel.</p>
+  <p class="sub">New items, purchases, updated prices, payments and receipts. Everything shows up in the control panel.</p>
 
   <p class="msg err" id="fatal"></p>
 
@@ -29,16 +32,27 @@
     </div>
     <div class="summary" id="summary" hidden></div>
 
+    <!-- Only for an existing item: a new purchase under it, or a change to the item itself. -->
+    <div class="modes" id="modes" hidden>
+      <label class="check"><input type="radio" name="mode" value="purchase"> Add a purchase to this item (something you bought for it)</label>
+      <label class="check"><input type="radio" name="mode" value="update"> Update this item's price or stage</label>
+    </div>
+
+    <div class="fields">
+      <label class="field" id="itemLabel"><span>What is it?</span><input name="item" placeholder="e.g. Florist deposit"></label>
+    </div>
     <div id="newFields">
       <div class="fields">
-        <label class="field">What is it?<input name="item" placeholder="e.g. Florist deposit"></label>
         <label class="field">Category<input name="category" list="cats" placeholder="e.g. Ceremony & Reception"></label>
         <label class="field">Subcategory<input name="subcategory" list="subs" placeholder="e.g. Decor"></label>
       </div>
     </div>
 
     <div class="fields">
-      <label class="field">Vendor<input name="vendor"></label>
+      <label class="field">Vendor
+        <select id="vendorPick"></select>
+        <input id="vendorNew" placeholder="New vendor's name" hidden style="margin-top:6px">
+      </label>
       <label class="field">Stage<select name="status" id="status"></select></label>
     </div>
     <div class="fields">
@@ -47,13 +61,14 @@
       <label class="field" id="gratLabel">Gratuity %<input name="gratuity_percent" type="number" step="any" value="0"></label>
     </div>
     <label class="check" id="taxLabel" style="margin-bottom:12px"><input type="checkbox" name="taxable"> Add sales tax</label>
-    <div class="fields">
+    <div class="fields" id="dueRow">
       <label class="field">Next payment due<input name="due_date" type="date"></label>
     </div>
 
-    <h3 class="part">Payment (leave blank if you didn't pay anything)</h3>
+    <h3 class="part" id="paymentTitle">Payment (leave blank if you didn't pay anything)</h3>
+    <p class="desc" id="paidNote" hidden>Marked Paid, so the full price is recorded as paid. Just say who paid, when and how.</p>
     <div class="fields">
-      <label class="field">Amount paid ($)<input name="payment_amount" type="number" step="0.01" inputmode="decimal"></label>
+      <label class="field" id="amountLabel">Amount paid ($)<input name="payment_amount" type="number" step="0.01" inputmode="decimal"></label>
       <label class="field">Date paid<input name="paid_on" type="date" id="paidOn"></label>
       <label class="field">Paid by<select name="payer" id="payer"></select></label>
       <label class="field">Method<select name="method" id="method"></select></label>
@@ -83,6 +98,7 @@ const form = $("form");
 const money = (n) => (n == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n));
 const opt = (value, text, selected) => { const o = document.createElement("option"); o.value = value; o.textContent = text; o.selected = Boolean(selected); return o; };
 const today = () => new Date().toISOString().slice(0, 10);
+const NEW_VENDOR = "__new__";
 let options;
 const remember = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 const recall = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -101,6 +117,7 @@ async function load() {
   $("status").replaceChildren(...options.statuses.map((s) => opt(s.value, s.label)));
   $("cats").replaceChildren(...options.categories.map((c) => opt(c, c)));
   $("subs").replaceChildren(...options.subcategories.map((c) => opt(c, c)));
+  $("vendorPick").replaceChildren(opt("", "—"), ...options.vendors.map((v) => opt(v, v)), opt(NEW_VENDOR, "＋ New vendor…"));
   const select = $("expense");
   select.replaceChildren(opt("", "＋ Something new"));
   const groups = new Map();
@@ -111,7 +128,7 @@ async function load() {
   for (const [category, items] of groups) {
     const group = document.createElement("optgroup");
     group.label = category || "Other";
-    for (const item of items) group.append(opt(item.id, `${item.item}${item.vendor ? ` (${item.vendor})` : ""}`));
+    for (const item of items) group.append(opt(item.id, item.item));
     select.append(group);
   }
   $("paidOn").value = today();
@@ -120,41 +137,97 @@ async function load() {
   onPick();
 }
 
+const picked = () => options.items.find((i) => String(i.id) === $("expense").value) || null;
+const mode = () => (picked() ? form.querySelector("input[name=mode]:checked")?.value || "update" : "new");
+
+function setVendor(name) {
+  const known = options.vendors.some((v) => v === name);
+  $("vendorPick").value = name ? (known ? name : NEW_VENDOR) : "";
+  $("vendorNew").value = name && !known ? name : "";
+  onVendor();
+}
+function onVendor() {
+  const isNew = $("vendorPick").value === NEW_VENDOR;
+  $("vendorNew").hidden = !isNew;
+  if (isNew) $("vendorNew").focus();
+}
+
 function onPick() {
-  const item = options.items.find((i) => String(i.id) === $("expense").value);
-  $("newFields").hidden = Boolean(item);
-  $("unitsLabel").hidden = $("gratLabel").hidden = $("taxLabel").hidden = Boolean(item);
-  form.item.required = !item;
+  const item = picked();
+  $("modes").hidden = !item;
+  if (item) {
+    // An item that's already been bought in pieces most likely gets another piece.
+    form.querySelector(`input[name=mode][value=${item.purchases ? "purchase" : "update"}]`).checked = true;
+  }
+  applyMode();
+}
+
+function applyMode() {
+  const item = picked();
+  const m = mode();
+  $("newFields").hidden = m !== "new";
+  $("itemLabel").hidden = m === "update";
+  $("itemLabel").firstElementChild.textContent = m === "purchase" ? "What did you buy?" : "What is it?";
+  form.item.placeholder = m === "purchase" ? "e.g. 40 dinner plates" : "e.g. Florist deposit";
+  form.item.required = m !== "update";
+  $("unitsLabel").hidden = $("gratLabel").hidden = $("taxLabel").hidden = m !== "new";
   const summary = $("summary");
+  summary.hidden = !item;
   if (item) {
     const label = options.statuses.find((s) => s.value === item.status)?.label || item.status;
-    summary.textContent = `${label} · total ${money(item.total)} · paid ${money(item.paid)} · owed ${money(item.owed)}`;
-    summary.hidden = false;
+    summary.textContent = item.purchases
+      ? `${item.purchases} purchase${item.purchases === 1 ? "" : "s"} so far · paid ${money(item.paid)} · budget ${money(item.total)}`
+      : `${label} · total ${money(item.total)} · paid ${money(item.paid)} · owed ${money(item.owed)}`;
+  }
+  if (m === "update") {
     $("priceLabel").firstElementChild.textContent = item.pricing === "variable" ? "Price per guest/unit ($)" : "Price per unit ($)";
     form.price.value = item.unit_cost ?? "";
-    form.vendor.value = item.vendor;
+    setVendor(item.vendor);
     $("status").value = item.status;
     form.payment_amount.placeholder = item.owed ? `Owed: ${item.owed}` : "";
   } else {
-    summary.hidden = true;
     $("priceLabel").firstElementChild.textContent = "Price ($)";
     form.price.value = "";
-    form.vendor.value = "";
-    $("status").value = "estimate";
+    form.item.value = "";
+    setVendor("");
+    // A purchase is usually paid for on the spot.
+    $("status").value = m === "purchase" ? "paid" : "estimate";
     form.payment_amount.placeholder = "";
   }
+  onStatus();
 }
+
+// At the Paid stage the price is what's paid: no amount to type, just who/when/how.
+function onStatus() {
+  const paid = $("status").value === "paid";
+  $("amountLabel").hidden = paid;
+  $("paidNote").hidden = !paid;
+  $("dueRow").hidden = paid;
+  $("paymentTitle").textContent = paid ? "Payment" : "Payment (leave blank if you didn't pay anything)";
+  if (paid) form.payment_amount.value = "";
+}
+
 $("expense").addEventListener("change", onPick);
+for (const r of form.querySelectorAll("input[name=mode]")) r.addEventListener("change", applyMode);
+$("vendorPick").addEventListener("change", onVendor);
+$("status").addEventListener("change", onStatus);
 $("who").addEventListener("change", () => { $("payer").value = $("who").value; });
 
 form.addEventListener("submit", async (ev) => {
   ev.preventDefault();
+  if ($("vendorPick").value === NEW_VENDOR && !$("vendorNew").value.trim()) {
+    $("msg").textContent = "Type the new vendor's name, or pick one from the list.";
+    $("msg").className = "msg err";
+    return;
+  }
   const button = form.querySelector("button[type=submit]");
   button.disabled = true;
   $("msg").textContent = form.file.files[0] ? "Saving and uploading…" : "Saving…";
   $("msg").className = "msg";
   const data = new FormData(form);
   data.append("key", key);
+  data.set("vendor", $("vendorPick").value === NEW_VENDOR ? $("vendorNew").value.trim() : $("vendorPick").value);
+  if (mode() === "update") data.delete("item");
   try {
     const r = await fetch("/api/public/expense", { method: "POST", body: data });
     const body = await r.json();

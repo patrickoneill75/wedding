@@ -4,7 +4,7 @@
  *
  *   GET    summary                     dashboard numbers, charts' data, what's due
  *   GET    expenses                    every expense with computed totals
- *   POST   expenses                    create
+ *   POST   expenses                    create; with parent_id, a purchase under that item
  *   GET    expenses/:id                one expense + payments, history, attachments
  *   PUT    expenses/:id                update (status moves, price changes)
  *   DELETE expenses/:id
@@ -46,6 +46,7 @@ import {
   deletePayment,
   getExpense,
   listExpenses,
+  listVendors,
   loadContext,
   loadSettings,
   updateExpense,
@@ -60,7 +61,7 @@ import {
 } from "./google.js";
 import { syncToDrive } from "./sync.js";
 import { importWorkbook } from "./importer.js";
-import { refreshSite, siteSlug } from "./site.js";
+import { refreshSite, requestGithubRefresh, siteSlug } from "./site.js";
 
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
@@ -229,8 +230,9 @@ export async function handleAdminApi(route, request, env) {
         statuses: STATUSES,
         status_labels: STATUS_LABELS,
         ...summarize(expenses, payments, ctx),
-        // Just what the dashboard's category table needs, one row per expense.
-        items: expenses.map((e) => ({
+        // Just what the dashboard's category table needs: one row per item (an item
+        // with purchases already includes them).
+        items: expenses.filter((e) => !e.parent_id).map((e) => ({
           id: e.id,
           category: e.category,
           subcategory: e.subcategory,
@@ -239,6 +241,7 @@ export async function handleAdminApi(route, request, env) {
           estimate: e.estimate,
           actual: e.actual,
           projected: e.projected,
+          purchases: e.purchases,
         })),
         drive: await driveStatus(env),
       });
@@ -258,6 +261,7 @@ export async function handleAdminApi(route, request, env) {
           basis: ctx.basis,
           basis_count: ctx.basisCount,
           drinks: ctx.drinks,
+          vendors: await listVendors(env),
         });
       }
       if (parts.length === 1 && method === "POST") {
@@ -281,6 +285,8 @@ export async function handleAdminApi(route, request, env) {
           return json({ expense: await getExpense(env, id, ctx) });
         }
         if (method === "DELETE") {
+          // Its purchases go with it (also enforced by the foreign key).
+          await run(env, "DELETE FROM expenses WHERE parent_id = ?", id);
           await run(env, "DELETE FROM expenses WHERE id = ?", id);
           await markDirty(env);
           return json({ ok: true });
@@ -503,9 +509,17 @@ export async function handleAdminApi(route, request, env) {
     if (route === "site/status" && method === "GET") {
       const s = await loadSettings(env);
       const pages = await all(env, "SELECT path, title, fetched_at, changed_at FROM site_pages ORDER BY path");
-      return json({ zola_url: s.zola_url || env.ZOLA_URL || "", status: (await getSetting(env, "_site_status")) || null, pages });
+      return json({
+        zola_url: s.zola_url || env.ZOLA_URL || "",
+        status: (await getSetting(env, "_site_status")) || null,
+        pages,
+        via_github: Boolean(env.GH_DISPATCH_TOKEN && env.GITHUB_REPO),
+      });
     }
+    // With the GitHub setup, GitHub does the fetching (Zola blocks Cloudflare) and this
+    // returns at once with requested: true; Settings then watches for the result.
     if (route === "site/refresh" && method === "POST") {
+      if (env.GH_DISPATCH_TOKEN && env.GITHUB_REPO) return json({ ok: true, requested: true, status: await requestGithubRefresh(env) });
       const s = await loadSettings(env);
       const status = await refreshSite(env, { zolaUrl: s.zola_url || env.ZOLA_URL, rsvpColor: s.rsvp_button_color });
       return json({ ok: true, status });

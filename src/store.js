@@ -11,6 +11,7 @@ import {
   enrichExpense,
   expenseTotals,
   mergeSettings,
+  rollupPurchases,
   statusAfterPayment,
   PUBLIC_SETTING_KEYS,
 } from "./calc.js";
@@ -65,14 +66,59 @@ async function paidByExpense(env) {
 export async function listExpenses(env, ctx) {
   const expenses = await all(env, "SELECT * FROM expenses ORDER BY category, subcategory, sort_order, id");
   const paid = await paidByExpense(env);
-  return expenses.map((e) => enrichExpense(e, paid.get(e.id) || 0, ctx));
+  return rollupPurchases(expenses.map((e) => enrichExpense(e, paid.get(e.id) || 0, ctx)));
 }
 
+/** One expense with its purchases rolled up; purchases come back alongside it. */
 export async function getExpense(env, id, ctx) {
-  const expense = await first(env, "SELECT * FROM expenses WHERE id = ?", id);
-  if (!expense) return null;
-  const paid = await first(env, "SELECT COALESCE(SUM(amount), 0) AS paid FROM payments WHERE expense_id = ?", id);
-  return enrichExpense(expense, paid.paid, ctx);
+  const rows = await all(env, "SELECT * FROM expenses WHERE id = ? OR parent_id = ? ORDER BY sort_order, id", id, id);
+  if (!rows.some((r) => r.id === id)) return null;
+  const paidRows = await all(
+    env,
+    `SELECT expense_id, SUM(amount) AS paid FROM payments WHERE expense_id IN (${rows.map(() => "?").join(",")}) GROUP BY expense_id`,
+    ...rows.map((r) => r.id)
+  );
+  const paid = new Map(paidRows.map((r) => [r.expense_id, r.paid || 0]));
+  const rolled = rollupPurchases(rows.map((e) => enrichExpense(e, paid.get(e.id) || 0, ctx)));
+  const expense = rolled.find((e) => e.id === id);
+  expense.purchase_list = rolled.filter((e) => e.parent_id === id);
+  return expense;
+}
+
+export async function listVendors(env) {
+  return (await all(env, "SELECT name FROM vendors ORDER BY name COLLATE NOCASE")).map((v) => v.name);
+}
+
+/** Every vendor name used anywhere is remembered for the pick lists. */
+async function rememberVendor(env, name) {
+  const clean = String(name || "").trim();
+  if (clean) await run(env, "INSERT OR IGNORE INTO vendors (name) VALUES (?)", clean.slice(0, 200));
+}
+
+/**
+ * Saving something as Paid means it's been paid for: record a payment for whatever is
+ * still owed, so it lands in the Paid column. An item with purchases is the exception:
+ * Paid there means "done buying", and its purchases carry their own payments.
+ */
+async function settleIfPaid(env, id, ctx, by, details = {}) {
+  const expense = await getExpense(env, id, ctx);
+  if (!expense || expense.status !== "paid" || expense.purchases) return;
+  // Not expense.owed: at Paid, projected cost is taken to be what was paid, so owed
+  // reads zero. The price is what was due.
+  const remaining = Math.round((expense.current - expense.paid) * 100) / 100;
+  if (!(remaining > 0.004)) return;
+  const paidOn = toText(details.paid_on);
+  await run(
+    env,
+    "INSERT INTO payments (expense_id, paid_on, amount, payer, method, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    id,
+    paidOn && /^\d{4}-\d{2}-\d{2}$/.test(paidOn) ? paidOn : new Date().toISOString().slice(0, 10),
+    remaining,
+    toText(details.payer) || expense.payer || null,
+    toText(details.method),
+    "Recorded when marked Paid",
+    by || null
+  );
 }
 
 const toNumberOrNull = (v) => {
@@ -142,6 +188,16 @@ async function recordHistory(env, expense, ctx, note, by) {
 
 export async function createExpense(env, input, ctx, by, source = "control-panel") {
   const patch = cleanExpensePatch(input, { creating: true });
+  const parentId = input.parent_id == null || input.parent_id === "" ? null : Number(input.parent_id);
+  if (parentId !== null) {
+    const parent = await first(env, "SELECT id, parent_id, category, subcategory FROM expenses WHERE id = ?", parentId);
+    if (!parent) throw new Error("The item this purchase belongs to no longer exists.");
+    if (parent.parent_id) throw new Error("A purchase can't have purchases of its own.");
+    // A purchase files under its item.
+    patch.parent_id = parent.id;
+    patch.category = parent.category;
+    patch.subcategory = parent.subcategory;
+  }
   const columns = Object.keys(patch);
   const result = await run(
     env,
@@ -152,6 +208,8 @@ export async function createExpense(env, input, ctx, by, source = "control-panel
   const id = result.meta.last_row_id;
   const expense = await first(env, "SELECT * FROM expenses WHERE id = ?", id);
   await recordHistory(env, expense, ctx, input.history_note || "Created", by);
+  await rememberVendor(env, patch.vendor);
+  await settleIfPaid(env, id, ctx, by, input);
   await markDirty(env);
   return id;
 }
@@ -185,6 +243,8 @@ export async function updateExpense(env, id, input, ctx, by) {
     if (input.history_note) parts.push(String(input.history_note).slice(0, 500));
     await recordHistory(env, updated, ctx, parts.join(". "), by);
   }
+  if (Object.prototype.hasOwnProperty.call(patch, "vendor")) await rememberVendor(env, patch.vendor);
+  await settleIfPaid(env, id, ctx, by, input);
   await markDirty(env);
   return updated;
 }

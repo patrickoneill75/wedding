@@ -20,15 +20,18 @@
  * Expense form (unlisted, for the couple): every route needs the form key from
  * the control panel (?k=... or the "key" field). Rotating the key in Settings kills
  * the old link.
- *   GET  expense/options?k=   categories, existing items, payers, methods
- *   POST expense              multipart: new item or update to an existing one, an
- *                             optional payment, an optional receipt (to Drive)
+ *   GET  expense/options?k=   categories, existing items (no purchases), vendors,
+ *                             payers, methods
+ *   POST expense              multipart: a new item, a purchase under an existing item
+ *                             (mode=purchase), or an update to one (mode=update); a
+ *                             payment; a receipt (to Drive). Saving at the Paid stage
+ *                             records the payment by itself, so no amount is needed.
  */
 
 import { json, sign, verify } from "./auth.js";
 import { all, first, getSetting, markDirty, run } from "./db.js";
 import { STATUSES, STATUS_LABELS } from "./calc.js";
-import { addPayment, createExpense, loadContext, loadSettings, listExpenses, updateExpense } from "./store.js";
+import { addPayment, createExpense, loadContext, loadSettings, listExpenses, listVendors, updateExpense } from "./store.js";
 import { uploadReceipt } from "./google.js";
 
 const RSVP_TOKEN_TTL = 60 * 60 * 2;
@@ -236,14 +239,16 @@ async function expenseOptions(env) {
     payment_methods: ctx.settings.payment_methods,
     categories: [...new Set(expenses.map((e) => e.category).filter(Boolean))].sort(),
     subcategories: [...new Set(expenses.map((e) => e.subcategory).filter(Boolean))].sort(),
+    vendors: await listVendors(env),
     items: expenses
-      .filter((e) => e.status !== "cancelled")
+      .filter((e) => e.status !== "cancelled" && !e.parent_id)
       .map((e) => ({
         id: e.id,
         category: e.category,
         subcategory: e.subcategory,
         item: e.item,
         vendor: e.vendor || "",
+        purchases: e.purchases,
         status: e.status,
         pricing: e.pricing,
         unit_cost: e.unit_cost,
@@ -268,14 +273,40 @@ async function submitExpense(env, form) {
   let expenseId = Number(field("expense_id")) || null;
   const price = field("price");
   const note = field("notes");
+  // Who/when/how it was paid: used for the payment Paid records, or the one typed in.
+  const payment = { paid_on: field("paid_on"), payer: field("payer"), method: field("method") };
   if (expenseId) {
-    const existing = await first(env, "SELECT id, pricing FROM expenses WHERE id = ?", expenseId);
-    if (!existing) return json({ error: "That item no longer exists. Reload the form." }, 400);
-    const patch = { status, history_note: note ? `Form: ${note}` : "Updated from the expense form" };
-    if (price !== "") patch.unit_cost = price;
-    if (field("vendor")) patch.vendor = field("vendor");
-    if (field("due_date")) patch.due_date = field("due_date");
-    await updateExpense(env, expenseId, patch, ctx, by);
+    const existing = await first(env, "SELECT id, pricing, parent_id FROM expenses WHERE id = ?", expenseId);
+    if (!existing || existing.parent_id) return json({ error: "That item no longer exists. Reload the form." }, 400);
+    if (field("mode") === "purchase") {
+      // A new purchase filed under the chosen item.
+      expenseId = await createExpense(
+        env,
+        {
+          parent_id: existing.id,
+          item: field("item") || "Purchase",
+          vendor: field("vendor"),
+          status,
+          pricing: "fixed",
+          unit_cost: price === "" ? null : price,
+          units: 1,
+          due_date: field("due_date"),
+          notes: note,
+          history_note: "Added from the expense form",
+          ...payment,
+        },
+        ctx,
+        by,
+        "expense-form"
+      );
+    } else {
+      const patch = { status, history_note: note ? `Form: ${note}` : "Updated from the expense form", ...payment };
+      if (price !== "") patch.unit_cost = price;
+      if (field("vendor")) patch.vendor = field("vendor");
+      if (field("due_date")) patch.due_date = field("due_date");
+      if (!payment.payer) delete patch.payer;
+      await updateExpense(env, expenseId, patch, ctx, by);
+    }
   } else {
     if (!field("item")) return json({ error: "Name the expense." }, 400);
     expenseId = await createExpense(
@@ -292,9 +323,9 @@ async function submitExpense(env, form) {
         taxable: field("taxable") === "on" || field("taxable") === "1",
         gratuity_rate: field("gratuity_percent") ? Number(field("gratuity_percent")) / 100 : 0,
         due_date: field("due_date"),
-        payer: field("payer"),
         notes: note,
         history_note: "Added from the expense form",
+        ...payment,
       },
       ctx,
       by,
@@ -303,7 +334,8 @@ async function submitExpense(env, form) {
   }
 
   let paymentId = null;
-  if (field("payment_amount")) {
+  // At the Paid stage the payment was already recorded for the full amount.
+  if (field("payment_amount") && status !== "paid") {
     paymentId = await addPayment(
       env,
       expenseId,

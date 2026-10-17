@@ -56,7 +56,7 @@ needed.
    the token: Cloudflare only shows it once.
 2. **Find your Account ID:** it's on the **Workers & Pages** overview, under **Account
    details**.
-3. **Add five repository secrets** on GitHub: repo → **Settings → Secrets and variables →
+3. **Add the repository secrets** on GitHub: repo → **Settings → Secrets and variables →
    Actions → New repository secret**:
 
    | Name | Value |
@@ -66,6 +66,8 @@ needed.
    | `GOOGLE_CLIENT_ID` | from section 3 |
    | `GOOGLE_CLIENT_SECRET` | from section 3 |
    | `ADMIN_EMAILS` | both of your Google addresses, comma-separated, e.g. `you@gmail.com, partner@gmail.com` |
+   | `ZOLA_INGEST_SECRET` | a long random string you make up (a password manager's generator is fine) |
+   | `PANEL_GITHUB_TOKEN` | optional, for the **Refresh from Zola** button: see below |
 
 4. **Run the workflow:** repo → **Actions → Set Cloudflare secrets → Run workflow**. Each
    secret is sent to the `wedding` Worker and deployed straight away. Run it again any
@@ -87,10 +89,18 @@ reports whether each secret is set, never its value.
    minutes whenever something changed, and **Sync now** forces one.
 4. **Settings → Wedding details**: names, date, venue and RSVP deadline for the public page.
 5. **Settings → Expense form link**: copy it and save it on both of your phones.
-6. **Settings → Website (copied from Zola)**: check the Zola address and click
-   **Refresh from Zola**. The home page becomes your Zola site, without Zola's branding and
-   with an RSVP button at the top. After that it re-checks Zola once a day; click the
-   button again whenever you've just edited your Zola site.
+6. **The website.** Zola refuses requests from Cloudflare's servers, so GitHub copies your
+   Zola site instead (the **Refresh website from Zola** workflow, daily). Make the first
+   copy: repo → **Actions → Refresh website from Zola → Run workflow**. The home page
+   becomes your Zola site, without Zola's branding and with an RSVP button at the top.
+   Settings → **Website (copied from Zola)** shows when it last checked and changed.
+
+   For the **Refresh from Zola** button in Settings to start that workflow, make a GitHub
+   token: GitHub → **Settings → Developer settings → Personal access tokens → Fine-grained
+   tokens → Generate new token**. Repository access: **Only select repositories →
+   wedding**. Permissions: **Actions: Read and write**. Save it as the repository secret
+   `PANEL_GITHUB_TOKEN` and run **Set Cloudflare secrets** again. Without it, the daily
+   copy still runs; only the button can't start it.
 
 The website is `YOUR_URL/` and the RSVP page is `YOUR_URL/rsvp/`. Until the first copy
 is made, `YOUR_URL/` sends visitors to the RSVP page.
@@ -112,9 +122,10 @@ npm test                # the test suite (Node 22.5+)
   `ADMIN_EMAILS`. Check the spelling, then redeploy or wait a minute after editing secrets.
 - **Drive sync says "token refresh failed"**: the app is probably still in Testing mode
   (step 3). Publish it, then disconnect and reconnect Drive in Settings.
-- **Settings says the Zola refresh failed**: the last good copy stays up. If it keeps
-  failing with a 403 or 429, Zola is refusing requests from Cloudflare; tell me and we'll
-  look at another way in.
+- **Settings says the Zola refresh failed**: the last good copy stays up. Open the latest
+  **Refresh website from Zola** run in the Actions tab for the details. A 401 there means
+  `ZOLA_INGEST_SECRET` differs between GitHub and the Worker: re-run **Set Cloudflare
+  secrets**.
 - **`redirect_uri_mismatch` from Google**: the redirect URI in step 3 must match
   `YOUR_URL/api/auth/callback` exactly, including `https://` and with no trailing slash.
 - **Secrets set but `config-check` says false**: check that the **Set Cloudflare secrets**

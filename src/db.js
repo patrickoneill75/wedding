@@ -172,6 +172,22 @@ const MIGRATIONS = [
        changed_at TEXT
      )`,
   ],
+  // 6 -- purchases under an expense (one level: "Place Settings" > each purchase), a
+  // remembered list of vendors, and the partner's name in place of "Partner".
+  [
+    `ALTER TABLE expenses ADD COLUMN parent_id INTEGER REFERENCES expenses(id) ON DELETE CASCADE`,
+    `CREATE INDEX IF NOT EXISTS expenses_parent ON expenses(parent_id)`,
+    `CREATE TABLE IF NOT EXISTS vendors (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+       created_at TEXT NOT NULL DEFAULT (datetime('now'))
+     )`,
+    `INSERT OR IGNORE INTO vendors (name)
+       SELECT DISTINCT trim(vendor) FROM expenses WHERE vendor IS NOT NULL AND trim(vendor) <> ''`,
+    `UPDATE settings SET value = replace(value, '"Partner"', '"Kaitlyn"') WHERE key = 'payers'`,
+    `UPDATE expenses SET payer = 'Kaitlyn' WHERE payer = 'Partner'`,
+    `UPDATE payments SET payer = 'Kaitlyn' WHERE payer = 'Partner'`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

@@ -30,7 +30,10 @@
    footer by its text, the countdown by `data-testid`, and its own phone menu shows
    whenever the site's menu links are hidden in the browser. When something can't be
    found, the page is still copied and Settings shows a warning. Never copy real Zola
-   pages into the repo; tests use a made-up page.
+   pages into the repo; tests use a made-up page. Zola answers 403 to Cloudflare's
+   servers, so the fetching and cleaning run on GitHub (`scripts/zola_refresh.mjs`) and
+   the Worker only stores what `/api/site/ingest` receives. Keep `buildSite()` free of
+   database and Worker-only APIs so it keeps running in plain Node.
 
 ## Tests
 

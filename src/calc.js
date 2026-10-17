@@ -29,6 +29,19 @@
  *   owed       projected - paid, never negative
  *   actual     the real cost once there is one: null while the item is still an
  *              estimate, otherwise projected
+ *
+ * Purchases: an expense can have purchases under it (parent_id), one level deep --
+ * "Place Settings" bought a bit at a time from several vendors. Each purchase is a
+ * full expense of its own (stage, price, payments). rollupPurchases() then makes the
+ * parent speak for the group:
+ *   estimate   the parent's own estimate, as for any item
+ *   paid       everything paid, on the purchases and the parent itself
+ *   actual     the purchases' actual costs added up (null until one has one)
+ *   projected  the larger of the parent's own price and what the purchases add up to,
+ *              since more purchases may come -- until the parent is marked Paid ("done
+ *              buying"), when it's exactly what the purchases add up to
+ * Totals, the category table and the pie use top-level rows only, so purchases are
+ * never counted twice; payments due and stages come from the purchases themselves.
  */
 
 export const STATUSES = ["estimate", "quote", "booked", "partially_paid", "paid", "cancelled"];
@@ -81,7 +94,7 @@ export const DEFAULT_SETTINGS = {
     ounces_per_beer: 12,
     nonalc_per_guest_hour: 0.25,
   },
-  payers: ["Patrick", "Partner", "Joint", "Family"],
+  payers: ["Patrick", "Kaitlyn", "Joint", "Family"],
   payment_methods: ["Credit card", "Check", "Cash", "Venmo", "Zelle", "Bank transfer"],
   budget_target: null,
   // The Zola wedding website copied onto the home page ("" falls back to ZOLA_URL in
@@ -264,6 +277,38 @@ export function enrichExpense(expense, paid, ctx) {
   };
 }
 
+/** Roll each parent's purchases up into it (see the module docstring). */
+export function rollupPurchases(expenses) {
+  const kids = new Map();
+  for (const e of expenses) {
+    if (e.parent_id) {
+      if (!kids.has(e.parent_id)) kids.set(e.parent_id, []);
+      kids.get(e.parent_id).push(e);
+    }
+  }
+  return expenses.map((e) => {
+    const list = kids.get(e.id);
+    if (!list || e.parent_id) return { ...e, purchases: 0 };
+    const spent = cents(list.reduce((s, k) => s + k.projected, 0));
+    const paid = cents(e.paid + list.reduce((s, k) => s + k.paid, 0));
+    const known = list.filter((k) => k.actual != null);
+    let projected;
+    if (e.status === "cancelled") projected = paid;
+    else if (e.status === "paid") projected = spent;
+    else projected = Math.max(e.current, spent);
+    return {
+      ...e,
+      purchases: list.length,
+      spent,
+      paid,
+      projected: cents(projected),
+      owed: cents(Math.max(projected - paid, 0)),
+      actual: known.length ? cents(known.reduce((s, k) => s + k.actual, 0)) : null,
+      priced: e.priced || spent > 0,
+    };
+  });
+}
+
 /**
  * The status an expense should move to after its payments change. Only ever moves
  * forward along the route, and never touches a cancelled item or one with no price.
@@ -279,7 +324,12 @@ export function statusAfterPayment(expense, paid, ctx) {
 }
 
 /** Totals for the dashboard: by category, by status, payments over time, what's due. */
-export function summarize(expenses, payments, ctx, today = new Date().toISOString().slice(0, 10)) {
+export function summarize(all, payments, ctx, today = new Date().toISOString().slice(0, 10)) {
+  // Top-level rows carry the totals (a parent already includes its purchases); stages
+  // and due dates come from the rows that are actually bought: purchases and items
+  // without purchases.
+  const expenses = all.filter((e) => !e.parent_id);
+  const leaves = all.filter((e) => !e.purchases);
   const byCategory = new Map();
   const byStatus = Object.fromEntries(STATUSES.map((s) => [s, { count: 0, current: 0, paid: 0 }]));
   const totals = { estimate: 0, projected: 0, actual: 0, paid: 0, owed: 0, unpriced: 0, items: expenses.length };
@@ -297,16 +347,18 @@ export function summarize(expenses, payments, ctx, today = new Date().toISOStrin
     c.owed += e.owed;
     c.items++;
     if (e.priced) c.priced_items++;
-    const s = byStatus[e.status] || byStatus.estimate;
-    s.count++;
-    s.current += e.status === "cancelled" ? e.paid : e.projected;
-    s.paid += e.paid;
     totals.estimate += e.estimate;
     totals.projected += e.projected;
     totals.actual += e.actual || 0;
     totals.paid += e.paid;
     totals.owed += e.owed;
     if (!e.priced && e.status !== "cancelled") totals.unpriced++;
+  }
+  for (const e of leaves) {
+    const s = byStatus[e.status] || byStatus.estimate;
+    s.count++;
+    s.current += e.status === "cancelled" ? e.paid : e.projected;
+    s.paid += e.paid;
   }
   for (const key of ["estimate", "projected", "actual", "paid", "owed"]) totals[key] = cents(totals[key]);
   const categories = [...byCategory.values()].map((c) => ({
@@ -334,11 +386,12 @@ export function summarize(expenses, payments, ctx, today = new Date().toISOStrin
     else timeline.push({ date, cumulative: running });
   }
 
-  const upcoming = expenses
+  const names = new Map(all.map((e) => [e.id, e.item]));
+  const upcoming = leaves
     .filter((e) => e.due_date && e.status !== "cancelled" && e.status !== "paid")
     .map((e) => ({
       id: e.id,
-      item: e.item,
+      item: e.parent_id && names.has(e.parent_id) ? `${names.get(e.parent_id)}: ${e.item}` : e.item,
       vendor: e.vendor,
       category: e.category,
       due_date: e.due_date,

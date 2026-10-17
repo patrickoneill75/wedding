@@ -416,7 +416,7 @@ test("dashboard summary totals estimate, projected, paid and what's due", async 
   const cake = s.items.find((i) => i.item === "Cake");
   assert.equal(cake.actual, null);
   assert.equal(cake.estimate, 200);
-  assert.deepEqual(Object.keys(s.items[0]).sort(), ["actual", "category", "estimate", "id", "item", "projected", "status", "subcategory"]);
+  assert.deepEqual(Object.keys(s.items[0]).sort(), ["actual", "category", "estimate", "id", "item", "projected", "purchases", "status", "subcategory"]);
   assert.deepEqual(s.timeline, [{ date: "2026-02-01", cumulative: 500 }]);
 });
 
@@ -426,12 +426,16 @@ test("dashboard summary totals estimate, projected, paid and what's due", async 
 const OLD_GUEST_COLUMNS = `id INTEGER PRIMARY KEY, household_id INTEGER, first_name TEXT NOT NULL DEFAULT '',
   last_name TEXT NOT NULL DEFAULT '', ceremony INTEGER NOT NULL DEFAULT 0,
   plus_one_allowed INTEGER NOT NULL DEFAULT 0, plus_one_name TEXT`;
+// The other tables later migrations alter, in their oldest shape.
+const OLD_OTHER_TABLES = `
+  CREATE TABLE expenses (id INTEGER PRIMARY KEY, vendor TEXT, payer TEXT);
+  CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER, payer TEXT);`;
 
 test("upgrading from the first schema carries the spreadsheet's ceremony flag all the way through", async () => {
   const env = makeEnv();
   env.DB.db.exec(`
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    INSERT INTO settings VALUES ('_schema_version', '1');
+    INSERT INTO settings VALUES ('_schema_version', '1');${OLD_OTHER_TABLES}
     CREATE TABLE guests (${OLD_GUEST_COLUMNS});
     INSERT INTO guests (id, household_id, first_name, last_name, ceremony) VALUES (1, 1, 'A', 'B', 1), (2, 1, 'C', 'D', 0);
   `);
@@ -445,7 +449,7 @@ test("upgrading from either/or invite types: ceremony becomes both, reception st
   const env = makeEnv();
   env.DB.db.exec(`
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    INSERT INTO settings VALUES ('_schema_version', '3');
+    INSERT INTO settings VALUES ('_schema_version', '3');${OLD_OTHER_TABLES}
     CREATE TABLE guests (${OLD_GUEST_COLUMNS}, invite_type TEXT NOT NULL DEFAULT 'reception');
     INSERT INTO guests (id, household_id, invite_type) VALUES (1, 1, 'ceremony'), (2, 1, 'reception');
   `);
@@ -459,7 +463,7 @@ test('upgrading a database turns "Guest Guest <host>" rows into a nameless plus-
   // As schema version 2 left it, with placeholder rows from the spreadsheet import.
   env.DB.db.exec(`
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    INSERT INTO settings VALUES ('_schema_version', '2');
+    INSERT INTO settings VALUES ('_schema_version', '2');${OLD_OTHER_TABLES}
     CREATE TABLE guests (${OLD_GUEST_COLUMNS}, invite_type TEXT NOT NULL DEFAULT 'reception');
     INSERT INTO guests (id, household_id, first_name, last_name) VALUES
       (1, 1, 'Conor', 'Smith'), (2, 1, 'Guest', 'Guest Conor Smith'),
@@ -506,6 +510,149 @@ test("one guest can be invited to the ceremony only, the reception only, or both
   assert.deepEqual([sam.invite_ceremony, sam.invite_reception], [1, 1]);
   const r = await api(`/api/admin/guests/${sam.id}`, { method: "PUT", body: { invite_reception: false } });
   assert.deepEqual([r.data.guest.invite_ceremony, r.data.guest.invite_reception], [1, 0]);
+});
+
+/* -------------------------------------------------------- purchases and vendors -- */
+
+test("purchases roll up into their item: actual and paid add up, projected keeps the estimate until done", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const parent = (await api("/api/admin/expenses", { method: "POST", body: { category: "Ceremony & Reception", subcategory: "Decor", item: "Place Settings", unit_cost: 500 } })).data.expense.id;
+  const a = await api("/api/admin/expenses", { method: "POST", body: { parent_id: parent, item: "Plates", vendor: "Goodwill", unit_cost: 120, status: "paid" } });
+  assert.equal(a.status, 201, JSON.stringify(a.data));
+  assert.equal(a.data.expense.category, "Ceremony & Reception", "a purchase files under its item's category");
+  assert.equal(a.data.expense.subcategory, "Decor");
+  await api("/api/admin/expenses", { method: "POST", body: { parent_id: parent, item: "Napkins", vendor: "Etsy", unit_cost: 50, status: "booked", due_date: "2026-01-02" } });
+
+  let p = (await api(`/api/admin/expenses/${parent}`)).data.expense;
+  assert.equal(p.purchases, 2);
+  assert.equal(p.estimate, 500);
+  assert.equal(p.actual, 170);
+  assert.equal(p.paid, 120);
+  assert.equal(p.projected, 500, "more purchases may come, so the estimate still stands");
+  assert.equal(p.owed, 380);
+  assert.equal(p.purchase_list.length, 2);
+
+  const s = (await api("/api/admin/summary")).data;
+  assert.equal(s.totals.projected, 500, "purchases are not counted on top of their item");
+  assert.equal(s.totals.paid, 120);
+  assert.equal(s.items.length, 1, "the category table lists the item, not each purchase");
+  assert.equal(s.upcoming[0].item, "Place Settings: Napkins", "a purchase's due payment names its item");
+
+  await api(`/api/admin/expenses/${parent}`, { method: "PUT", body: { status: "paid" } });
+  p = (await api(`/api/admin/expenses/${parent}`)).data.expense;
+  assert.equal(p.projected, 170, "done buying: projected is what the purchases add up to");
+  assert.equal(p.owed, 50);
+  assert.equal((await api(`/api/admin/expenses/${parent}`)).data.payments.length, 0, "marking an item with purchases Paid records no payment of its own");
+});
+
+test("a purchase can't have purchases, and deleting an item deletes its purchases", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const parent = (await api("/api/admin/expenses", { method: "POST", body: { item: "Favors", unit_cost: 100 } })).data.expense.id;
+  const kid = (await api("/api/admin/expenses", { method: "POST", body: { parent_id: parent, item: "Bags", unit_cost: 20 } })).data.expense.id;
+  const nested = await api("/api/admin/expenses", { method: "POST", body: { parent_id: kid, item: "Ribbon", unit_cost: 5 } });
+  assert.equal(nested.status, 400);
+  await api(`/api/admin/expenses/${parent}`, { method: "DELETE" });
+  assert.equal((await api(`/api/admin/expenses/${kid}`)).status, 404);
+});
+
+test("vendors are remembered once each, whatever the capitalization", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  await api("/api/admin/expenses", { method: "POST", body: { item: "A", vendor: "Goodwill" } });
+  await api("/api/admin/expenses", { method: "POST", body: { item: "B", vendor: "goodwill " } });
+  const id = (await api("/api/admin/expenses", { method: "POST", body: { item: "C" } })).data.expense.id;
+  await api(`/api/admin/expenses/${id}`, { method: "PUT", body: { vendor: "Etsy" } });
+  assert.deepEqual((await api("/api/admin/expenses")).data.vendors, ["Etsy", "Goodwill"]);
+});
+
+test("saving an expense as Paid puts its full price in the Paid column", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const made = await api("/api/admin/expenses", { method: "POST", body: { item: "Cake", unit_cost: 400, status: "paid", payer: "Kaitlyn" } });
+  assert.equal(made.data.expense.paid, 400);
+  assert.equal(made.data.expense.owed, 0);
+  const pay = (await api(`/api/admin/expenses/${made.data.expense.id}`)).data.payments;
+  assert.equal(pay.length, 1);
+  assert.equal(pay[0].payer, "Kaitlyn");
+
+  // Moving a part-paid item to Paid records only what was still owed.
+  const dj = (await api("/api/admin/expenses", { method: "POST", body: { item: "DJ", unit_cost: 1000, status: "booked" } })).data.expense.id;
+  await api(`/api/admin/expenses/${dj}/payments`, { method: "POST", body: { amount: 300, paid_on: "2026-01-01" } });
+  const done = await api(`/api/admin/expenses/${dj}`, { method: "PUT", body: { status: "paid" } });
+  assert.equal(done.data.expense.paid, 1000);
+  assert.deepEqual((await api(`/api/admin/expenses/${dj}`)).data.payments.map((p) => p.amount), [300, 700]);
+  // Saving it again doesn't pay twice.
+  await api(`/api/admin/expenses/${dj}`, { method: "PUT", body: { status: "paid", notes: "thanks!" } });
+  assert.equal((await api(`/api/admin/expenses/${dj}`)).data.payments.length, 2);
+});
+
+async function formKeyFor(api) {
+  return new URL((await api("/api/admin/form-link")).data.url).searchParams.get("k");
+}
+function formOf(fields) {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) form.append(k, v);
+  return form;
+}
+
+test("the expense form adds a purchase under an existing item, and lists items without purchases or vendors", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const key = await formKeyFor(api);
+  const parent = (await api("/api/admin/expenses", { method: "POST", body: { item: "Place Settings", vendor: "Goodwill", unit_cost: 300 } })).data.expense.id;
+  const r = await call(env, "/api/public/expense", { method: "POST", form: formOf({
+    key, expense_id: String(parent), mode: "purchase", item: "Glasses", vendor: "Target", price: "45", status: "paid",
+    payment_amount: "999", paid_on: "2026-03-04", payer: "Kaitlyn", method: "Credit card",
+  }) });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const kid = (await api(`/api/admin/expenses/${r.data.expense_id}`)).data;
+  assert.equal(kid.expense.parent_id, parent);
+  assert.equal(kid.expense.vendor, "Target");
+  assert.deepEqual(kid.payments.map((p) => [p.amount, p.paid_on, p.payer, p.method]), [[45, "2026-03-04", "Kaitlyn", "Credit card"]],
+    "at the Paid stage the price is what's paid; a typed-in amount is ignored");
+  const options = (await call(env, `/api/public/expense/options?k=${key}`)).data;
+  assert.deepEqual(options.items.map((i) => i.item), ["Place Settings"], "purchases aren't offered as items");
+  assert.equal(options.items[0].purchases, 1);
+  assert.deepEqual(options.vendors, ["Goodwill", "Target"]);
+});
+
+test("the expense form still updates an item itself in update mode", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const key = await formKeyFor(api);
+  const id = (await api("/api/admin/expenses", { method: "POST", body: { item: "Florist", unit_cost: 800 } })).data.expense.id;
+  await call(env, "/api/public/expense", { method: "POST", form: formOf({ key, expense_id: String(id), mode: "update", price: "950", status: "quote" }) });
+  const e = (await api(`/api/admin/expenses/${id}`)).data.expense;
+  assert.equal(e.current, 950);
+  assert.equal(e.status, "quote");
+  assert.equal(e.purchases, 0);
+});
+
+test("upgrading renames Partner to Kaitlyn in settings and payments, and seeds the vendor list", async () => {
+  const env = makeEnv();
+  env.DB.db.exec(`
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO settings VALUES ('_schema_version', '5');
+    INSERT INTO settings VALUES ('payers', '["Patrick","Partner","Joint"]');
+    CREATE TABLE expenses (id INTEGER PRIMARY KEY, vendor TEXT, payer TEXT);
+    CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER, payer TEXT);
+    INSERT INTO expenses VALUES (1, ' Goodwill ', 'Partner'), (2, 'goodwill', NULL), (3, NULL, 'Patrick');
+    INSERT INTO payments VALUES (1, 1, 'Partner');
+  `);
+  assert.equal((await call(env, "/api/auth/me")).status, 401);
+  const db = env.DB.db;
+  assert.equal(JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'payers'").get().value)[1], "Kaitlyn");
+  assert.equal(db.prepare("SELECT payer FROM expenses WHERE id = 1").get().payer, "Kaitlyn");
+  assert.equal(db.prepare("SELECT payer FROM payments WHERE id = 1").get().payer, "Kaitlyn");
+  assert.deepEqual(db.prepare("SELECT name FROM vendors").all().map((v) => v.name), ["Goodwill"]);
+});
+
+test("a new install lists Kaitlyn as a payer", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  assert.ok((await api("/api/admin/settings")).data.settings.payers.includes("Kaitlyn"));
 });
 
 /* -------------------------------------------------------------------- RSVP tests -- */
@@ -934,14 +1081,96 @@ test("with no copy yet, the home page is the RSVP page", async () => {
   assert.equal((await call(env, "/rsvp/")).data, "asset", "/rsvp/ is the static RSVP page");
 });
 
-test("the daily refresh skips when the site was checked within the day", async () => {
-  const env = makeEnv();
-  const { scheduledSiteRefresh } = await import("../src/site.js");
-  const { setSetting } = await import("../src/db.js");
-  await call(env, "/api/auth/me");
-  await setSetting(env, "_site_status", { checked_at: new Date().toISOString() });
-  const r = await withFetch(() => { throw new Error("should not fetch"); }, () => scheduledSiteRefresh(env, `https://www.zola.com/wedding/${SLUG}`, ""));
-  assert.deepEqual(r, { skipped: true });
+const INGEST = "s3cret-ingest-value";
+const siteEnv = (extra = {}) => makeEnv({ ZOLA_URL: `https://www.zola.com/wedding/${SLUG}`, ZOLA_INGEST_SECRET: INGEST, ...extra });
+const ingest = (env, payload, secret = INGEST) => call(env, "/api/site/ingest", {
+  method: "POST", body: payload, headers: secret ? { authorization: `Bearer ${secret}` } : {},
+});
+
+test("the GitHub Action's routes need the shared secret", async () => {
+  const env = siteEnv();
+  assert.equal((await call(env, "/api/site/config")).status, 401);
+  assert.equal((await call(env, "/api/site/config", { headers: { authorization: "Bearer nope" } })).status, 401);
+  const ok = await call(env, "/api/site/config", { headers: { authorization: `Bearer ${INGEST}` } });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.zola_url, `https://www.zola.com/wedding/${SLUG}`);
+  assert.equal((await ingest(env, { pages: [] }, "nope")).status, 401);
+  // Not set up at all: say so rather than accept anything.
+  assert.equal((await call(makeEnv(), "/api/site/config", { headers: { authorization: "Bearer " } })).status, 503);
+});
+
+test("a site built on GitHub is stored and served, and resending it isn't a change", async () => {
+  const { buildSite } = await import("../src/site.js");
+  const env = siteEnv();
+  const built = await buildSite({ zolaUrl: `https://www.zola.com/wedding/${SLUG}`, fetchPage: async (url) => {
+    if (url.endsWith("fonts.css")) return "";
+    if (url.endsWith("/travel")) return zolaPage({ heading: "Getting there" });
+    if (url.endsWith(SLUG)) return zolaPage();
+    throw new Error(`Zola returned 404 for ${url}`);
+  } });
+  const first = await ingest(env, JSON.parse(JSON.stringify(built)));
+  assert.equal(first.status, 200, JSON.stringify(first.data));
+  assert.equal(first.data.status.source, "github");
+  assert.equal(first.data.status.changed, true);
+  assert.ok((await call(env, "/travel")).data.includes("Getting there"));
+  const again = await ingest(env, JSON.parse(JSON.stringify(built)));
+  assert.equal(again.data.status.changed, false);
+});
+
+test("the ingest route only accepts pages the site would make itself", async () => {
+  const env = siteEnv();
+  const page = (path, extra = {}) => ({ path, title: "t", html: "<p>x</p>", hash: "a".repeat(64), ...extra });
+  for (const [payload, why] of [
+    [{ pages: [page("/admin")] }, "a reserved path"],
+    [{ pages: [page("/"), page("/../etc")] }, "a path that isn't a simple page name"],
+    [{ pages: [page("/travel")] }, "no home page"],
+    [{ pages: [page("/", { hash: "zz" })] }, "a bad hash"],
+    [{ pages: [page("/", { html: "x".repeat(1_500_001) })] }, "oversized HTML"],
+    [{ pages: [] }, "no pages"],
+  ]) {
+    assert.equal((await ingest(env, payload)).status, 400, why);
+  }
+  assert.equal((await call(env, "/")).status, 302, "nothing was stored");
+});
+
+test("when GitHub can't reach Zola it reports why, and the last copy stays up", async () => {
+  const env = siteEnv();
+  await ingest(env, { pages: [{ path: "/", title: "t", html: "<p>home</p>", hash: "b".repeat(64) }] });
+  const r = await ingest(env, { error: "Zola returned 403 for https://www.zola.com/wedding/x" });
+  assert.equal(r.status, 200);
+  assert.match(r.data.status.error, /GitHub couldn't refresh it: Zola returned 403/);
+  assert.equal((await call(env, "/")).data, "<p>home</p>");
+});
+
+test("Refresh from Zola starts the GitHub workflow when it's set up, without fetching Zola itself", async () => {
+  const env = siteEnv({ GH_DISPATCH_TOKEN: "gh-token", GITHUB_REPO: "owner/wedding" });
+  const api = await adminClient(env);
+  const r = await withFetch((url, init) => {
+    assert.equal(url, "https://api.github.com/repos/owner/wedding/actions/workflows/zola-refresh.yml/dispatches");
+    assert.equal(init.method, "POST");
+    assert.equal(init.headers.authorization, "Bearer gh-token");
+    assert.deepEqual(JSON.parse(init.body), { ref: "main" });
+    return new Response(null, { status: 204 });
+  }, async (calls) => {
+    const res = await api("/api/admin/site/refresh", { method: "POST" });
+    assert.equal(calls.length, 1, "only GitHub is called");
+    return res;
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.requested, true);
+  assert.ok(r.data.status.requested_at);
+  assert.equal((await api("/api/admin/site/status")).data.via_github, true);
+  const refused = await withFetch(() => new Response("Bad credentials", { status: 401 }), () => api("/api/admin/site/refresh", { method: "POST" }));
+  assert.equal(refused.status, 400);
+  assert.match(refused.data.error, /PANEL_GITHUB_TOKEN/);
+});
+
+test("without the GitHub setup, a 403 from Zola explains what to set up", async () => {
+  const env = siteEnv();
+  const api = await adminClient(env);
+  const r = await withFetch(() => new Response("blocked", { status: 403 }), () => api("/api/admin/site/refresh", { method: "POST" }));
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /refuses requests from Cloudflare/);
 });
 
 test("the font route only serves font files from Zola's font folder", async () => {

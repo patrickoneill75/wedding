@@ -4,7 +4,7 @@ import { handleAdminApi } from "./admin_api.js";
 import { handlePublicApi } from "./public_api.js";
 import { saveDriveTokens } from "./google.js";
 import { scheduledSync } from "./sync.js";
-import { scheduledSiteRefresh, serveFont, servePage } from "./site.js";
+import { ingestSite, serveFont, servePage } from "./site.js";
 import { loadSettings } from "./store.js";
 
 /**
@@ -20,6 +20,9 @@ import { loadSettings } from "./store.js";
  *   /api/auth/logout
  *   /api/admin/*         control panel (src/admin_api.js), admins only
  *   /api/public/*        RSVP and the unlisted expense form (src/public_api.js)
+ *   /api/site/config     GET, and /api/site/ingest POST: for the GitHub Action that
+ *                        copies the Zola site (scripts/zola_refresh.mjs). Both need
+ *                        "Authorization: Bearer <ZOLA_INGEST_SECRET>".
  *   /api/config-check    which secrets are set -- never their values. Unauthenticated
  *                        on purpose: you can't sign in to diagnose a broken sign-in.
  *
@@ -33,18 +36,57 @@ import { loadSettings } from "./store.js";
  *
  *   ZOLA_URL              (var)     the Zola wedding website to copy onto the home page;
  *                                   Settings can override it.
+ *   ZOLA_INGEST_SECRET    (secret)  shared with the GitHub Action that copies the site.
+ *   GH_DISPATCH_TOKEN     (secret)  lets "Refresh from Zola" start that Action; with
+ *   GITHUB_REPO           (var)     the repo it lives in.
  *
  * The cron (every five minutes) pushes CSV exports to Google Drive when something
- * changed since the last sync, and re-copies the Zola site once a day.
+ * changed since the last sync. The Zola copy is refreshed by the GitHub Action, daily.
  */
 
 const SECRETS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "ADMIN_EMAILS"];
+const OPTIONAL_SECRETS = ["ZOLA_INGEST_SECRET", "GH_DISPATCH_TOKEN"];
+
+/** Constant-time comparison, so a wrong secret can't be guessed a character at a time. */
+function sameSecret(given, expected) {
+  if (typeof given !== "string" || typeof expected !== "string" || !expected) return false;
+  const a = new TextEncoder().encode(given);
+  const b = new TextEncoder().encode(expected);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < b.length; i++) diff |= (a[i] ?? 0) ^ b[i];
+  return diff === 0;
+}
+
+async function handleSiteApi(route, request, env) {
+  const auth = request.headers.get("authorization") || "";
+  if (!env.ZOLA_INGEST_SECRET) return json({ error: "ZOLA_INGEST_SECRET isn't set on the Worker. See SETUP.md." }, 503);
+  if (!sameSecret(auth.replace(/^Bearer\s+/i, ""), env.ZOLA_INGEST_SECRET)) return json({ error: "Wrong or missing secret." }, 401);
+  const method = request.method.toUpperCase();
+  if (route === "site/config" && method === "GET") {
+    const s = await loadSettings(env);
+    return json({ zola_url: s.zola_url || env.ZOLA_URL || "", rsvp_button_color: s.rsvp_button_color || "" });
+  }
+  if (route === "site/ingest" && method === "POST") {
+    let payload;
+    try {
+      payload = await request.json();
+    } catch {
+      return json({ error: "Expected JSON." }, 400);
+    }
+    try {
+      return json({ ok: true, status: await ingestSite(env, payload) });
+    } catch (error) {
+      return json({ error: error.message }, 400);
+    }
+  }
+  return json({ error: "Not found." }, 404);
+}
 
 async function handleApi(route, request, env) {
   const method = request.method.toUpperCase();
 
   if (route === "config-check" && method === "GET") {
-    const present = Object.fromEntries(SECRETS.map((name) => [name, Boolean(env[name])]));
+    const present = Object.fromEntries([...SECRETS, ...OPTIONAL_SECRETS].map((name) => [name, Boolean(env[name])]));
     return json({ present, d1_bound: Boolean(env.DB), ready: Boolean(env.DB) && SECRETS.every((n) => present[n]) });
   }
   if (!env.DB) return json({ error: "The D1 database isn't bound to this Worker. See SETUP.md." }, 500);
@@ -59,6 +101,7 @@ async function handleApi(route, request, env) {
   }
   if (route.startsWith("admin/")) return handleAdminApi(route.slice("admin/".length), request, env);
   if (route.startsWith("public/")) return handlePublicApi(route.slice("public/".length), request, env);
+  if (route.startsWith("site/")) return handleSiteApi(route, request, env);
   return json({ error: "Not found." }, 404);
 }
 
@@ -91,13 +134,10 @@ export default {
 
   async scheduled(_event, env, ctx) {
     if (!env.DB) return;
-    const ready = ensureSchema(env);
-    ctx.waitUntil(ready.then(() => scheduledSync(env)).catch((error) => console.error("Drive sync failed:", error.message)));
     ctx.waitUntil(
-      ready
-        .then(() => loadSettings(env))
-        .then((s) => scheduledSiteRefresh(env, s.zola_url || env.ZOLA_URL, s.rsvp_button_color))
-        .catch((error) => console.error("Zola refresh failed:", error.message))
+      ensureSchema(env)
+        .then(() => scheduledSync(env))
+        .catch((error) => console.error("Drive sync failed:", error.message))
     );
   },
 };
