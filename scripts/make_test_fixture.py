@@ -48,7 +48,9 @@ people = [
     (1, "H-001", "Alex", "Example", "x", "x", "Groom", "High", 0, 1, 0, "Alex and Sam Example", "Alex and Sam", "1 Test St", None, "Springfield", "IN", 2134),
     (2, "H-001", "Sam", "Example", None, "x", "Groom", "High", 0, 1, 0, None, None, None, None, None, None, None),
     (3, "H-002", "Jordan ", "Sample", "x", None, "Bride", "Medium", 1, 0, 0, "Jordan Sample", "Jordan", "2 Fake Ave", "Apt 3", "Shelbyville", "IN", 46142),
-    (4, "H-003", "Riley", "O'Placeholder", "x", None, "Bride", "High", 0, 0, 1, "Riley O'Placeholder", "Riley", "3 Demo Rd", None, "Ogdenville", "IN", 46203),
+    # How the real sheet lists a plus-one: its own row, named after the host.
+    (4, "H-002", "Guest", "Guest Jordan Sample", None, None, "Bride", "Medium", 0, 0, 0, None, None, None, None, None, None, None),
+    (5, "H-003", "Riley", "O'Placeholder", "x", None, "Bride", "High", 0, 0, 1, "Riley O'Placeholder", "Riley", "3 Demo Rd", None, "Ogdenville", "IN", 46203),
 ]
 for p in people:
     guests.append(list(p[:6]) + [None] + list(p[6:]))  # "Column 7" is empty in the real sheet

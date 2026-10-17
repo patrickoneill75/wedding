@@ -12,9 +12,11 @@ A Cloudflare Worker with two sides:
     Estimate → Quote → Booked → Partially paid → Paid (stages can be skipped, or an item
     cancelled), with price history, payments, who paid, due dates, and contracts and
     receipts in Drive.
-  - **Guests**: households and guests like a small CRM. Address, side, priority, family
-    and wedding-party flags, plus-ones, save-the-date / invite / gift / thank-you
-    tracking, RSVPs, dietary needs and tables.
+  - **Guests**: households and guests like a small CRM. Address, side, priority, invite
+    type (ceremony or reception), family and wedding-party flags, plus-ones (named by the
+    guest when they RSVP), save-the-date / invite / gift / thank-you tracking, RSVPs,
+    dietary needs and tables. Bulk edits and filters, and a Reset RSVP to un-answer a
+    household.
   - **Settings**: wedding details, 7% tax, budget, priority weights, the drinks
     calculator, the expense-form link, Google Drive, and the spreadsheet import.
 

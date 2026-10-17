@@ -53,7 +53,7 @@ export async function loadSettings(env) {
 
 export async function loadContext(env) {
   const settings = await loadSettings(env);
-  const guests = await all(env, "SELECT household_id, priority, side, rsvp, plus_one_allowed, plus_one_rsvp FROM guests");
+  const guests = await all(env, "SELECT household_id, priority, side, rsvp, plus_one_allowed, plus_one_rsvp, invite_type FROM guests");
   return buildContext(settings, guests);
 }
 
