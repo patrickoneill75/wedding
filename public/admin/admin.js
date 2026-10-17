@@ -88,7 +88,8 @@ export async function initPage(active) {
       "span",
       { class: "who" },
       h("span", {}, me.user.email),
-      h("a", { class: "btn small", href: "/", target: "_blank", rel: "noopener" }, "RSVP site ↗"),
+      h("a", { class: "btn small", href: "/", target: "_blank", rel: "noopener" }, "Website ↗"),
+      h("a", { class: "btn small", href: "/rsvp/", target: "_blank", rel: "noopener" }, "RSVP page ↗"),
       h(
         "button",
         {

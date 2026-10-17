@@ -87,8 +87,13 @@ reports whether each secret is set, never its value.
    minutes whenever something changed, and **Sync now** forces one.
 4. **Settings → Wedding details**: names, date, venue and RSVP deadline for the public page.
 5. **Settings → Expense form link**: copy it and save it on both of your phones.
+6. **Settings → Website (copied from Zola)**: check the Zola address and click
+   **Refresh from Zola**. The home page becomes your Zola site, without Zola's branding and
+   with an RSVP button at the top. After that it re-checks Zola once a day; click the
+   button again whenever you've just edited your Zola site.
 
-The public RSVP page is `YOUR_URL/`.
+The website is `YOUR_URL/` and the RSVP page is `YOUR_URL/rsvp/`. Until the first copy
+is made, `YOUR_URL/` sends visitors to the RSVP page.
 
 ## Running it locally
 
@@ -107,6 +112,9 @@ npm test                # the test suite (Node 22.5+)
   `ADMIN_EMAILS`. Check the spelling, then redeploy or wait a minute after editing secrets.
 - **Drive sync says "token refresh failed"**: the app is probably still in Testing mode
   (step 3). Publish it, then disconnect and reconnect Drive in Settings.
+- **Settings says the Zola refresh failed**: the last good copy stays up. If it keeps
+  failing with a 403 or 429, Zola is refusing requests from Cloudflare; tell me and we'll
+  look at another way in.
 - **`redirect_uri_mismatch` from Google**: the redirect URI in step 3 must match
   `YOUR_URL/api/auth/callback` exactly, including `https://` and with no trailing slash.
 - **Secrets set but `config-check` says false**: check that the **Set Cloudflare secrets**

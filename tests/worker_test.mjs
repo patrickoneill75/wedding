@@ -17,7 +17,7 @@ import { sign } from "../src/auth.js";
 import { buildContext, drinksPlan, enrichExpense, guestCounts, mergeSettings, statusAfterPayment } from "../src/calc.js";
 import { toCsv } from "../src/sync.js";
 import { sqlValue } from "../src/importer.js";
-import { normalizeName } from "../src/public_api.js";
+import { normalizeName, searchGuests } from "../src/public_api.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, "fixtures", "sample_wedding.xlsx");
@@ -207,6 +207,27 @@ test("SQL literals escape quotes and refuse non-finite numbers", () => {
 
 test("name normalization ignores case, accents, apostrophes and stray spaces", () => {
   assert.equal(normalizeName(" O'Néill "), "oneill");
+});
+
+test("name search: each typed word must start a different word of the name", () => {
+  const guests = [
+    { id: 1, first_name: "Conor", last_name: "Marley" },
+    { id: 2, first_name: "Conner", last_name: "Moore" },
+    { id: 3, first_name: "Mary-Kate", last_name: "O'Neill" },
+    { id: 4, first_name: "Anna", last_name: "Mars" },
+  ];
+  const names = (q) => searchGuests(guests, q).map((g) => g.id);
+  assert.deepEqual(names("Con"), [2, 1], "first-name prefix finds both, alphabetically (Conner, Conor)");
+  assert.deepEqual(names("mar"), [3, 4, 1], "first-name hits (Mary-Kate) sort ahead of last-name hits (Anna Mars, Conor Marley)");
+  assert.deepEqual(names("con mar"), [1], "two words narrow it to one person");
+  assert.deepEqual(names("mar con"), [1], "word order doesn't matter");
+  assert.deepEqual(names("oneill"), [3], "apostrophes are ignored");
+  assert.deepEqual(names("kate"), [3], "hyphenated names match on either half");
+  assert.deepEqual(names("mar mar"), [], "one typed word can't match the same name word twice");
+  assert.deepEqual(names("c"), [], "one letter is too little to search on");
+  assert.deepEqual(names("  "), []);
+  const many = Array.from({ length: 20 }, (_, i) => ({ id: i, first_name: "Sam", last_name: `Smith${i}` }));
+  assert.equal(searchGuests(many, "sam").length, 8, "at most eight suggestions");
 });
 
 /* -------------------------------------------------------------------- auth tests -- */
@@ -512,6 +533,34 @@ test("RSVP lookup finds a household by name, forgiving case, apostrophes and sho
   assert.equal(byPlusOne.status, 200, "a preloaded plus-one can find their host's invitation");
 });
 
+test("RSVP name search returns only names and picks, and a pick opens that guest's household", async () => {
+  const { env } = await rsvpSetup();
+  const r = await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "jor" } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.deepEqual(r.data.results.map((x) => x.name), ["Jordan Sample"]);
+  assert.deepEqual(Object.keys(r.data.results[0]).sort(), ["name", "pick"], "no ids, addresses or other fields");
+  const lookup = await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick: r.data.results[0].pick } });
+  assert.equal(lookup.status, 200, JSON.stringify(lookup.data));
+  assert.equal(lookup.data.matches.length, 1);
+  assert.equal(lookup.data.matches[0].guests[0].first_name, "Jordan");
+  assert.ok(lookup.data.matches[0].token);
+});
+
+test("RSVP lookup won't open a household from a made-up or plain-id pick", async () => {
+  const { env } = await rsvpSetup();
+  assert.equal((await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick: "1" } })).status, 400);
+  assert.equal((await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick: 1 } })).status, 400);
+  // A real token of a different kind (an RSVP token) isn't a pick either.
+  const rsvpToken = await sign(env, { kind: "rsvp", h: 1 }, 600);
+  assert.equal((await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick: rsvpToken } })).status, 400);
+});
+
+test("RSVP name search is off while RSVPs are closed", async () => {
+  const { env, api } = await rsvpSetup();
+  await api("/api/admin/settings", { method: "PUT", body: { rsvp_open: false } });
+  assert.equal((await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "jor" } })).status, 403);
+});
+
 test("RSVP lookup never exposes addresses, priority or budget fields", async () => {
   const { env } = await rsvpSetup();
   const r = await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Alex", last: "Example" } });
@@ -717,6 +766,203 @@ test("connecting Drive refuses a grant without the Drive scope", async () => {
   assert.match(r.headers.get("location"), /settings\.html\?error=/);
   const status = await (await adminClient(env))("/api/admin/drive/status");
   assert.equal(status.data.connected, false);
+});
+
+/* --------------------------------------------------------------- website copy -- */
+
+import { cleanPage, contrastingColor, fontFacesFor, parseHtml, serialize } from "../src/site.js";
+
+const SLUG = "testcouple2030";
+// A made-up page shaped like Zola's server-rendered wedding site.
+function zolaPage({ heading = "Welcome", extra = "", footer = true } = {}) {
+  const data = { props: { pageProps: { pageData: { travel: { travels: [
+    { name: "Grand Test Hotel", url: "https://grandtest.example/rooms", address_1: "1 Main St" },
+  ] } } } } };
+  return `<!DOCTYPE html><html lang="en"><head><meta charSet="utf-8"/><title>Sam &amp; Alex&#x27;s Wedding Website</title>
+<link rel="icon" href="https://cdn.zola.example/favicon.ico"/><link rel="preload" href="/x.js" as="script"/>
+<link rel="stylesheet" href="https://d1tntvpcrzvon2.cloudfront.net/app.css"/>
+<meta name="twitter:site" content="@zola"/><script>window.track=1</script></head>
+<body><div id="__next"><div class="unified-nav hidden__x"><span>Loading</span></div>
+<div style="background-color:#F5EFE8"><h2><a href="/wedding/${SLUG}">Sam &amp; Alex</a></h2>
+<ul style="color:#89645C"><li><a href="/wedding/${SLUG}">Home</a></li><li><a href="/wedding/${SLUG}/travel">Travel</a></li>
+<li><a href="/wedding/${SLUG}/registry">Registry</a></li><li><a href="/wedding/${SLUG}/rsvp">RSVP</a></li></ul>
+<h1 style="font-family:&#x27;Libre Baskerville&#x27;;color:#89645C">${heading}</h1>
+<div data-testid="WeddingCountdown"><span><span>10 days</span><span>10 d</span></span><span><span>2 hours</span><span>2 h</span></span><span><span>0 minutes</span><span>0 min</span></span><span><span>5 seconds</span><span>5 s</span></span></div>
+<div class="card"><h3>Grand Test Hotel</h3><address>1 Main St<br/>Testville</address><div><button class="css-btn" style="color:#fff">View</button></div></div>
+<div class="card"><h3>Mystery Place</h3><address>9 Elm Rd<br/>Testville</address><div><button>View</button></div></div>
+<img src="//images.zola.com/abc?w=100"/><a href="/terms">Terms</a>${extra}</div>
+${footer ? `<div class="css-wrap"><div class="css-foot"><div><svg><path d="M0 0"></path></svg></div><span>For all the days along the way</span>
+<div><a href="/">About Zola</a><a href="mailto:support@zola.com">support@zola.com</a></div><div><span>© <!-- -->2030<!-- --> Zola, Inc. All rights reserved. </span></div></div></div>` : ""}
+</div><script id="__NEXT_DATA__" type="application/json">${JSON.stringify(data)}</script><script src="/app.js"></script></body></html>`;
+}
+
+test("the HTML parser round-trips a page byte for byte", () => {
+  const src = zolaPage();
+  assert.equal(serialize(parseHtml(src)), src.replace(/<(meta|link|img|br)([^>]*?)\/?>/g, "<$1$2/>"));
+});
+
+test("cleaning a Zola page strips Zola's app, branding and footer, and adds the RSVP pill", () => {
+  const out = cleanPage(zolaPage(), { slug: SLUG, pages: new Set(["travel"]), fetchedAt: 1_000_000, currentPath: "/" });
+  const html = out.html;
+  assert.deepEqual(out.warnings, []);
+  assert.equal(out.title, "Sam & Alex's Wedding Website");
+  assert.ok(!/window\.track|__NEXT_DATA__|app\.js/.test(html), "no Zola scripts or page data");
+  assert.ok(!html.includes("unified-nav"), "Zola's account bar is gone");
+  assert.ok(!/For all the days|About Zola|Zola, Inc|css-wrap/.test(html), "the footer and its now-empty wrapper are gone");
+  assert.ok(!/twitter:site|rel="preload"|cdn\.zola\.example\/favicon/.test(html));
+  assert.ok(html.includes('<a class="wm-rsvp" href="/rsvp/">RSVP</a>'));
+  assert.ok(html.indexOf("wm-rsvp-bar") < html.indexOf("Sam &amp; Alex</a>"), "the RSVP bar comes first");
+  assert.ok(html.includes("app.css"), "Zola's stylesheet stays");
+  assert.ok(html.includes("//images.zola.com/abc"), "images stay on Zola's CDN");
+});
+
+test("the copy's links point at its own pages, our RSVP page, and Zola for anything else", () => {
+  const html = cleanPage(zolaPage(), { slug: SLUG, pages: new Set(["travel"]), currentPath: "/" }).html;
+  assert.ok(html.includes('<a href="/" data-wm-nav="">Home</a>'));
+  assert.ok(html.includes('<a href="/travel" data-wm-nav="">Travel</a>'));
+  assert.ok(html.includes(`href="https://www.zola.com/wedding/${SLUG}/registry"`), "the registry stays on Zola, where gifts work");
+  assert.ok(html.includes('<a href="/rsvp/">RSVP</a>'), "Zola's RSVP page becomes ours");
+  assert.ok(html.includes('href="https://www.zola.com/terms"'), "other relative links go to Zola, not to us");
+  // Our phone menu names "/" by its menu label, not the site title that also links home.
+  const menu = /<nav id="wm-menu"[^>]*>(.*?)<\/nav>/.exec(html)[1];
+  assert.ok(menu.startsWith('<a href="/" aria-current="page">Home</a>'), menu);
+});
+
+test('"View" buttons become links: the place\'s website by name, else its address on a map', () => {
+  const html = cleanPage(zolaPage(), { slug: SLUG, pages: new Set(), currentPath: "/" }).html;
+  assert.ok(/<a class="css-btn" href="https:\/\/grandtest\.example\/rooms" target="_blank"[^>]*>View<\/a>/.test(html));
+  assert.ok(html.includes("https://www.google.com/maps/search/?api=1&amp;query=9%20Elm%20Rd%2C%20Testville")
+    || html.includes("https://www.google.com/maps/search/?api=1&query=9%20Elm%20Rd%2C%20Testville"));
+  assert.ok(!/<button[^>]*>View<\/button>/.test(html));
+});
+
+test("the countdown keeps ticking: its end time is worked out from what Zola showed", () => {
+  const out = cleanPage(zolaPage(), { slug: SLUG, pages: new Set(), fetchedAt: 1_000_000, currentPath: "/" });
+  const seconds = 10 * 86400 + 2 * 3600 + 5;
+  assert.ok(out.html.includes(`data-wm-target="${1_000_000 + seconds * 1000}"`));
+  const later = cleanPage(zolaPage(), { slug: SLUG, pages: new Set(), fetchedAt: 9_999_999, currentPath: "/" });
+  assert.equal(out.hashSource, later.hashSource, "the countdown alone never counts as a change");
+});
+
+test("a page whose footer can't be found is still copied, with a warning", () => {
+  const out = cleanPage(zolaPage({ footer: false, extra: "<p>Powered by Zola</p>" }), { slug: SLUG, pages: new Set(), currentPath: "/" });
+  assert.ok(out.warnings.some((w) => /footer/.test(w)));
+  assert.ok(out.warnings.some((w) => /"Zola" still appears 1 time/.test(w)));
+});
+
+test("the RSVP pill's automatic color sits opposite the theme's color", () => {
+  assert.equal(contrastingColor("#89645c"), "hsl(191 35% 30%)");
+  const html = cleanPage(zolaPage(), { slug: SLUG, pages: new Set(), rsvpColor: "#123456", currentPath: "/" }).html;
+  assert.ok(html.includes("background:#123456"), "a color set in Settings wins");
+});
+
+test("only the fonts the page uses are inlined, pointed at our font route", () => {
+  const css = `@font-face{font-family:'Libre Baskerville';src:url('https://d1tntvpcrzvon2.cloudfront.net/static-assets/fonts/LB.ttf')}
+@font-face{font-family:'Unused Font';src:url('https://d1tntvpcrzvon2.cloudfront.net/static-assets/fonts/U.ttf')}`;
+  const faces = fontFacesFor(css, zolaPage());
+  assert.ok(faces.includes("url('/_site/fonts/LB.ttf')"));
+  assert.ok(!faces.includes("Unused"));
+});
+
+function zolaFetch(pages, calls = []) {
+  return (url) => {
+    calls.push(url);
+    if (url.endsWith("fonts.css")) return new Response("@font-face{font-family:'Libre Baskerville';src:url('x')}");
+    const key = url.replace(`https://www.zola.com/wedding/${SLUG}`, "") || "/";
+    if (pages[key] === undefined) return new Response("nope", { status: 404 });
+    return new Response(pages[key], { headers: { "content-type": "text/html" } });
+  };
+}
+
+test("Refresh from Zola copies the home page and its own pages, but not the registry or RSVP", async () => {
+  const env = makeEnv({ ZOLA_URL: `https://www.zola.com/wedding/${SLUG}` });
+  const api = await adminClient(env);
+  const calls = [];
+  const r = await withFetch(zolaFetch({ "/": zolaPage(), "/travel": zolaPage({ heading: "Getting there" }) }, calls), () =>
+    api("/api/admin/site/refresh", { method: "POST" }));
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.deepEqual(r.data.status.pages.map((p) => p.path), ["/", "/travel"]);
+  assert.ok(!calls.some((u) => /registry|\/rsvp/.test(u)), "registry and RSVP pages aren't fetched");
+  const home = await call(env, "/");
+  assert.equal(home.status, 200);
+  assert.ok(home.data.includes("wm-rsvp"));
+  const travel = await call(env, "/travel");
+  assert.ok(travel.data.includes("Getting there"));
+  assert.equal((await call(env, "/travel/")).status, 200, "a trailing slash finds the same page");
+  assert.equal(await (await call(env, "/registry")).data, "asset", "anything not copied falls through to the static files");
+});
+
+test("a refresh only marks the site changed when Zola's content changed", async () => {
+  const env = makeEnv({ ZOLA_URL: `https://www.zola.com/wedding/${SLUG}` });
+  const api = await adminClient(env);
+  const pages = { "/": zolaPage(), "/travel": zolaPage({ heading: "Getting there" }) };
+  const first = await withFetch(zolaFetch(pages), () => api("/api/admin/site/refresh", { method: "POST" }));
+  assert.equal(first.data.status.changed, true);
+  const same = await withFetch(zolaFetch(pages), () => api("/api/admin/site/refresh", { method: "POST" }));
+  assert.equal(same.data.status.changed, false, "nothing changed on Zola");
+  assert.equal(same.data.status.changed_at, first.data.status.changed_at);
+  pages["/travel"] = zolaPage({ heading: "New hotel block!" });
+  const edited = await withFetch(zolaFetch(pages), () => api("/api/admin/site/refresh", { method: "POST" }));
+  assert.equal(edited.data.status.changed, true);
+  assert.ok((await call(env, "/travel")).data.includes("New hotel block!"));
+  // Zola drops the travel page: so do we.
+  const noTravel = zolaPage().replace(`<li><a href="/wedding/${SLUG}/travel">Travel</a></li>`, "");
+  await withFetch(zolaFetch({ "/": noTravel }), () => api("/api/admin/site/refresh", { method: "POST" }));
+  assert.equal((await call(env, "/travel")).data, "asset");
+});
+
+test("a failed refresh keeps the last good copy up and says why", async () => {
+  const env = makeEnv({ ZOLA_URL: `https://www.zola.com/wedding/${SLUG}` });
+  const api = await adminClient(env);
+  // The home page links to /travel, which 404s: one broken page doesn't sink the refresh.
+  const partial = await withFetch(zolaFetch({ "/": zolaPage() }), () => api("/api/admin/site/refresh", { method: "POST" }));
+  assert.equal(partial.status, 200, JSON.stringify(partial.data));
+  assert.ok(partial.data.status.warnings.some((w) => /^\/travel: couldn't fetch it/.test(w)));
+  const failed = await withFetch(() => new Response("blocked", { status: 403 }), () => api("/api/admin/site/refresh", { method: "POST" }));
+  assert.equal(failed.status, 400);
+  assert.match(failed.data.error, /403/);
+  assert.equal((await call(env, "/")).status, 200, "the previous copy is still served");
+  const status = (await api("/api/admin/site/status")).data.status;
+  assert.match(status.error, /403/);
+});
+
+test("with no copy yet, the home page is the RSVP page", async () => {
+  const env = makeEnv();
+  const r = await call(env, "/");
+  assert.equal(r.status, 302);
+  assert.match(r.headers.get("location"), /\/rsvp\/$/);
+  assert.equal((await call(env, "/rsvp/")).data, "asset", "/rsvp/ is the static RSVP page");
+});
+
+test("the daily refresh skips when the site was checked within the day", async () => {
+  const env = makeEnv();
+  const { scheduledSiteRefresh } = await import("../src/site.js");
+  const { setSetting } = await import("../src/db.js");
+  await call(env, "/api/auth/me");
+  await setSetting(env, "_site_status", { checked_at: new Date().toISOString() });
+  const r = await withFetch(() => { throw new Error("should not fetch"); }, () => scheduledSiteRefresh(env, `https://www.zola.com/wedding/${SLUG}`, ""));
+  assert.deepEqual(r, { skipped: true });
+});
+
+test("the font route only serves font files from Zola's font folder", async () => {
+  const env = makeEnv();
+  const seen = [];
+  await withFetch((url) => { seen.push(url); return new Response("FONT"); }, async () => {
+    assert.equal((await call(env, "/_site/fonts/Radiograph-Regular.otf")).data, "FONT");
+    assert.equal((await call(env, "/_site/fonts/..%2Fsecret.otf")).status, 404);
+    assert.equal((await call(env, "/_site/fonts/evil.js")).status, 404);
+  });
+  assert.deepEqual(seen, ["https://d1tntvpcrzvon2.cloudfront.net/static-assets/fonts/Radiograph-Regular.otf"]);
+});
+
+test("Settings only accepts a Zola wedding address and a hex RSVP color", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  assert.equal((await api("/api/admin/settings", { method: "PUT", body: { zola_url: "https://evil.example/wedding/x" } })).status, 400);
+  assert.equal((await api("/api/admin/settings", { method: "PUT", body: { rsvp_button_color: "red" } })).status, 400);
+  const ok = await api("/api/admin/settings", { method: "PUT", body: { zola_url: `https://www.zola.com/wedding/${SLUG}/`, rsvp_button_color: "#2F5D62" } });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.settings.zola_url, `https://www.zola.com/wedding/${SLUG}`);
 });
 
 /* ------------------------------------------------------------------------- runner -- */

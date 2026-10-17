@@ -160,6 +160,18 @@ const MIGRATIONS = [
     `ALTER TABLE guests ADD COLUMN invite_reception INTEGER NOT NULL DEFAULT 1`,
     `UPDATE guests SET invite_ceremony = 1 WHERE invite_type = 'ceremony'`,
   ],
+  // 5 -- the public website: cleaned copies of the Zola site's pages (src/site.js).
+  [
+    `CREATE TABLE IF NOT EXISTS site_pages (
+       path TEXT PRIMARY KEY,
+       title TEXT,
+       html TEXT NOT NULL,
+       source_url TEXT,
+       content_hash TEXT,
+       fetched_at TEXT,
+       changed_at TEXT
+     )`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

@@ -56,6 +56,27 @@
     <p class="msg"></p>
   </form>
 
+  <form class="card" id="siteForm">
+    <h2>Website (copied from Zola)</h2>
+    <p class="desc">The home page is a copy of your Zola wedding website with Zola's branding taken off and an RSVP button at
+      the top. It checks Zola once a day and picks up any changes; use <b>Refresh from Zola</b> after you edit your Zola site
+      to update it right away.</p>
+    <div class="fields">
+      <label class="field" style="grid-column: span 2">Zola website address
+        <input name="zola_url" placeholder="https://www.zola.com/wedding/your-site"></label>
+      <label class="field">RSVP button color (blank picks one from your theme)
+        <div class="row" style="flex-wrap:nowrap"><input name="rsvp_button_color" placeholder="automatic" style="flex:1">
+          <input type="color" id="rsvpColorPick" style="width:44px;padding:2px;height:36px"></div></label>
+    </div>
+    <div class="row">
+      <button type="submit">Save</button>
+      <button type="button" class="primary" id="refreshSite">Refresh from Zola</button>
+      <a class="btn" href="/" target="_blank" rel="noopener">Open the website ↗</a>
+    </div>
+    <p class="msg" id="siteMsg"></p>
+    <div id="siteStatus" class="desc" style="margin-top:12px"></div>
+  </form>
+
   <div class="card">
     <h2>Expense form link</h2>
     <p class="desc">An unlisted page for adding expenses and payments from your phone without signing in. Anyone with the link can
@@ -310,6 +331,54 @@ async function openPicker(body) {
   show();
 }
 
+/* -------------------------------------------------------------- website -- */
+const siteForm = document.getElementById("siteForm");
+const siteMsg = document.getElementById("siteMsg");
+async function renderSite() {
+  const { zola_url, status, pages } = await api("/api/admin/site/status");
+  siteForm.elements.zola_url.value = state.settings.zola_url || zola_url || "";
+  siteForm.elements.rsvp_button_color.value = state.settings.rsvp_button_color || "";
+  if (state.settings.rsvp_button_color) document.getElementById("rsvpColorPick").value = state.settings.rsvp_button_color;
+  const when = (iso) => (iso ? new Date(iso).toLocaleString() : "never");
+  const box = document.getElementById("siteStatus");
+  if (!status) {
+    box.replaceChildren(h("p", { style: "margin:0" }, "Not copied yet. Click Refresh from Zola to make the first copy. Until then the home page shows the RSVP page."));
+    return;
+  }
+  const failedLast = status.error && (!status.changed_at || status.error_at >= status.checked_at);
+  box.replaceChildren(
+    h("p", { style: "margin:0 0 6px" }, `Last checked ${when(status.checked_at)} · last changed ${when(status.changed_at)}`),
+    failedLast ? h("p", { class: "msg err", style: "margin:0 0 6px" }, `The last check failed: ${status.error} The previous copy is still up.`) : "",
+    ...(status.warnings || []).map((w) => h("p", { class: "msg err", style: "margin:0 0 6px" }, w)),
+    pages.length
+      ? h("div", { class: "row", style: "gap:8px" }, "Pages:", ...pages.map((p) => h("a", { class: "pill", href: p.path, target: "_blank", rel: "noopener" }, p.path === "/" ? "Home" : p.path)))
+      : "",
+  );
+}
+document.getElementById("rsvpColorPick").addEventListener("input", (ev) => { siteForm.elements.rsvp_button_color.value = ev.target.value; });
+async function refreshSite() {
+  setMsg(siteMsg, "Copying your Zola website…");
+  try {
+    const { status } = await api("/api/admin/site/refresh", { method: "POST" });
+    setMsg(siteMsg, status.changed ? "Updated: the website now matches Zola." : "Checked: nothing has changed on Zola since the last copy.", "ok");
+  } catch (error) {
+    setMsg(siteMsg, error.message, "err");
+  }
+  renderSite();
+}
+siteForm.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const v = formValues(siteForm);
+  try {
+    state = { ...state, ...(await api("/api/admin/settings", { method: "PUT", body: { zola_url: v.zola_url, rsvp_button_color: v.rsvp_button_color } })) };
+    // The button color and address are baked into the copy, so re-copy now.
+    await refreshSite();
+  } catch (error) {
+    setMsg(siteMsg, error.message, "err");
+  }
+});
+document.getElementById("refreshSite").addEventListener("click", refreshSite);
+
 /* --------------------------------------------------------------- import -- */
 document.getElementById("importForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
@@ -340,6 +409,7 @@ document.getElementById("importForm").addEventListener("submit", async (ev) => {
 fill();
 showLink();
 renderDrive();
+renderSite();
 const params = new URLSearchParams(location.search);
 if (params.get("error")) setMsg(driveMsg, params.get("error"), "err");
 if (params.get("drive") === "connected") setMsg(driveMsg, "Google Drive connected. Now pick a folder.", "ok");

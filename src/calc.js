@@ -84,6 +84,10 @@ export const DEFAULT_SETTINGS = {
   payers: ["Patrick", "Partner", "Joint", "Family"],
   payment_methods: ["Credit card", "Check", "Cash", "Venmo", "Zelle", "Bank transfer"],
   budget_target: null,
+  // The Zola wedding website copied onto the home page ("" falls back to ZOLA_URL in
+  // wrangler.jsonc), and the RSVP button's color there ("" picks one from the theme).
+  zola_url: "",
+  rsvp_button_color: "",
 };
 
 export const PUBLIC_SETTING_KEYS = Object.keys(DEFAULT_SETTINGS);

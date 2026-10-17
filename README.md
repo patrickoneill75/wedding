@@ -2,9 +2,14 @@
 
 A Cloudflare Worker with two sides:
 
-- **Public**: an RSVP page at `/`, where guests look up their name and answer for their
-  household, and an unlisted expense form at `/submit/?k=…` for the two of us to log
-  expenses, payments and receipts from a phone.
+- **Public**:
+  - The home page (`/`, `/travel`, …) is a copy of our Zola wedding website, refreshed
+    from Zola once a day (or with **Refresh from Zola** in Settings), with Zola's
+    branding taken off and an RSVP button at the top.
+  - The RSVP page at `/rsvp/`, where guests find their name and answer for their
+    household.
+  - An unlisted expense form at `/submit/?k=…` for the two of us to log expenses,
+    payments and receipts from a phone.
 - **Control panel** (`/admin/`, Google sign-in, admins only):
   - **Dashboard**: guest counts, projected / paid / owed / overdue, upcoming payments,
     a pie of projected cost by category or subcategory, and an estimated vs. actual cost
@@ -50,10 +55,11 @@ src/store.js       expense/payment writes with history and status moves
 src/calc.js        the budget math (pure; most tests live here)
 src/google.js      Google Drive: tokens, folder picker, uploads
 src/sync.js        CSV exports and the Drive sync (cron every 5 minutes)
+src/site.js        the Zola website copy: fetch, clean, store, serve (daily via the cron)
 src/importer.js    one-time import of Wedding_Data.xlsx
 src/xlsx.js        a minimal .xlsx reader (no dependencies)
 src/db.js          D1 schema (self-migrating) and query helpers
-public/            static pages: RSVP site, expense form, control panel
+public/            static pages: RSVP page (/rsvp/), expense form, control panel
 tests/             node tests/worker_test.mjs
 ```
 
