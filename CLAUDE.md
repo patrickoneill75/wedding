@@ -20,8 +20,10 @@
    piling up copies. Receipts are the exception: they get unique, timestamped names.
 7. The budget math lives in `src/calc.js` and is mirrored for live previews in
    `public/admin/expenses.html` and `public/admin/settings.html`. Change both together.
-8. Guests never see budget data. `GET /api/public/info` and the RSVP lookup return
-   only what the RSVP page needs; tests check for leaks.
+8. Guests never see budget data. `GET /api/public/info`, the RSVP name search and the
+   lookup return only what the RSVP page needs; tests check for leaks. The search
+   returns names and signed picks only (2+ letters, 8 results), and a household opens
+   from a pick, never from a raw guest id.
 
 ## Tests
 

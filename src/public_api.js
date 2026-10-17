@@ -4,9 +4,15 @@
  * RSVP (the public site):
  *   GET  info              names, date, venue, deadline, whether RSVPs are open.
  *                          Never anything budget-related.
- *   POST rsvp/lookup       { first, last } -> matching household(s): first names,
- *                          current answers, and who may bring a plus-one, plus a
- *                          signed token good for two hours.
+ *   POST rsvp/search       { q } -> up to 8 guests whose names match as the guest types:
+ *                          every word typed must start a different word of the name, so
+ *                          "con" finds Conor Marley and Conner Moore, "mar" finds Conor
+ *                          Marley, and "con mar" only him. Needs 2+ letters. Returns the
+ *                          full name and a signed "pick" token per guest -- never an id,
+ *                          an address or anything else.
+ *   POST rsvp/lookup       { pick } (from search) or { first, last } -> the household:
+ *                          first names, current answers, and who may bring a plus-one,
+ *                          plus a signed token good for two hours.
  *   POST rsvp/submit       { token, guests: [...], email, message }
  *   A guest can only answer for their own household (the token names it), and a
  *   plus-one is only accepted for a guest who was given one.
@@ -26,6 +32,9 @@ import { addPayment, createExpense, loadContext, loadSettings, listExpenses, upd
 import { uploadReceipt } from "./google.js";
 
 const RSVP_TOKEN_TTL = 60 * 60 * 2;
+const PICK_TOKEN_TTL = 60 * 30;
+const SEARCH_LIMIT = 8;
+const SEARCH_MIN_LETTERS = 2;
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 async function body(request) {
@@ -84,7 +93,62 @@ async function householdForRsvp(env, householdId) {
   };
 }
 
+/** "Mary-Kate O'Neill" -> ["mary", "kate", "oneill"]. */
+export function nameWords(text) {
+  return String(text || "")
+    .split(/[\s-]+/)
+    .map(normalizeName)
+    .filter(Boolean);
+}
+
+/**
+ * Guests whose names match a partial query: each typed word must be the start of a
+ * different word in the guest's name. Guests matched on their first name sort first.
+ */
+export function searchGuests(guests, query, limit = SEARCH_LIMIT) {
+  const typed = nameWords(query);
+  if (typed.join("").length < SEARCH_MIN_LETTERS) return [];
+  const hits = [];
+  for (const g of guests) {
+    const words = nameWords(`${g.first_name} ${g.last_name}`);
+    const used = new Set();
+    let firstWordHit = false;
+    const ok = typed.every((t) => {
+      const i = words.findIndex((w, idx) => !used.has(idx) && w.startsWith(t));
+      if (i < 0) return false;
+      used.add(i);
+      if (i === 0) firstWordHit = true;
+      return true;
+    });
+    if (ok) hits.push({ g, rank: firstWordHit ? 0 : 1 });
+  }
+  hits.sort((a, b) => a.rank - b.rank
+    || String(a.g.first_name).localeCompare(String(b.g.first_name))
+    || String(a.g.last_name).localeCompare(String(b.g.last_name)));
+  return hits.slice(0, limit).map((h) => h.g);
+}
+
+async function rsvpSearch(env, input) {
+  const guests = await all(env, "SELECT id, first_name, last_name FROM guests");
+  const results = [];
+  for (const g of searchGuests(guests, input.q)) {
+    results.push({
+      name: `${String(g.first_name).trim()} ${String(g.last_name).trim()}`.trim(),
+      pick: await sign(env, { kind: "pick", g: g.id }, PICK_TOKEN_TTL),
+    });
+  }
+  return json({ results });
+}
+
 async function rsvpLookup(env, input) {
+  if (input.pick !== undefined) {
+    const pick = await verify(env, input.pick);
+    if (!pick || pick.kind !== "pick") return json({ error: "That search expired. Type your name again." }, 400);
+    const guest = await first(env, "SELECT household_id FROM guests WHERE id = ?", pick.g);
+    const household = guest ? await householdForRsvp(env, guest.household_id) : null;
+    if (!household) return json({ error: "We couldn't find that invitation any more. Please contact us." }, 404);
+    return json({ matches: [{ token: await sign(env, { kind: "rsvp", h: guest.household_id }, RSVP_TOKEN_TTL), ...household }] });
+  }
   const firstName = normalizeName(input.first);
   const lastName = normalizeName(input.last);
   if (!firstName || !lastName) return json({ error: "Enter your first and last name as they appear on your invitation." }, 400);
@@ -301,6 +365,7 @@ export async function handlePublicApi(route, request, env) {
     if (route.startsWith("rsvp/")) {
       const s = await loadSettings(env);
       if (!s.rsvp_open) return json({ error: "RSVPs are closed. Please contact us directly." }, 403);
+      if (route === "rsvp/search" && method === "POST") return rsvpSearch(env, await body(request));
       if (route === "rsvp/lookup" && method === "POST") return rsvpLookup(env, await body(request));
       if (route === "rsvp/submit" && method === "POST") return rsvpSubmit(env, await body(request));
     }

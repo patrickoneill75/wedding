@@ -17,7 +17,7 @@ import { sign } from "../src/auth.js";
 import { buildContext, drinksPlan, enrichExpense, guestCounts, mergeSettings, statusAfterPayment } from "../src/calc.js";
 import { toCsv } from "../src/sync.js";
 import { sqlValue } from "../src/importer.js";
-import { normalizeName } from "../src/public_api.js";
+import { normalizeName, searchGuests } from "../src/public_api.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, "fixtures", "sample_wedding.xlsx");
@@ -207,6 +207,27 @@ test("SQL literals escape quotes and refuse non-finite numbers", () => {
 
 test("name normalization ignores case, accents, apostrophes and stray spaces", () => {
   assert.equal(normalizeName(" O'Néill "), "oneill");
+});
+
+test("name search: each typed word must start a different word of the name", () => {
+  const guests = [
+    { id: 1, first_name: "Conor", last_name: "Marley" },
+    { id: 2, first_name: "Conner", last_name: "Moore" },
+    { id: 3, first_name: "Mary-Kate", last_name: "O'Neill" },
+    { id: 4, first_name: "Anna", last_name: "Mars" },
+  ];
+  const names = (q) => searchGuests(guests, q).map((g) => g.id);
+  assert.deepEqual(names("Con"), [2, 1], "first-name prefix finds both, alphabetically (Conner, Conor)");
+  assert.deepEqual(names("mar"), [3, 4, 1], "first-name hits (Mary-Kate) sort ahead of last-name hits (Anna Mars, Conor Marley)");
+  assert.deepEqual(names("con mar"), [1], "two words narrow it to one person");
+  assert.deepEqual(names("mar con"), [1], "word order doesn't matter");
+  assert.deepEqual(names("oneill"), [3], "apostrophes are ignored");
+  assert.deepEqual(names("kate"), [3], "hyphenated names match on either half");
+  assert.deepEqual(names("mar mar"), [], "one typed word can't match the same name word twice");
+  assert.deepEqual(names("c"), [], "one letter is too little to search on");
+  assert.deepEqual(names("  "), []);
+  const many = Array.from({ length: 20 }, (_, i) => ({ id: i, first_name: "Sam", last_name: `Smith${i}` }));
+  assert.equal(searchGuests(many, "sam").length, 8, "at most eight suggestions");
 });
 
 /* -------------------------------------------------------------------- auth tests -- */
@@ -510,6 +531,34 @@ test("RSVP lookup finds a household by name, forgiving case, apostrophes and sho
   assert.equal(tooShort.status, 404);
   const byPlusOne = await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Casey", last: "Guest" } });
   assert.equal(byPlusOne.status, 200, "a preloaded plus-one can find their host's invitation");
+});
+
+test("RSVP name search returns only names and picks, and a pick opens that guest's household", async () => {
+  const { env } = await rsvpSetup();
+  const r = await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "jor" } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.deepEqual(r.data.results.map((x) => x.name), ["Jordan Sample"]);
+  assert.deepEqual(Object.keys(r.data.results[0]).sort(), ["name", "pick"], "no ids, addresses or other fields");
+  const lookup = await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick: r.data.results[0].pick } });
+  assert.equal(lookup.status, 200, JSON.stringify(lookup.data));
+  assert.equal(lookup.data.matches.length, 1);
+  assert.equal(lookup.data.matches[0].guests[0].first_name, "Jordan");
+  assert.ok(lookup.data.matches[0].token);
+});
+
+test("RSVP lookup won't open a household from a made-up or plain-id pick", async () => {
+  const { env } = await rsvpSetup();
+  assert.equal((await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick: "1" } })).status, 400);
+  assert.equal((await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick: 1 } })).status, 400);
+  // A real token of a different kind (an RSVP token) isn't a pick either.
+  const rsvpToken = await sign(env, { kind: "rsvp", h: 1 }, 600);
+  assert.equal((await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick: rsvpToken } })).status, 400);
+});
+
+test("RSVP name search is off while RSVPs are closed", async () => {
+  const { env, api } = await rsvpSetup();
+  await api("/api/admin/settings", { method: "PUT", body: { rsvp_open: false } });
+  assert.equal((await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "jor" } })).status, 403);
 });
 
 test("RSVP lookup never exposes addresses, priority or budget fields", async () => {

@@ -52,7 +52,16 @@
   .choice input:checked + span { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
   .choice input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
   .plus { background: var(--wash); border-radius: 12px; padding: 14px 14px 2px; margin: 4px 0 12px; }
-  .match { display: block; width: 100%; text-align: left; margin-bottom: 10px; border-radius: 12px; }
+  .combo { position: relative; }
+  .combo input { font-size: 17px; padding: 12px 14px; }
+  .suggest { position: absolute; left: 0; right: 0; top: 100%; margin: 4px 0 0; padding: 6px; list-style: none; z-index: 5;
+             background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+             max-height: 340px; overflow-y: auto; }
+  .suggest li { padding: 10px 12px; border-radius: 8px; cursor: pointer; color: var(--ink); }
+  .suggest li b { font-weight: 700; }
+  .suggest li[aria-selected="true"], .suggest li:hover { background: var(--wash); }
+  .suggest li.note { color: var(--soft); cursor: default; font-size: 14px; }
+  .suggest li.note:hover { background: none; }
   .done { text-align: center; }
   .done ul { list-style: none; padding: 0; margin: 14px 0 20px; color: var(--soft); }
   [hidden] { display: none !important; }
@@ -69,21 +78,15 @@
 
   <form class="card" id="lookup">
     <h2>Find your invitation</h2>
-    <p class="help" id="lookupHelp">Enter your name as it appears on your invitation.</p>
-    <div class="two">
-      <label>First name <input type="text" name="first" autocomplete="given-name" required></label>
-      <label>Last name <input type="text" name="last" autocomplete="family-name" required></label>
+    <p class="help" id="lookupHelp">Start typing your first or last name, then pick yourself from the list.</p>
+    <div class="combo">
+      <label for="nameSearch" style="margin-bottom:0">Your name</label>
+      <input type="text" id="nameSearch" autocomplete="off" autocapitalize="words" spellcheck="false"
+             role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="nameList" placeholder="e.g. Conor">
+      <ul class="suggest" id="nameList" role="listbox" hidden></ul>
     </div>
-    <button class="primary" type="submit">Find my invitation</button>
     <p class="msg" id="lookupMsg"></p>
   </form>
-
-  <div class="card" id="choose" hidden>
-    <h2>Which invitation is yours?</h2>
-    <p class="help">We found more than one.</p>
-    <div id="matches"></div>
-    <button type="button" class="back">Search again</button>
-  </div>
 
   <form class="card" id="reply" hidden>
     <h2 id="greeting"></h2>
@@ -111,7 +114,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const cards = ["lookup", "choose", "reply", "done", "closed"];
+const cards = ["lookup", "reply", "done", "closed"];
 const show = (id) => cards.forEach((c) => { $(c).hidden = c !== id; });
 let current = null;
 
@@ -150,24 +153,121 @@ fetch("/api/public/info").then((r) => r.json()).then((info) => {
   if (!info.rsvp_open) show("closed");
 }).catch(() => {});
 
-$("lookup").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  const button = ev.target.querySelector("button");
-  button.disabled = true;
-  $("lookupMsg").textContent = "";
+/* ---- name search: type part of a first or last name, pick from the list ---- */
+const search = $("nameSearch");
+const list = $("nameList");
+let options = [];
+let active = -1;
+let searchSeq = 0;
+let searchTimer = null;
+const letters = (text) => text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z]/g, "");
+
+function closeList() {
+  list.hidden = true;
+  search.setAttribute("aria-expanded", "false");
+  search.removeAttribute("aria-activedescendant");
+}
+
+/** Bold the start of each name word the guest's typing matched. */
+function highlighted(name, typed) {
+  const words = typed.split(/[\s-]+/).map(letters).filter(Boolean);
+  return name.split(/(\s+|-)/).map((part) => {
+    const norm = letters(part);
+    const hit = words.find((w) => norm.startsWith(w));
+    if (!hit) return part;
+    // Walk the raw characters until the matched letters are covered (skips apostrophes).
+    let seen = 0, cut = 0;
+    while (cut < part.length && seen < hit.length) {
+      if (letters(part[cut])) seen++;
+      cut++;
+    }
+    return el("span", {}, el("b", {}, part.slice(0, cut)), part.slice(cut));
+  });
+}
+
+function renderList() {
+  if (!options.length) {
+    list.replaceChildren(el("li", { class: "note" }, "We can't find that name. Try how it's written on your invitation, or contact us."));
+  } else {
+    list.replaceChildren(...options.map((o, i) => el("li", {
+      id: `name-opt-${i}`, role: "option", "aria-selected": i === active ? "true" : "false",
+      // mousedown, not click, so the input doesn't lose focus and close the list first.
+      onmousedown: (e) => { e.preventDefault(); pick(i); },
+    }, ...highlighted(o.name, search.value))));
+  }
+  list.hidden = false;
+  search.setAttribute("aria-expanded", "true");
+  if (active >= 0) search.setAttribute("aria-activedescendant", `name-opt-${active}`);
+}
+
+async function runSearch() {
+  const q = search.value;
+  const mine = ++searchSeq;
   try {
-    const { matches } = await post("/api/public/rsvp/lookup", { first: ev.target.first.value, last: ev.target.last.value });
-    if (matches.length === 1) return openReply(matches[0]);
-    $("matches").replaceChildren(...matches.map((m) => el("button", { type: "button", class: "match", onclick: () => openReply(m) },
-      el("b", {}, m.greeting), el("div", { style: "color:var(--soft);font-size:14px" }, m.guests.map((g) => g.first_name).join(", ")))));
-    show("choose");
+    const { results } = await post("/api/public/rsvp/search", { q });
+    if (mine !== searchSeq) return; // a newer keystroke already searched
+    options = results;
+    active = results.length ? 0 : -1;
+    renderList();
+  } catch (error) {
+    if (mine === searchSeq) $("lookupMsg").textContent = error.message;
+  }
+}
+
+search.addEventListener("input", () => {
+  $("lookupMsg").textContent = "";
+  clearTimeout(searchTimer);
+  if (letters(search.value).length < 2) {
+    searchSeq++;
+    options = [];
+    closeList();
+    return;
+  }
+  searchTimer = setTimeout(runSearch, 180);
+});
+search.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    if (!options.length) return;
+    e.preventDefault();
+    active = (active + (e.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+    renderList();
+    list.children[active]?.scrollIntoView({ block: "nearest" });
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (active >= 0) pick(active);
+  } else if (e.key === "Escape") {
+    closeList();
+  }
+});
+search.addEventListener("blur", () => setTimeout(closeList, 120));
+search.addEventListener("focus", () => { if (options.length) renderList(); });
+$("lookup").addEventListener("submit", (ev) => ev.preventDefault());
+
+async function pick(i) {
+  const choice = options[i];
+  if (!choice) return;
+  search.value = choice.name;
+  closeList();
+  $("lookupMsg").textContent = "";
+  search.disabled = true;
+  try {
+    const { matches } = await post("/api/public/rsvp/lookup", { pick: choice.pick });
+    openReply(matches[0]);
   } catch (error) {
     $("lookupMsg").textContent = error.message;
   } finally {
-    button.disabled = false;
+    search.disabled = false;
   }
-});
-for (const b of document.querySelectorAll(".back")) b.addEventListener("click", () => show("lookup"));
+}
+
+for (const b of document.querySelectorAll(".back")) {
+  b.addEventListener("click", () => {
+    search.value = "";
+    options = [];
+    show("lookup");
+    search.focus();
+  });
+}
 
 function choice(name, value, current) {
   return el("div", { class: "choice", role: "radiogroup" },
