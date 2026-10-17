@@ -46,17 +46,30 @@ and prints the ID.)
      - `http://localhost:8787/api/auth/callback` (only if you'll run it locally)
    - Create, then copy the **Client ID** and **Client secret**.
 
-## 4. Add the Worker's secrets
+## 4. Add the secrets in GitHub and send them to Cloudflare
 
-Worker → **Settings → Variables and Secrets → Add**. Add each one as a **Secret**:
+The secrets live in GitHub, and a workflow hands them to the Worker. No terminal is
+needed.
 
-| Name | Value |
-|---|---|
-| `GOOGLE_CLIENT_ID` | from step 3 |
-| `GOOGLE_CLIENT_SECRET` | from step 3 |
-| `ADMIN_EMAILS` | both of your Google addresses, comma-separated, e.g. `you@gmail.com, partner@gmail.com` |
+1. **Make a Cloudflare API token:** Cloudflare → **My Profile → API Tokens → Create Token**.
+   Use the **Edit Cloudflare Workers** template, pick your account, and create it. Copy
+   the token: Cloudflare only shows it once.
+2. **Find your Account ID:** it's on the **Workers & Pages** overview, under **Account
+   details**.
+3. **Add five repository secrets** on GitHub: repo → **Settings → Secrets and variables →
+   Actions → New repository secret**:
 
-`ADMIN_EMAILS` is a secret rather than a plain variable only because this repo is public.
+   | Name | Value |
+   |---|---|
+   | `CLOUDFLARE_API_TOKEN` | the token from step 1 |
+   | `CLOUDFLARE_ACCOUNT_ID` | the ID from step 2 |
+   | `GOOGLE_CLIENT_ID` | from section 3 |
+   | `GOOGLE_CLIENT_SECRET` | from section 3 |
+   | `ADMIN_EMAILS` | both of your Google addresses, comma-separated, e.g. `you@gmail.com, partner@gmail.com` |
+
+4. **Run the workflow:** repo → **Actions → Set Cloudflare secrets → Run workflow**. Each
+   secret is sent to the `wedding` Worker and deployed straight away. Run it again any
+   time you change one of the values.
 
 Check it worked: open `YOUR_URL/api/config-check`. It should say `"ready": true`. It
 reports whether each secret is set, never its value.
@@ -95,5 +108,8 @@ npm test                # the test suite (Node 22.5+)
   (step 3). Publish it, then disconnect and reconnect Drive in Settings.
 - **`redirect_uri_mismatch` from Google**: the redirect URI in step 3 must match
   `YOUR_URL/api/auth/callback` exactly, including `https://` and with no trailing slash.
-- **Secrets set but `config-check` says false**: the secrets were added to a different
-  Worker. The dashboard Worker's name must match `"name"` in `wrangler.jsonc`.
+- **Secrets set but `config-check` says false**: check that the **Set Cloudflare secrets**
+  run finished green and didn't skip any steps (a skipped secret shows a yellow warning).
+  The Worker's name in the Cloudflare dashboard must match `"name"` in `wrangler.jsonc`.
+  Secrets added under the dashboard's **Settings → Build** section are only for builds,
+  and the running Worker never sees them.
