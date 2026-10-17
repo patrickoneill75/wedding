@@ -1081,14 +1081,96 @@ test("with no copy yet, the home page is the RSVP page", async () => {
   assert.equal((await call(env, "/rsvp/")).data, "asset", "/rsvp/ is the static RSVP page");
 });
 
-test("the daily refresh skips when the site was checked within the day", async () => {
-  const env = makeEnv();
-  const { scheduledSiteRefresh } = await import("../src/site.js");
-  const { setSetting } = await import("../src/db.js");
-  await call(env, "/api/auth/me");
-  await setSetting(env, "_site_status", { checked_at: new Date().toISOString() });
-  const r = await withFetch(() => { throw new Error("should not fetch"); }, () => scheduledSiteRefresh(env, `https://www.zola.com/wedding/${SLUG}`, ""));
-  assert.deepEqual(r, { skipped: true });
+const INGEST = "s3cret-ingest-value";
+const siteEnv = (extra = {}) => makeEnv({ ZOLA_URL: `https://www.zola.com/wedding/${SLUG}`, ZOLA_INGEST_SECRET: INGEST, ...extra });
+const ingest = (env, payload, secret = INGEST) => call(env, "/api/site/ingest", {
+  method: "POST", body: payload, headers: secret ? { authorization: `Bearer ${secret}` } : {},
+});
+
+test("the GitHub Action's routes need the shared secret", async () => {
+  const env = siteEnv();
+  assert.equal((await call(env, "/api/site/config")).status, 401);
+  assert.equal((await call(env, "/api/site/config", { headers: { authorization: "Bearer nope" } })).status, 401);
+  const ok = await call(env, "/api/site/config", { headers: { authorization: `Bearer ${INGEST}` } });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.zola_url, `https://www.zola.com/wedding/${SLUG}`);
+  assert.equal((await ingest(env, { pages: [] }, "nope")).status, 401);
+  // Not set up at all: say so rather than accept anything.
+  assert.equal((await call(makeEnv(), "/api/site/config", { headers: { authorization: "Bearer " } })).status, 503);
+});
+
+test("a site built on GitHub is stored and served, and resending it isn't a change", async () => {
+  const { buildSite } = await import("../src/site.js");
+  const env = siteEnv();
+  const built = await buildSite({ zolaUrl: `https://www.zola.com/wedding/${SLUG}`, fetchPage: async (url) => {
+    if (url.endsWith("fonts.css")) return "";
+    if (url.endsWith("/travel")) return zolaPage({ heading: "Getting there" });
+    if (url.endsWith(SLUG)) return zolaPage();
+    throw new Error(`Zola returned 404 for ${url}`);
+  } });
+  const first = await ingest(env, JSON.parse(JSON.stringify(built)));
+  assert.equal(first.status, 200, JSON.stringify(first.data));
+  assert.equal(first.data.status.source, "github");
+  assert.equal(first.data.status.changed, true);
+  assert.ok((await call(env, "/travel")).data.includes("Getting there"));
+  const again = await ingest(env, JSON.parse(JSON.stringify(built)));
+  assert.equal(again.data.status.changed, false);
+});
+
+test("the ingest route only accepts pages the site would make itself", async () => {
+  const env = siteEnv();
+  const page = (path, extra = {}) => ({ path, title: "t", html: "<p>x</p>", hash: "a".repeat(64), ...extra });
+  for (const [payload, why] of [
+    [{ pages: [page("/admin")] }, "a reserved path"],
+    [{ pages: [page("/"), page("/../etc")] }, "a path that isn't a simple page name"],
+    [{ pages: [page("/travel")] }, "no home page"],
+    [{ pages: [page("/", { hash: "zz" })] }, "a bad hash"],
+    [{ pages: [page("/", { html: "x".repeat(1_500_001) })] }, "oversized HTML"],
+    [{ pages: [] }, "no pages"],
+  ]) {
+    assert.equal((await ingest(env, payload)).status, 400, why);
+  }
+  assert.equal((await call(env, "/")).status, 302, "nothing was stored");
+});
+
+test("when GitHub can't reach Zola it reports why, and the last copy stays up", async () => {
+  const env = siteEnv();
+  await ingest(env, { pages: [{ path: "/", title: "t", html: "<p>home</p>", hash: "b".repeat(64) }] });
+  const r = await ingest(env, { error: "Zola returned 403 for https://www.zola.com/wedding/x" });
+  assert.equal(r.status, 200);
+  assert.match(r.data.status.error, /GitHub couldn't refresh it: Zola returned 403/);
+  assert.equal((await call(env, "/")).data, "<p>home</p>");
+});
+
+test("Refresh from Zola starts the GitHub workflow when it's set up, without fetching Zola itself", async () => {
+  const env = siteEnv({ GH_DISPATCH_TOKEN: "gh-token", GITHUB_REPO: "owner/wedding" });
+  const api = await adminClient(env);
+  const r = await withFetch((url, init) => {
+    assert.equal(url, "https://api.github.com/repos/owner/wedding/actions/workflows/zola-refresh.yml/dispatches");
+    assert.equal(init.method, "POST");
+    assert.equal(init.headers.authorization, "Bearer gh-token");
+    assert.deepEqual(JSON.parse(init.body), { ref: "main" });
+    return new Response(null, { status: 204 });
+  }, async (calls) => {
+    const res = await api("/api/admin/site/refresh", { method: "POST" });
+    assert.equal(calls.length, 1, "only GitHub is called");
+    return res;
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.requested, true);
+  assert.ok(r.data.status.requested_at);
+  assert.equal((await api("/api/admin/site/status")).data.via_github, true);
+  const refused = await withFetch(() => new Response("Bad credentials", { status: 401 }), () => api("/api/admin/site/refresh", { method: "POST" }));
+  assert.equal(refused.status, 400);
+  assert.match(refused.data.error, /PANEL_GITHUB_TOKEN/);
+});
+
+test("without the GitHub setup, a 403 from Zola explains what to set up", async () => {
+  const env = siteEnv();
+  const api = await adminClient(env);
+  const r = await withFetch(() => new Response("blocked", { status: 403 }), () => api("/api/admin/site/refresh", { method: "POST" }));
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /refuses requests from Cloudflare/);
 });
 
 test("the font route only serves font files from Zola's font folder", async () => {

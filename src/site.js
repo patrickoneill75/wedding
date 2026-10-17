@@ -36,7 +36,6 @@ const ZOLA_ORIGIN = "https://www.zola.com";
 const ZOLA_CDN = "https://d1tntvpcrzvon2.cloudfront.net";
 const FONTS_CSS = `${ZOLA_CDN}/static-assets/fonts/stylesheets/fonts.css`;
 const MAX_PAGES = 15;
-const REFRESH_EVERY_MS = 23.5 * 60 * 60 * 1000;
 // Paths the copy can never take over.
 const RESERVED = new Set(["admin", "api", "rsvp", "submit", "_site", "favicon.svg"]);
 const BROWSER_HEADERS = {
@@ -468,7 +467,7 @@ export function siteSlug(url) {
   return m ? m[1] : null;
 }
 
-async function fetchText(url) {
+export async function fetchText(url) {
   const response = await fetch(url, { headers: BROWSER_HEADERS, redirect: "follow" });
   if (!response.ok) throw new Error(`Zola returned ${response.status} for ${url}`);
   return response.text();
@@ -479,98 +478,172 @@ async function sha256(text) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Fetch every page of the Zola site, clean it, and store what changed. */
-export async function refreshSite(env, { zolaUrl, rsvpColor = "" }) {
+/**
+ * Fetch every page of the Zola site and clean it. Needs no database, so it runs both
+ * in the Worker and in the GitHub Action (scripts/zola_refresh.mjs) -- Zola refuses
+ * requests from Cloudflare's servers, so in production the Action does the fetching
+ * and hands the result to ingestSite(). Returns { pages: [{ path, title, html, hash,
+ * source_url }], failed: [path], warnings: [string] }; throws if the home page fails.
+ */
+export async function buildSite({ zolaUrl, rsvpColor = "", fetchPage = fetchText }) {
+  const slug = siteSlug(zolaUrl);
+  if (!slug) throw new Error("Set your Zola website address in Settings (https://www.zola.com/wedding/your-site).");
+  const homeHtml = await fetchPage(`${ZOLA_ORIGIN}/wedding/${slug}`);
+
+  // The site's own pages, from its menu, in menu order.
+  const keys = [];
+  for (const n of elements(parseHtml(homeHtml), (n) => n.tag === "a")) {
+    const key = zolaPageKey(attr(n, "href"), slug);
+    if (key && !keys.includes(key) && localPathFor(key, slug).startsWith("/") && key !== "rsvp") keys.push(key);
+  }
+  const pages = new Set(keys.slice(0, MAX_PAGES - 1));
+
+  let fontsCss = "";
+  try {
+    fontsCss = await fetchPage(FONTS_CSS);
+  } catch {
+    /* fonts fall back to the browser's serif; not worth failing the refresh over */
+  }
+
+  const fetchedAt = Date.now();
+  const warnings = [];
+  const failed = [];
+  const sources = [["", homeHtml]];
+  for (const key of pages) {
+    try {
+      sources.push([key, await fetchPage(`${ZOLA_ORIGIN}/wedding/${slug}/${key}`)]);
+    } catch (error) {
+      // One broken page keeps its last copy; it shouldn't hold back the others.
+      failed.push(localPathFor(key, slug));
+      warnings.push(`${localPathFor(key, slug)}: couldn't fetch it this time (${error.message}), so the previous copy stays.`);
+    }
+  }
+
+  const built = [];
+  for (const [key, source] of sources) {
+    const path = localPathFor(key, slug);
+    const page = cleanPage(source, { slug, pages, fetchedAt, rsvpColor, currentPath: path, fontCss: fontFacesFor(fontsCss, source) });
+    for (const w of page.warnings) warnings.push(`${path}: ${w}`);
+    built.push({
+      path,
+      title: page.title,
+      html: page.html,
+      hash: await sha256(page.hashSource),
+      source_url: `${ZOLA_ORIGIN}/wedding/${slug}${key ? `/${key}` : ""}`,
+    });
+  }
+  return { pages: built, failed, warnings };
+}
+
+/** Store a built site, only moving changed_at for pages whose content changed. */
+export async function storeSite(env, built, extra = {}) {
   const startedAt = new Date().toISOString();
   const previous = (await getSetting(env, "_site_status")) || {};
-  const slug = siteSlug(zolaUrl);
+  const existing = new Map((await all(env, "SELECT path, content_hash, changed_at FROM site_pages")).map((r) => [r.path, r]));
+  const stored = [];
+  let anyChange = false;
+  for (const page of built.pages) {
+    const before = existing.get(page.path);
+    const changed = !before || before.content_hash !== page.hash;
+    if (changed) anyChange = true;
+    const changedAt = changed ? startedAt : before.changed_at;
+    await run(
+      env,
+      `INSERT INTO site_pages (path, title, html, source_url, content_hash, fetched_at, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(path) DO UPDATE SET title = excluded.title, html = excluded.html, source_url = excluded.source_url,
+         content_hash = excluded.content_hash, fetched_at = excluded.fetched_at, changed_at = excluded.changed_at`,
+      page.path, page.title, page.html, page.source_url, page.hash, startedAt, changedAt
+    );
+    stored.push({ path: page.path, title: page.title, changed_at: changedAt });
+  }
+  // Pages Zola no longer has.
+  const keep = new Set([...stored.map((p) => p.path), ...built.failed]);
+  for (const path of existing.keys()) {
+    if (!keep.has(path)) {
+      await run(env, "DELETE FROM site_pages WHERE path = ?", path);
+      anyChange = true;
+    }
+  }
+  const status = {
+    ...extra,
+    checked_at: startedAt,
+    changed_at: anyChange ? startedAt : previous.changed_at || startedAt,
+    requested_at: previous.requested_at || null,
+    error: null,
+    error_at: null,
+    warnings: built.warnings,
+    pages: stored,
+    changed: anyChange,
+  };
+  await setSetting(env, "_site_status", status);
+  return status;
+}
+
+/** Record a failed refresh; the last good copy stays up. */
+export async function recordSiteError(env, message, extra = {}) {
+  const now = new Date().toISOString();
+  const previous = (await getSetting(env, "_site_status")) || {};
+  const status = { ...previous, ...extra, checked_at: now, error: String(message).slice(0, 500), error_at: now };
+  await setSetting(env, "_site_status", status);
+  return status;
+}
+
+/** Fetch, clean and store from inside the Worker (works where Zola allows it). */
+export async function refreshSite(env, { zolaUrl, rsvpColor = "" }) {
   try {
-    if (!slug) throw new Error("Set your Zola website address in Settings (https://www.zola.com/wedding/your-site).");
-    const homeHtml = await fetchText(`${ZOLA_ORIGIN}/wedding/${slug}`);
-
-    // The site's own pages, from its menu, in menu order.
-    const keys = [];
-    for (const n of elements(parseHtml(homeHtml), (n) => n.tag === "a")) {
-      const key = zolaPageKey(attr(n, "href"), slug);
-      if (key && !keys.includes(key) && localPathFor(key, slug).startsWith("/") && key !== "rsvp") keys.push(key);
-    }
-    const pages = new Set(keys.slice(0, MAX_PAGES - 1));
-
-    let fontsCss = "";
-    try {
-      fontsCss = await fetchText(FONTS_CSS);
-    } catch {
-      /* fonts fall back to the browser's serif; not worth failing the refresh over */
-    }
-
-    const fetchedAt = Date.now();
-    const warnings = [];
-    const sources = [["", homeHtml]];
-    const failed = new Set();
-    for (const key of pages) {
-      try {
-        sources.push([key, await fetchText(`${ZOLA_ORIGIN}/wedding/${slug}/${key}`)]);
-      } catch (error) {
-        // One broken page keeps its last copy; it shouldn't hold back the others.
-        failed.add(localPathFor(key, slug));
-        warnings.push(`${localPathFor(key, slug)}: couldn't fetch it this time (${error.message}), so the previous copy stays.`);
-      }
-    }
-
-    const existing = new Map((await all(env, "SELECT path, content_hash, changed_at FROM site_pages")).map((r) => [r.path, r]));
-    const stored = [];
-    let anyChange = false;
-    for (const [key, source] of sources) {
-      const path = localPathFor(key, slug);
-      const page = cleanPage(source, { slug, pages, fetchedAt, rsvpColor, currentPath: path, fontCss: fontFacesFor(fontsCss, source) });
-      const hash = await sha256(page.hashSource);
-      const before = existing.get(path);
-      const changed = !before || before.content_hash !== hash;
-      if (changed) anyChange = true;
-      const changedAt = changed ? startedAt : before.changed_at;
-      await run(
-        env,
-        `INSERT INTO site_pages (path, title, html, source_url, content_hash, fetched_at, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(path) DO UPDATE SET title = excluded.title, html = excluded.html, source_url = excluded.source_url,
-           content_hash = excluded.content_hash, fetched_at = excluded.fetched_at, changed_at = excluded.changed_at`,
-        path, page.title, page.html, `${ZOLA_ORIGIN}/wedding/${slug}${key ? `/${key}` : ""}`, hash, startedAt, changedAt
-      );
-      for (const w of page.warnings) warnings.push(`${path}: ${w}`);
-      stored.push({ path, title: page.title, changed_at: changedAt });
-    }
-    // Pages Zola no longer has.
-    const keep = new Set([...stored.map((p) => p.path), ...failed]);
-    for (const path of existing.keys()) {
-      if (!keep.has(path)) {
-        await run(env, "DELETE FROM site_pages WHERE path = ?", path);
-        anyChange = true;
-      }
-    }
-
-    const status = {
-      checked_at: startedAt,
-      changed_at: anyChange ? startedAt : previous.changed_at || startedAt,
-      error: null,
-      error_at: null,
-      warnings,
-      pages: stored,
-      changed: anyChange,
-    };
-    await setSetting(env, "_site_status", status);
-    return status;
+    return await storeSite(env, await buildSite({ zolaUrl, rsvpColor }), { source: "worker" });
   } catch (error) {
-    const status = { ...previous, checked_at: startedAt, error: error.message, error_at: startedAt };
-    await setSetting(env, "_site_status", status);
-    throw error;
+    const blocked = /returned 403/.test(error.message)
+      ? " Zola refuses requests from Cloudflare's servers; set up the GitHub refresh in SETUP.md so GitHub fetches it instead."
+      : "";
+    await recordSiteError(env, error.message + blocked, { source: "worker" });
+    throw new Error(error.message + blocked);
   }
 }
 
-/** Cron entry: refresh when the last check is more than a day old. */
-export async function scheduledSiteRefresh(env, zolaUrl, rsvpColor) {
-  if (!siteSlug(zolaUrl)) return { skipped: true };
-  const status = (await getSetting(env, "_site_status")) || {};
-  if (status.checked_at && Date.now() - Date.parse(status.checked_at) < REFRESH_EVERY_MS) return { skipped: true };
-  return refreshSite(env, { zolaUrl, rsvpColor });
+/**
+ * A site built by the GitHub Action. Checked strictly, since it arrives over the
+ * network: only page paths we'd make ourselves, bounded sizes, a hex hash.
+ */
+export async function ingestSite(env, payload) {
+  if (payload && typeof payload.error === "string") return recordSiteError(env, `GitHub couldn't refresh it: ${payload.error}`, { source: "github" });
+  const pages = Array.isArray(payload?.pages) ? payload.pages : null;
+  if (!pages || !pages.length || pages.length > MAX_PAGES) throw new Error("Expected 1 to 15 pages.");
+  const clean = pages.map((p) => {
+    if (!p || typeof p.html !== "string" || p.html.length > 1_500_000) throw new Error("Each page needs its HTML (under 1.5 MB).");
+    if (typeof p.path !== "string" || !(p.path === "/" || (/^\/[a-z0-9-]+$/.test(p.path) && !RESERVED.has(p.path.slice(1))))) {
+      throw new Error(`Not a page path the site can serve: ${p.path}`);
+    }
+    if (typeof p.hash !== "string" || !/^[0-9a-f]{64}$/.test(p.hash)) throw new Error("Each page needs its content hash.");
+    return { path: p.path, html: p.html, hash: p.hash, title: String(p.title || "").slice(0, 300), source_url: String(p.source_url || "").slice(0, 300) };
+  });
+  if (!clean.some((p) => p.path === "/")) throw new Error("The home page is missing.");
+  const failed = (Array.isArray(payload.failed) ? payload.failed : []).filter((p) => typeof p === "string").slice(0, MAX_PAGES);
+  const warnings = (Array.isArray(payload.warnings) ? payload.warnings : []).map((w) => String(w).slice(0, 500)).slice(0, 50);
+  return storeSite(env, { pages: clean, failed, warnings }, { source: "github" });
+}
+
+/** Ask GitHub to run the refresh workflow now (the "Refresh from Zola" button). */
+export async function requestGithubRefresh(env) {
+  const response = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/zola-refresh.yml/dispatches`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`,
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28",
+      "user-agent": "wedding-planner-worker",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ ref: "main" }),
+  });
+  if (response.status !== 204) {
+    const text = (await response.text()).slice(0, 300);
+    throw new Error(`GitHub wouldn't start the refresh (${response.status}). Check PANEL_GITHUB_TOKEN in SETUP.md. ${text}`);
+  }
+  const previous = (await getSetting(env, "_site_status")) || {};
+  const status = { ...previous, requested_at: new Date().toISOString() };
+  await setSetting(env, "_site_status", status);
+  return status;
 }
 
 /* ------------------------------------------------------------------- serving -- */

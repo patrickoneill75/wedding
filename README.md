@@ -5,7 +5,8 @@ A Cloudflare Worker with two sides:
 - **Public**:
   - The home page (`/`, `/travel`, …) is a copy of our Zola wedding website, refreshed
     from Zola once a day (or with **Refresh from Zola** in Settings), with Zola's
-    branding taken off and an RSVP button at the top.
+    branding taken off and an RSVP button at the top. Zola blocks Cloudflare's servers, so
+    a GitHub Action (`.github/workflows/zola-refresh.yml`) does the copying.
   - The RSVP page at `/rsvp/`, where guests find their name and answer for their
     household.
   - An unlisted expense form at `/submit/?k=…` for the two of us to log expenses,
@@ -14,7 +15,8 @@ A Cloudflare Worker with two sides:
   - **Dashboard**: guest counts, projected / paid / owed / overdue, upcoming payments,
     a pie of projected cost by category or subcategory, and an estimated vs. actual cost
     table by category, subcategory and item.
-  - **Expenses**: every budget line moving through
+  - **Expenses**: every budget line (with purchases under it when it's bought in
+    pieces) moving through
     Estimate → Quote → Booked → Partially paid → Paid (stages can be skipped, or an item
     cancelled), with price history, payments, who paid, due dates, and contracts and
     receipts in Drive.
@@ -55,7 +57,8 @@ src/store.js       expense/payment writes with history and status moves
 src/calc.js        the budget math (pure; most tests live here)
 src/google.js      Google Drive: tokens, folder picker, uploads
 src/sync.js        CSV exports and the Drive sync (cron every 5 minutes)
-src/site.js        the Zola website copy: fetch, clean, store, serve (daily via the cron)
+src/site.js        the Zola website copy: fetch, clean, store, serve
+scripts/zola_refresh.mjs  runs src/site.js on GitHub and sends the pages to the site
 src/importer.js    one-time import of Wedding_Data.xlsx
 src/xlsx.js        a minimal .xlsx reader (no dependencies)
 src/db.js          D1 schema (self-migrating) and query helpers

@@ -61,7 +61,7 @@ import {
 } from "./google.js";
 import { syncToDrive } from "./sync.js";
 import { importWorkbook } from "./importer.js";
-import { refreshSite, siteSlug } from "./site.js";
+import { refreshSite, requestGithubRefresh, siteSlug } from "./site.js";
 
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
@@ -509,9 +509,17 @@ export async function handleAdminApi(route, request, env) {
     if (route === "site/status" && method === "GET") {
       const s = await loadSettings(env);
       const pages = await all(env, "SELECT path, title, fetched_at, changed_at FROM site_pages ORDER BY path");
-      return json({ zola_url: s.zola_url || env.ZOLA_URL || "", status: (await getSetting(env, "_site_status")) || null, pages });
+      return json({
+        zola_url: s.zola_url || env.ZOLA_URL || "",
+        status: (await getSetting(env, "_site_status")) || null,
+        pages,
+        via_github: Boolean(env.GH_DISPATCH_TOKEN && env.GITHUB_REPO),
+      });
     }
+    // With the GitHub setup, GitHub does the fetching (Zola blocks Cloudflare) and this
+    // returns at once with requested: true; Settings then watches for the result.
     if (route === "site/refresh" && method === "POST") {
+      if (env.GH_DISPATCH_TOKEN && env.GITHUB_REPO) return json({ ok: true, requested: true, status: await requestGithubRefresh(env) });
       const s = await loadSettings(env);
       const status = await refreshSite(env, { zolaUrl: s.zola_url || env.ZOLA_URL, rsvpColor: s.rsvp_button_color });
       return json({ ok: true, status });

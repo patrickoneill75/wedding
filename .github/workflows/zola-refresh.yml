@@ -1,0 +1,36 @@
+name: Refresh website from Zola
+
+# Copies the Zola wedding website onto the site's home page. Zola refuses requests from
+# Cloudflare's servers, so GitHub fetches and cleans the pages (scripts/zola_refresh.mjs)
+# and hands them to the Worker. Runs daily, from the Actions tab, or from the
+# "Refresh from Zola" button in the control panel's Settings.
+#
+# Requires the repository secret ZOLA_INGEST_SECRET (the Worker gets the same value via
+# the "Set Cloudflare secrets" workflow). The site's address defaults to the workers.dev
+# one below; set a repository variable SITE_URL to change it.
+
+on:
+  schedule:
+    - cron: "41 10 * * *"   # daily, early morning in Indiana
+  workflow_dispatch:
+
+concurrency:
+  group: zola-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Copy the Zola site to the website
+        env:
+          SITE_URL: ${{ vars.SITE_URL || 'https://wedding.patrick-j-oneill.workers.dev' }}
+          ZOLA_INGEST_SECRET: ${{ secrets.ZOLA_INGEST_SECRET }}
+        run: node scripts/zola_refresh.mjs

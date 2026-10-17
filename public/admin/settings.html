@@ -59,8 +59,8 @@
   <form class="card" id="siteForm">
     <h2>Website (copied from Zola)</h2>
     <p class="desc">The home page is a copy of your Zola wedding website with Zola's branding taken off and an RSVP button at
-      the top. It checks Zola once a day and picks up any changes; use <b>Refresh from Zola</b> after you edit your Zola site
-      to update it right away.</p>
+      the top. GitHub copies it once a day (Zola blocks Cloudflare's servers, so GitHub does the fetching); use
+      <b>Refresh from Zola</b> after you edit your Zola site to update it right away.</p>
     <div class="fields">
       <label class="field" style="grid-column: span 2">Zola website address
         <input name="zola_url" placeholder="https://www.zola.com/wedding/your-site"></label>
@@ -335,7 +335,7 @@ async function openPicker(body) {
 const siteForm = document.getElementById("siteForm");
 const siteMsg = document.getElementById("siteMsg");
 async function renderSite() {
-  const { zola_url, status, pages } = await api("/api/admin/site/status");
+  const { zola_url, status, pages, via_github } = await api("/api/admin/site/status");
   siteForm.elements.zola_url.value = state.settings.zola_url || zola_url || "";
   siteForm.elements.rsvp_button_color.value = state.settings.rsvp_button_color || "";
   if (state.settings.rsvp_button_color) document.getElementById("rsvpColorPick").value = state.settings.rsvp_button_color;
@@ -347,7 +347,8 @@ async function renderSite() {
   }
   const failedLast = status.error && (!status.changed_at || status.error_at >= status.checked_at);
   box.replaceChildren(
-    h("p", { style: "margin:0 0 6px" }, `Last checked ${when(status.checked_at)} · last changed ${when(status.changed_at)}`),
+    h("p", { style: "margin:0 0 6px" }, `Last checked ${when(status.checked_at)}${status.source === "github" ? " by GitHub" : ""} · last changed ${when(status.changed_at)}`),
+    via_github ? "" : h("p", { class: "muted", style: "margin:0 0 6px" }, "The button fetches from Cloudflare until PANEL_GITHUB_TOKEN is set up (SETUP.md), and Zola blocks that. The daily GitHub copy still runs."),
     failedLast ? h("p", { class: "msg err", style: "margin:0 0 6px" }, `The last check failed: ${status.error} The previous copy is still up.`) : "",
     ...(status.warnings || []).map((w) => h("p", { class: "msg err", style: "margin:0 0 6px" }, w)),
     pages.length
@@ -356,11 +357,32 @@ async function renderSite() {
   );
 }
 document.getElementById("rsvpColorPick").addEventListener("input", (ev) => { siteForm.elements.rsvp_button_color.value = ev.target.value; });
+let watching = null;
 async function refreshSite() {
+  clearInterval(watching);
   setMsg(siteMsg, "Copying your Zola website…");
   try {
-    const { status } = await api("/api/admin/site/refresh", { method: "POST" });
-    setMsg(siteMsg, status.changed ? "Updated: the website now matches Zola." : "Checked: nothing has changed on Zola since the last copy.", "ok");
+    const r = await api("/api/admin/site/refresh", { method: "POST" });
+    if (!r.requested) {
+      setMsg(siteMsg, r.status.changed ? "Updated: the website now matches Zola." : "Checked: nothing has changed on Zola since the last copy.", "ok");
+      return renderSite();
+    }
+    // GitHub does the fetching; watch for its result (usually a minute or two).
+    const asked = r.status.requested_at;
+    setMsg(siteMsg, "Asked GitHub to copy your Zola site. This usually takes a minute or two; this page updates when it's done.");
+    const started = Date.now();
+    watching = setInterval(async () => {
+      const { status } = await api("/api/admin/site/status");
+      if (status?.checked_at && status.checked_at > asked) {
+        clearInterval(watching);
+        if (status.error && status.error_at >= status.checked_at) setMsg(siteMsg, status.error, "err");
+        else setMsg(siteMsg, status.changed ? "Updated: the website now matches Zola." : "Checked: nothing has changed on Zola since the last copy.", "ok");
+        renderSite();
+      } else if (Date.now() - started > 5 * 60 * 1000) {
+        clearInterval(watching);
+        setMsg(siteMsg, "GitHub hasn't reported back after 5 minutes. Check the \"Refresh website from Zola\" run in the repo's Actions tab.", "err");
+      }
+    }, 10000);
   } catch (error) {
     setMsg(siteMsg, error.message, "err");
   }
