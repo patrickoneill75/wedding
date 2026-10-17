@@ -122,6 +122,36 @@ const MIGRATIONS = [
      )`,
     `CREATE INDEX IF NOT EXISTS attachments_expense ON attachments(expense_id)`,
   ],
+  // 2 -- invite type per guest: "ceremony" or "reception". Seeded from the old
+  // ceremony flag (the spreadsheet's Ceremony column), which is no longer used.
+  [
+    `ALTER TABLE guests ADD COLUMN invite_type TEXT NOT NULL DEFAULT 'reception'`,
+    `UPDATE guests SET invite_type = 'ceremony' WHERE ceremony = 1`,
+  ],
+  // 3 -- the spreadsheet listed plus-ones as their own rows ("Guest" / "Guest Conor
+  // Smith"). Turn each into a plus-one allowance on its host -- the guest named after
+  // "Guest", or failing that the first real guest in the household -- with no name,
+  // so whoever RSVPs types it in. Then drop the placeholder row. A placeholder alone in
+  // its household has no host and is left alone.
+  [
+    `UPDATE guests SET plus_one_allowed = 1, plus_one_name = NULL WHERE id IN (
+       SELECT COALESCE(
+         (SELECT h.id FROM guests h
+           WHERE h.household_id = p.household_id
+             AND NOT (lower(trim(h.first_name)) = 'guest' AND lower(trim(h.last_name)) LIKE 'guest%')
+             AND lower(trim(h.first_name) || ' ' || trim(h.last_name)) = lower(trim(substr(trim(p.last_name), 7)))
+           ORDER BY h.id LIMIT 1),
+         (SELECT MIN(h.id) FROM guests h
+           WHERE h.household_id = p.household_id
+             AND NOT (lower(trim(h.first_name)) = 'guest' AND lower(trim(h.last_name)) LIKE 'guest%')))
+       FROM guests p
+       WHERE lower(trim(p.first_name)) = 'guest' AND lower(trim(p.last_name)) LIKE 'guest%')`,
+    `DELETE FROM guests
+      WHERE lower(trim(first_name)) = 'guest' AND lower(trim(last_name)) LIKE 'guest%'
+        AND EXISTS (SELECT 1 FROM guests h
+                     WHERE h.household_id = guests.household_id
+                       AND NOT (lower(trim(h.first_name)) = 'guest' AND lower(trim(h.last_name)) LIKE 'guest%'))`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

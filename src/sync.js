@@ -53,7 +53,7 @@ export async function buildExports(env) {
     wedding_party: yesNo(g.wedding_party),
     immediate_family: yesNo(g.immediate_family),
     extended_family: yesNo(g.extended_family),
-    ceremony: yesNo(g.ceremony),
+    invite_type: g.invite_type,
     rsvp: g.rsvp,
     dietary: g.dietary,
     plus_one_allowed: yesNo(g.plus_one_allowed),

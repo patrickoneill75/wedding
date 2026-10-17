@@ -41,6 +41,7 @@ export const STATUS_LABELS = {
 export const PRIORITIES = ["High", "Medium", "Low"];
 export const SIDES = ["Bride", "Groom"];
 export const RSVP_VALUES = ["pending", "yes", "no"];
+export const INVITE_TYPES = ["ceremony", "reception"];
 
 export const QUANTITY_SOURCES = {
   guests: "Guest count (weighted or confirmed)",
@@ -118,6 +119,7 @@ export function guestCounts(guests, settings) {
   const households = new Set();
   const bySide = { Bride: 0, Groom: 0 };
   const byPriority = { High: 0, Medium: 0, Low: 0 };
+  const byInviteType = { ceremony: 0, reception: 0 };
   // Invitees (plus-ones included, at their host's priority) -- what the weights multiply.
   const inviteesByPriority = { High: 0, Medium: 0, Low: 0 };
 
@@ -133,6 +135,7 @@ export function guestCounts(guests, settings) {
     weightedSum += weightOf(guest.priority);
     if (guest.side in bySide) bySide[guest.side]++;
     if (guest.priority in byPriority) byPriority[guest.priority]++;
+    byInviteType[guest.invite_type === "ceremony" ? "ceremony" : "reception"]++;
     tally(guest.rsvp);
     const weightKey = guest.priority in inviteesByPriority ? guest.priority : "High";
     inviteesByPriority[weightKey] += guest.plus_one_allowed ? 2 : 1;
@@ -156,6 +159,7 @@ export function guestCounts(guests, settings) {
     households: households.size,
     by_side: bySide,
     by_priority: byPriority,
+    by_invite_type: byInviteType,
     invitees_by_priority: inviteesByPriority,
   };
 }

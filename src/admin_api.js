@@ -15,6 +15,8 @@
  *   POST   households / PUT households/:id / DELETE households/:id
  *   POST   guests / PUT guests/:id / DELETE guests/:id
  *   POST   households/bulk             set a tracking flag on many households at once
+ *   POST   households/reset-rsvp       { ids } -- clear RSVPs back to "awaiting reply"
+ *   POST   guests/bulk                 { household_ids, field: "invite_type", value }
  *   GET    settings / PUT settings
  *   POST   basis                       { basis: "confirmed" | "weighted" }
  *   GET    form-link / POST form-link  the unlisted expense form's URL; POST rotates it
@@ -27,6 +29,7 @@ import { json, randomToken, requireAdmin, startOAuth } from "./auth.js";
 import { all, first, run, getSetting, setSetting, markDirty, updateClause } from "./db.js";
 import {
   DEFAULT_SETTINGS,
+  INVITE_TYPES,
   PRIORITIES,
   QUANTITY_SOURCES,
   RSVP_VALUES,
@@ -68,6 +71,7 @@ async function body(request) {
 }
 
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+const idList = (v) => (Array.isArray(v) ? v : []).map(Number).filter(Number.isInteger);
 const bool = (v) => (v === true || v === 1 || v === "1" || v === "true" || v === "on" ? 1 : 0);
 const textOrNull = (v) => {
   if (v === null || v === undefined) return null;
@@ -80,7 +84,7 @@ const textOrNull = (v) => {
 const HOUSEHOLD_TEXT = ["code", "display_name", "greeting", "address1", "address2", "city", "state", "zip", "country", "email", "phone", "gift", "rsvp_message", "notes"];
 const HOUSEHOLD_FLAGS = ["save_the_date_sent", "invite_sent", "gift_received", "thank_you_sent"];
 const GUEST_TEXT = ["first_name", "last_name", "plus_one_name", "dietary", "plus_one_dietary", "table_name", "notes"];
-const GUEST_FLAGS = ["wedding_party", "immediate_family", "extended_family", "ceremony", "plus_one_allowed"];
+const GUEST_FLAGS = ["wedding_party", "immediate_family", "extended_family", "plus_one_allowed"];
 
 function cleanHousehold(input) {
   const patch = Object.create(null);
@@ -108,6 +112,10 @@ function cleanGuest(input) {
       if (!RSVP_VALUES.includes(input[key])) throw new Error(`RSVP must be ${RSVP_VALUES.join(", ")}.`);
       patch[key] = input[key];
     }
+  }
+  if (has(input, "invite_type")) {
+    if (!INVITE_TYPES.includes(input.invite_type)) throw new Error(`Invite type must be ${INVITE_TYPES.join(" or ")}.`);
+    patch.invite_type = input.invite_type;
   }
   if (has(input, "sort_order")) patch.sort_order = Number(input.sort_order) || 0;
   return patch;
@@ -297,10 +305,32 @@ export async function handleAdminApi(route, request, env) {
     }
 
     if (parts[0] === "households") {
+      // Back to "awaiting reply", as if they never answered: every guest's and plus-one's
+      // answer, what the RSVP form filled in (plus-one name, dietary needs, the message),
+      // and the RSVP time, so the RSVP page stops saying "you've already replied".
+      // Plus-one allowances and the household's email stay.
+      if (parts[1] === "reset-rsvp" && method === "POST") {
+        const ids = idList((await body(request)).ids);
+        if (!ids.length) return json({ error: "Pick at least one household." }, 400);
+        const marks = ids.map(() => "?").join(",");
+        await run(
+          env,
+          `UPDATE guests SET rsvp = 'pending', plus_one_rsvp = 'pending', plus_one_name = NULL, dietary = NULL,
+                  plus_one_dietary = NULL, updated_at = datetime('now') WHERE household_id IN (${marks})`,
+          ...ids
+        );
+        await run(
+          env,
+          `UPDATE households SET rsvp_at = NULL, rsvp_message = NULL, updated_at = datetime('now') WHERE id IN (${marks})`,
+          ...ids
+        );
+        await markDirty(env);
+        return json({ ok: true, reset: ids.length });
+      }
       if (parts[1] === "bulk" && method === "POST") {
         const input = await body(request);
         if (!HOUSEHOLD_FLAGS.includes(input.field)) return json({ error: "Unknown field." }, 400);
-        const ids = (Array.isArray(input.ids) ? input.ids : []).map(Number).filter(Number.isInteger);
+        const ids = idList(input.ids);
         if (!ids.length) return json({ error: "Pick at least one household." }, 400);
         await run(
           env,
@@ -350,6 +380,22 @@ export async function handleAdminApi(route, request, env) {
     }
 
     if (parts[0] === "guests") {
+      // Bulk edits apply to every guest in the chosen households.
+      if (parts[1] === "bulk" && method === "POST") {
+        const input = await body(request);
+        if (input.field !== "invite_type") return json({ error: "Unknown field." }, 400);
+        if (!INVITE_TYPES.includes(input.value)) return json({ error: `Invite type must be ${INVITE_TYPES.join(" or ")}.` }, 400);
+        const ids = idList(input.household_ids);
+        if (!ids.length) return json({ error: "Pick at least one household." }, 400);
+        const result = await run(
+          env,
+          `UPDATE guests SET invite_type = ?, updated_at = datetime('now') WHERE household_id IN (${ids.map(() => "?").join(",")})`,
+          input.value,
+          ...ids
+        );
+        await markDirty(env);
+        return json({ ok: true, updated: result.meta.changes });
+      }
       if (parts.length === 1 && method === "POST") {
         const input = await body(request);
         const householdId = Number(input.household_id);
@@ -375,7 +421,7 @@ export async function handleAdminApi(route, request, env) {
           if (!target) return json({ error: "No such household." }, 400);
           patch.household_id = target.id;
         }
-        const { sql, values } = updateClause(patch, [...GUEST_TEXT, ...GUEST_FLAGS, "side", "priority", "rsvp", "plus_one_rsvp", "sort_order", "household_id"]);
+        const { sql, values } = updateClause(patch, [...GUEST_TEXT, ...GUEST_FLAGS, "side", "priority", "rsvp", "plus_one_rsvp", "invite_type", "sort_order", "household_id"]);
         if (sql) await run(env, `UPDATE guests SET ${sql}, updated_at = datetime('now') WHERE id = ?`, ...values, id);
         await markDirty(env);
         return json({ guest: await first(env, "SELECT * FROM guests WHERE id = ?", id) });

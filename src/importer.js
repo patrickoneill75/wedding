@@ -6,8 +6,12 @@
  * What comes across:
  *   Guest List  households (grouped by "Household ID"; the row marked as the new
  *               household carries the mailing name and address) and their guests,
- *               with side, priority, wedding party, family flags and the ceremony mark.
- *               "Round 2 Invites" and "Decor" are deliberately ignored.
+ *               with side, priority, wedding party and family flags. The Ceremony
+ *               column's "x" sets the invite type to ceremony; everyone else is
+ *               reception.
+ *               Plus-one placeholder rows ("Guest" / "Guest Conor Smith") become a
+ *               plus-one allowance on their host, with no name -- the guest types it
+ *               in when they RSVP. "Round 2 Invites" and "Decor" are deliberately ignored.
  *   Data        every budget line. A quantity that pointed at the Constants tab
  *               becomes a variable quantity on the matching source (wine bottles,
  *               non-alcoholic drinks, invite count, weighted count); everything else
@@ -117,10 +121,23 @@ export function parseGuests(sheet) {
       wedding_party: flag(get(row, "wedding party?")),
       immediate_family: flag(get(row, "immediate family")),
       extended_family: flag(get(row, "extended")),
-      ceremony: flag(get(row, "ceremony")),
+      invite_type: flag(get(row, "ceremony")) ? "ceremony" : "reception",
+      plus_one_allowed: 0,
       sort_order: order++,
     });
   }
+  // Fold plus-one placeholder rows into their host (see the module docstring).
+  const isPlaceholder = (g) => /^guest$/i.test(g.first_name) && /^guest\b/i.test(g.last_name);
+  const nameKey = (text) => text.toLowerCase().replace(/\s+/g, " ").trim();
+  for (const placeholder of guests.filter(isPlaceholder)) {
+    const family = guests.filter((g) => g.household_code === placeholder.household_code && !isPlaceholder(g));
+    const named = nameKey(placeholder.last_name.replace(/^guest\s*/i, ""));
+    const host = family.find((g) => nameKey(`${g.first_name} ${g.last_name}`) === named) || family[0];
+    if (!host) continue;
+    host.plus_one_allowed = 1;
+    guests.splice(guests.indexOf(placeholder), 1);
+  }
+
   for (const household of households.values()) {
     if (!household.display_name) {
       const members = guests.filter((g) => g.household_code === household.code);
@@ -251,7 +268,8 @@ export async function importWorkbook(env, buffer, parts, by) {
         "wedding_party",
         "immediate_family",
         "extended_family",
-        "ceremony",
+        "invite_type",
+        "plus_one_allowed",
         "sort_order",
       ],
       guestRows

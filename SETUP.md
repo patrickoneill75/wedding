@@ -78,7 +78,8 @@ reports whether each secret is set, never its value.
 
 1. Open `YOUR_URL/admin/` and **Sign in with Google**.
 2. **Settings → Import the planning spreadsheet**: upload `Wedding_Data.xlsx` with all three
-   boxes ticked. This brings in 82 households / 147 guests, all 53 budget lines, and the
+   boxes ticked. This brings in 82 households / 133 guests (the spreadsheet's 14 "Guest Guest …" rows become
+   nameless plus-ones on their hosts), all 53 budget lines, and the
    weights and drink assumptions. Guest names and addresses go straight into the database,
    never into this repo.
 3. **Settings → Google Drive → Log in with Google to connect Drive**, then **Pick a folder**

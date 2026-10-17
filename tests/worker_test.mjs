@@ -278,10 +278,15 @@ test("spreadsheet import brings in households, guests, budget lines and constant
   assert.equal(alex.zip, "02134", "a US zip stored as a number keeps its leading zero");
   assert.equal(alex.guests.length, 2);
   assert.equal(alex.guests[0].immediate_family, 1);
-  assert.equal(alex.guests[0].ceremony, 1);
+  assert.equal(alex.guests[0].invite_type, "ceremony", "the Ceremony column's x makes a ceremony invite");
   const jordan = guests.households.find((h) => h.code === "H-002");
   assert.equal(jordan.guests[0].first_name, "Jordan", "trailing spaces are trimmed");
   assert.equal(jordan.guests[0].priority, "Medium");
+  assert.equal(jordan.guests[0].invite_type, "reception", "no x in the Ceremony column means reception");
+  assert.equal(jordan.guests.length, 1, 'the "Guest Guest Jordan Sample" placeholder row is not imported as a person');
+  assert.equal(jordan.guests[0].plus_one_allowed, 1, "the placeholder becomes a plus-one on its host");
+  assert.equal(jordan.guests[0].plus_one_name, null, "with no name, so the guest types it in when they RSVP");
+  assert.deepEqual(guests.counts.by_invite_type, { ceremony: 2, reception: 2 });
   assert.equal(guests.counts.weighted, 4); // ceil(0.9*3 + 0.6)
 
   const { expenses } = (await api("/api/admin/expenses")).data;
@@ -307,7 +312,7 @@ test("re-importing replaces guests instead of duplicating them", async () => {
   await api("/api/admin/import", { method: "POST", form: fixtureForm({ guests: 1 }) });
   const guests = (await api("/api/admin/guests")).data;
   assert.equal(guests.households.length, 3);
-  assert.equal(guests.counts.invited, 4);
+  assert.equal(guests.counts.invited, 5); // 4 guests + Jordan's plus-one
 });
 
 /* ---------------------------------------------------------------- expense tests -- */
@@ -385,6 +390,76 @@ test("dashboard summary totals estimate, projected, paid and what's due", async 
   assert.equal(s.upcoming.length, 1);
   assert.equal(s.upcoming[0].overdue, true);
   assert.deepEqual(s.timeline, [{ date: "2026-02-01", cumulative: 500 }]);
+});
+
+/* ------------------------------------------------------------- invite type tests -- */
+
+test("upgrading a database from before invite types carries the old ceremony flag over", async () => {
+  const env = makeEnv();
+  // A database as schema version 1 left it: guests with the ceremony flag, no invite_type.
+  env.DB.db.exec(`
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO settings VALUES ('_schema_version', '1');
+    CREATE TABLE households (id INTEGER PRIMARY KEY);
+    CREATE TABLE guests (id INTEGER PRIMARY KEY, household_id INTEGER, ceremony INTEGER NOT NULL DEFAULT 0);
+    INSERT INTO households VALUES (1);
+    INSERT INTO guests (id, household_id, ceremony) VALUES (1, 1, 1), (2, 1, 0);
+  `);
+  await call(env, "/api/auth/me");
+  const rows = env.DB.db.prepare("SELECT id, invite_type FROM guests ORDER BY id").all();
+  assert.deepEqual(rows.map((r) => r.invite_type), ["ceremony", "reception"]);
+});
+
+test('upgrading a database turns "Guest Guest <host>" rows into a nameless plus-one on the host', async () => {
+  const env = makeEnv();
+  // As schema version 2 left it, with placeholder rows from the spreadsheet import.
+  env.DB.db.exec(`
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO settings VALUES ('_schema_version', '2');
+    CREATE TABLE guests (id INTEGER PRIMARY KEY, household_id INTEGER, first_name TEXT, last_name TEXT,
+                         plus_one_allowed INTEGER NOT NULL DEFAULT 0, plus_one_name TEXT);
+    INSERT INTO guests VALUES
+      (1, 1, 'Conor', 'Smith', 0, NULL), (2, 1, 'Guest', 'Guest Conor Smith', 0, NULL),
+      (3, 2, 'Ann', 'Lee', 0, NULL), (4, 2, 'Bob ', 'Lee', 0, NULL), (5, 2, 'Guest', 'Guest Bob Lee', 0, NULL),
+      (6, 3, 'Dee', 'Fox', 0, NULL), (7, 3, 'Guest', 'Guest Someone Else', 0, NULL),
+      (8, 4, 'Guest', 'Guest Nobody', 0, NULL);
+  `);
+  await call(env, "/api/auth/me");
+  const rows = env.DB.db.prepare("SELECT id, plus_one_allowed, plus_one_name FROM guests ORDER BY id").all();
+  assert.deepEqual(rows.map((r) => [r.id, r.plus_one_allowed]), [
+    [1, 1], // host matched by name
+    [3, 0], [4, 1], // the named host, not the first in the household (and despite "Bob " with a space)
+    [6, 1], // name doesn't match anyone: falls back to the household's first guest
+    [8, 0], // a placeholder alone in its household has no host, so it stays
+  ]);
+  assert.ok(rows.every((r) => r.plus_one_name === null));
+});
+
+test("bulk invite type changes every guest in the chosen households, and only valid types", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  await api("/api/admin/import", { method: "POST", form: fixtureForm({ guests: 1 }) });
+  const { households } = (await api("/api/admin/guests")).data;
+  const ids = households.filter((h) => h.code !== "H-003").map((h) => h.id);
+  const r = await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: ids, field: "invite_type", value: "reception" } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.updated, 3);
+  const after = (await api("/api/admin/guests")).data;
+  assert.deepEqual(after.counts.by_invite_type, { ceremony: 0, reception: 4 });
+  const bad = await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: ids, field: "invite_type", value: "brunch" } });
+  assert.equal(bad.status, 400);
+  const badField = await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: ids, field: "rsvp", value: "yes" } });
+  assert.equal(badField.status, 400, "bulk only edits invite type");
+});
+
+test("one guest's invite type can be changed on its own", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  await api("/api/admin/import", { method: "POST", form: fixtureForm({ guests: 1 }) });
+  const sam = (await api("/api/admin/guests")).data.households.find((h) => h.code === "H-001").guests[1];
+  const r = await api(`/api/admin/guests/${sam.id}`, { method: "PUT", body: { invite_type: "reception" } });
+  assert.equal(r.data.guest.invite_type, "reception");
+  assert.equal((await api(`/api/admin/guests/${sam.id}`, { method: "PUT", body: { invite_type: "nope" } })).status, 400);
 });
 
 /* -------------------------------------------------------------------- RSVP tests -- */
@@ -467,6 +542,32 @@ test("a plus-one RSVP counts toward confirmed guests", async () => {
   });
   const counts = (await api("/api/admin/guests")).data.counts;
   assert.equal(counts.confirmed, 2);
+});
+
+test("resetting an RSVP puts the household back to awaiting reply so it can answer fresh", async () => {
+  const { env, api } = await rsvpSetup();
+  const jordan = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Jordan", last: "Sample" } })).data.matches[0];
+  await call(env, "/api/public/rsvp/submit", {
+    method: "POST",
+    body: { token: jordan.token, guests: [{ id: jordan.guests[0].id, rsvp: "yes", dietary: "vegan", plus_one_rsvp: "yes", plus_one_name: "Casey Guest" }], message: "See you there" },
+  });
+  const before = (await api("/api/admin/guests")).data.households.find((h) => h.code === "H-002");
+  assert.ok(before.rsvp_at);
+
+  const r = await api("/api/admin/households/reset-rsvp", { method: "POST", body: { ids: [before.id] } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const after = (await api("/api/admin/guests")).data;
+  const h = after.households.find((x) => x.code === "H-002");
+  assert.equal(h.guests[0].rsvp, "pending");
+  assert.equal(h.guests[0].plus_one_rsvp, "pending");
+  assert.equal(h.guests[0].plus_one_allowed, 1, "the plus-one allowance survives a reset");
+  assert.equal(h.guests[0].plus_one_name, null, "the plus-one's name goes back to blank for the next RSVP");
+  assert.equal(h.guests[0].dietary, null);
+  assert.equal(h.rsvp_at, null);
+  assert.equal(h.rsvp_message, null);
+  assert.equal(after.counts.confirmed, 0);
+  const again = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Jordan", last: "Sample" } })).data.matches[0];
+  assert.equal(again.responded, false, "the RSVP page no longer says they've already replied");
 });
 
 test("closing RSVPs in settings stops lookups", async () => {
