@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="/favicon.svg">
+<title>Add an expense</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  .wrap { max-width: 620px; }
+  .summary { background: var(--wash); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
+  h3.part { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 18px 0 8px; }
+  .done { text-align: center; padding: 30px 18px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Add an expense</h1>
+  <p class="sub">New items, updated prices, payments and receipts. Everything shows up in the control panel.</p>
+
+  <p class="msg err" id="fatal"></p>
+
+  <form class="card" id="form" hidden>
+    <div class="fields">
+      <label class="field">Who's filling this in?<select name="submitted_by" id="who"></select></label>
+      <label class="field">Which expense?<select name="expense_id" id="expense"></select></label>
+    </div>
+    <div class="summary" id="summary" hidden></div>
+
+    <div id="newFields">
+      <div class="fields">
+        <label class="field">What is it?<input name="item" placeholder="e.g. Florist deposit"></label>
+        <label class="field">Category<input name="category" list="cats" placeholder="e.g. Ceremony & Reception"></label>
+        <label class="field">Subcategory<input name="subcategory" list="subs" placeholder="e.g. Decor"></label>
+      </div>
+    </div>
+
+    <div class="fields">
+      <label class="field">Vendor<input name="vendor"></label>
+      <label class="field">Stage<select name="status" id="status"></select></label>
+    </div>
+    <div class="fields">
+      <label class="field" id="priceLabel"><span>Price ($)</span><input name="price" type="number" step="0.01" inputmode="decimal"></label>
+      <label class="field" id="unitsLabel">Quantity<input name="units" type="number" step="any" value="1"></label>
+      <label class="field" id="gratLabel">Gratuity %<input name="gratuity_percent" type="number" step="any" value="0"></label>
+    </div>
+    <label class="check" id="taxLabel" style="margin-bottom:12px"><input type="checkbox" name="taxable"> Add sales tax</label>
+    <div class="fields">
+      <label class="field">Next payment due<input name="due_date" type="date"></label>
+    </div>
+
+    <h3 class="part">Payment (leave blank if you didn't pay anything)</h3>
+    <div class="fields">
+      <label class="field">Amount paid ($)<input name="payment_amount" type="number" step="0.01" inputmode="decimal"></label>
+      <label class="field">Date paid<input name="paid_on" type="date" id="paidOn"></label>
+      <label class="field">Paid by<select name="payer" id="payer"></select></label>
+      <label class="field">Method<select name="method" id="method"></select></label>
+    </div>
+
+    <h3 class="part">Receipt, quote or contract (optional)</h3>
+    <input type="file" name="file" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx" style="margin-bottom:12px">
+    <label class="field" style="margin-bottom:14px">Notes<textarea name="notes"></textarea></label>
+
+    <button class="primary" type="submit" style="width:100%; justify-content:center">Save</button>
+    <p class="msg" id="msg"></p>
+  </form>
+
+  <div class="card done" id="done" hidden>
+    <h2>Saved</h2>
+    <p class="desc" id="doneText"></p>
+    <button class="primary" id="another">Add another</button>
+  </div>
+</div>
+<datalist id="cats"></datalist>
+<datalist id="subs"></datalist>
+
+<script>
+const key = new URLSearchParams(location.search).get("k") || "";
+const $ = (id) => document.getElementById(id);
+const form = $("form");
+const money = (n) => (n == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n));
+const opt = (value, text, selected) => { const o = document.createElement("option"); o.value = value; o.textContent = text; o.selected = Boolean(selected); return o; };
+const today = () => new Date().toISOString().slice(0, 10);
+let options;
+const remember = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+const recall = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+
+async function load() {
+  const r = await fetch(`/api/public/expense/options?k=${encodeURIComponent(key)}`);
+  options = await r.json();
+  if (!r.ok) {
+    $("fatal").textContent = options.error || "This form isn't available.";
+    return;
+  }
+  const lastWho = recall("expense-form-who");
+  $("who").replaceChildren(...options.payers.map((p) => opt(p, p, p === lastWho)));
+  $("payer").replaceChildren(opt("", "—"), ...options.payers.map((p) => opt(p, p)));
+  $("method").replaceChildren(opt("", "—"), ...options.payment_methods.map((m) => opt(m, m)));
+  $("status").replaceChildren(...options.statuses.map((s) => opt(s.value, s.label)));
+  $("cats").replaceChildren(...options.categories.map((c) => opt(c, c)));
+  $("subs").replaceChildren(...options.subcategories.map((c) => opt(c, c)));
+  const select = $("expense");
+  select.replaceChildren(opt("", "＋ Something new"));
+  const groups = new Map();
+  for (const item of options.items) {
+    if (!groups.has(item.category)) groups.set(item.category, []);
+    groups.get(item.category).push(item);
+  }
+  for (const [category, items] of groups) {
+    const group = document.createElement("optgroup");
+    group.label = category || "Other";
+    for (const item of items) group.append(opt(item.id, `${item.item}${item.vendor ? ` (${item.vendor})` : ""}`));
+    select.append(group);
+  }
+  $("paidOn").value = today();
+  $("payer").value = $("who").value;
+  form.hidden = false;
+  onPick();
+}
+
+function onPick() {
+  const item = options.items.find((i) => String(i.id) === $("expense").value);
+  $("newFields").hidden = Boolean(item);
+  $("unitsLabel").hidden = $("gratLabel").hidden = $("taxLabel").hidden = Boolean(item);
+  form.item.required = !item;
+  const summary = $("summary");
+  if (item) {
+    const label = options.statuses.find((s) => s.value === item.status)?.label || item.status;
+    summary.textContent = `${label} · total ${money(item.total)} · paid ${money(item.paid)} · owed ${money(item.owed)}`;
+    summary.hidden = false;
+    $("priceLabel").firstElementChild.textContent = item.pricing === "variable" ? "Price per guest/unit ($)" : "Price per unit ($)";
+    form.price.value = item.unit_cost ?? "";
+    form.vendor.value = item.vendor;
+    $("status").value = item.status;
+    form.payment_amount.placeholder = item.owed ? `Owed: ${item.owed}` : "";
+  } else {
+    summary.hidden = true;
+    $("priceLabel").firstElementChild.textContent = "Price ($)";
+    form.price.value = "";
+    form.vendor.value = "";
+    $("status").value = "estimate";
+    form.payment_amount.placeholder = "";
+  }
+}
+$("expense").addEventListener("change", onPick);
+$("who").addEventListener("change", () => { $("payer").value = $("who").value; });
+
+form.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const button = form.querySelector("button[type=submit]");
+  button.disabled = true;
+  $("msg").textContent = form.file.files[0] ? "Saving and uploading…" : "Saving…";
+  $("msg").className = "msg";
+  const data = new FormData(form);
+  data.append("key", key);
+  try {
+    const r = await fetch("/api/public/expense", { method: "POST", body: data });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || "Couldn't save.");
+    remember("expense-form-who", $("who").value);
+    $("doneText").textContent = body.receipt_error ? body.receipt_error : body.receipt ? `Saved, with ${body.receipt} in Google Drive.` : "Saved.";
+    form.hidden = true;
+    $("done").hidden = false;
+  } catch (error) {
+    $("msg").textContent = error.message;
+    $("msg").className = "msg err";
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("another").addEventListener("click", async () => {
+  form.reset();
+  $("done").hidden = true;
+  $("msg").textContent = "";
+  await load();
+});
+
+if (!key) $("fatal").textContent = "This link is missing its key. Copy the expense form link from the control panel's Settings page.";
+else load().catch(() => { $("fatal").textContent = "Couldn't load the form. Check your connection and try again."; });
+</script>
+</body>
+</html>

@@ -1,0 +1,470 @@
+/**
+ * Control panel API, mounted under /api/admin/*. Every route requires a signed-in
+ * admin (src/auth.js requireAdmin).
+ *
+ *   GET    summary                     dashboard numbers, charts' data, what's due
+ *   GET    expenses                    every expense with computed totals
+ *   POST   expenses                    create
+ *   GET    expenses/:id                one expense + payments, history, attachments
+ *   PUT    expenses/:id                update (status moves, price changes)
+ *   DELETE expenses/:id
+ *   POST   expenses/:id/payments       record a payment (JSON)
+ *   DELETE payments/:id
+ *   POST   expenses/:id/attachments    upload a receipt/contract to Drive (multipart)
+ *   GET    guests                      households with their guests, and the counts
+ *   POST   households / PUT households/:id / DELETE households/:id
+ *   POST   guests / PUT guests/:id / DELETE guests/:id
+ *   POST   households/bulk             set a tracking flag on many households at once
+ *   GET    settings / PUT settings
+ *   POST   basis                       { basis: "confirmed" | "weighted" }
+ *   GET    form-link / POST form-link  the unlisted expense form's URL; POST rotates it
+ *   POST   import                      the original spreadsheet (multipart)
+ *   GET    drive/status, GET drive/connect, GET drive/folders?parent=,
+ *   POST   drive/folder, POST drive/folder/create, POST drive/sync, POST drive/disconnect
+ */
+
+import { json, randomToken, requireAdmin, startOAuth } from "./auth.js";
+import { all, first, run, getSetting, setSetting, markDirty, updateClause } from "./db.js";
+import {
+  DEFAULT_SETTINGS,
+  PRIORITIES,
+  QUANTITY_SOURCES,
+  RSVP_VALUES,
+  SIDES,
+  STATUSES,
+  STATUS_LABELS,
+  summarize,
+} from "./calc.js";
+import {
+  addPayment,
+  createExpense,
+  deletePayment,
+  getExpense,
+  listExpenses,
+  loadContext,
+  loadSettings,
+  updateExpense,
+} from "./store.js";
+import {
+  createFolder,
+  disconnectDrive,
+  driveStatus,
+  folderInfo,
+  listFolders,
+  uploadReceipt,
+} from "./google.js";
+import { syncToDrive } from "./sync.js";
+import { importWorkbook } from "./importer.js";
+
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+async function body(request) {
+  try {
+    const parsed = await request.json();
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+const bool = (v) => (v === true || v === 1 || v === "1" || v === "true" || v === "on" ? 1 : 0);
+const textOrNull = (v) => {
+  if (v === null || v === undefined) return null;
+  const t = String(v).trim().slice(0, 2000);
+  return t || null;
+};
+
+/* ------------------------------------------------------------------- guests ---- */
+
+const HOUSEHOLD_TEXT = ["code", "display_name", "greeting", "address1", "address2", "city", "state", "zip", "country", "email", "phone", "gift", "rsvp_message", "notes"];
+const HOUSEHOLD_FLAGS = ["save_the_date_sent", "invite_sent", "gift_received", "thank_you_sent"];
+const GUEST_TEXT = ["first_name", "last_name", "plus_one_name", "dietary", "plus_one_dietary", "table_name", "notes"];
+const GUEST_FLAGS = ["wedding_party", "immediate_family", "extended_family", "ceremony", "plus_one_allowed"];
+
+function cleanHousehold(input) {
+  const patch = Object.create(null);
+  for (const key of HOUSEHOLD_TEXT) if (has(input, key)) patch[key] = textOrNull(input[key]);
+  for (const key of ["display_name", "greeting"]) if (has(patch, key) && patch[key] === null) patch[key] = "";
+  for (const key of HOUSEHOLD_FLAGS) if (has(input, key)) patch[key] = bool(input[key]);
+  return patch;
+}
+
+function cleanGuest(input) {
+  const patch = Object.create(null);
+  for (const key of GUEST_TEXT) if (has(input, key)) patch[key] = textOrNull(input[key]);
+  for (const key of ["first_name", "last_name"]) if (has(patch, key) && patch[key] === null) patch[key] = "";
+  for (const key of GUEST_FLAGS) if (has(input, key)) patch[key] = bool(input[key]);
+  if (has(input, "side")) {
+    if (input.side && !SIDES.includes(input.side)) throw new Error(`Side must be ${SIDES.join(" or ")}.`);
+    patch.side = input.side || null;
+  }
+  if (has(input, "priority")) {
+    if (!PRIORITIES.includes(input.priority)) throw new Error(`Priority must be ${PRIORITIES.join(", ")}.`);
+    patch.priority = input.priority;
+  }
+  for (const key of ["rsvp", "plus_one_rsvp"]) {
+    if (has(input, key)) {
+      if (!RSVP_VALUES.includes(input[key])) throw new Error(`RSVP must be ${RSVP_VALUES.join(", ")}.`);
+      patch[key] = input[key];
+    }
+  }
+  if (has(input, "sort_order")) patch.sort_order = Number(input.sort_order) || 0;
+  return patch;
+}
+
+async function listGuests(env) {
+  const households = await all(env, "SELECT * FROM households ORDER BY id");
+  const guests = await all(env, "SELECT * FROM guests ORDER BY household_id, sort_order, id");
+  const byHousehold = new Map(households.map((h) => [h.id, { ...h, guests: [] }]));
+  for (const g of guests) byHousehold.get(g.household_id)?.guests.push(g);
+  return [...byHousehold.values()];
+}
+
+async function nextHouseholdCode(env) {
+  const rows = await all(env, "SELECT code FROM households WHERE code LIKE 'H-%'");
+  const max = rows.reduce((m, r) => Math.max(m, Number(String(r.code).slice(2)) || 0), 0);
+  return `H-${String(max + 1).padStart(3, "0")}`;
+}
+
+/* ------------------------------------------------------------------- settings -- */
+
+function cleanSettings(input) {
+  const patch = Object.create(null);
+  const asNumber = (v, name) => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`${name} must be a number of zero or more.`);
+    return n;
+  };
+  for (const key of ["couple_names", "venue", "rsvp_intro"]) if (has(input, key)) patch[key] = String(input[key] ?? "").slice(0, 2000);
+  for (const key of ["wedding_date", "rsvp_deadline"]) {
+    if (has(input, key)) {
+      const v = String(input[key] ?? "").trim();
+      if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) throw new Error(`${key} must be YYYY-MM-DD.`);
+      patch[key] = v;
+    }
+  }
+  if (has(input, "rsvp_open")) patch.rsvp_open = Boolean(bool(input.rsvp_open));
+  if (has(input, "tax_rate")) {
+    patch.tax_rate = asNumber(input.tax_rate, "Tax rate");
+    if (patch.tax_rate > 1) throw new Error("Tax rate is a fraction (7% is 0.07).");
+  }
+  if (has(input, "budget_target")) {
+    patch.budget_target = input.budget_target === "" || input.budget_target == null ? null : asNumber(input.budget_target, "Budget");
+  }
+  if (has(input, "guest_basis")) {
+    if (!["weighted", "confirmed"].includes(input.guest_basis)) throw new Error("Guest basis must be weighted or confirmed.");
+    patch.guest_basis = input.guest_basis;
+  }
+  if (has(input, "priority_weights")) {
+    const weights = {};
+    for (const key of PRIORITIES) weights[key] = asNumber(input.priority_weights?.[key] ?? DEFAULT_SETTINGS.priority_weights[key], `${key} weight`);
+    patch.priority_weights = weights;
+  }
+  if (has(input, "drinks")) {
+    const drinks = {};
+    for (const key of Object.keys(DEFAULT_SETTINGS.drinks)) {
+      drinks[key] = asNumber(input.drinks?.[key] ?? DEFAULT_SETTINGS.drinks[key], key.replace(/_/g, " "));
+    }
+    patch.drinks = drinks;
+  }
+  for (const key of ["payers", "payment_methods"]) {
+    if (has(input, key)) {
+      const list = Array.isArray(input[key]) ? input[key] : String(input[key] || "").split(",");
+      patch[key] = list.map((s) => String(s).trim()).filter(Boolean).slice(0, 30);
+    }
+  }
+  return patch;
+}
+
+async function formKey(env) {
+  let key = await getSetting(env, "_form_key");
+  if (!key) {
+    key = randomToken(18);
+    await setSetting(env, "_form_key", key);
+  }
+  return key;
+}
+
+/* ------------------------------------------------------------------- router ---- */
+
+export async function handleAdminApi(route, request, env) {
+  const [user, denied] = await requireAdmin(request, env);
+  if (denied) return denied;
+  const method = request.method.toUpperCase();
+  const parts = route.split("/").filter(Boolean);
+  const id = parts[1] && /^\d+$/.test(parts[1]) ? Number(parts[1]) : null;
+
+  try {
+    // ---- dashboard ---------------------------------------------------------------
+    if (route === "summary" && method === "GET") {
+      const ctx = await loadContext(env);
+      const expenses = await listExpenses(env, ctx);
+      const payments = await all(env, "SELECT paid_on, amount FROM payments");
+      return json({
+        user,
+        settings: ctx.settings,
+        counts: ctx.counts,
+        basis: ctx.basis,
+        basis_count: ctx.basisCount,
+        drinks: ctx.drinks,
+        statuses: STATUSES,
+        status_labels: STATUS_LABELS,
+        ...summarize(expenses, payments, ctx),
+        drive: await driveStatus(env),
+      });
+    }
+
+    // ---- expenses ----------------------------------------------------------------
+    if (parts[0] === "expenses") {
+      const ctx = await loadContext(env);
+      if (parts.length === 1 && method === "GET") {
+        return json({
+          expenses: await listExpenses(env, ctx),
+          statuses: STATUSES,
+          status_labels: STATUS_LABELS,
+          quantity_sources: QUANTITY_SOURCES,
+          settings: ctx.settings,
+          counts: ctx.counts,
+          basis: ctx.basis,
+          basis_count: ctx.basisCount,
+          drinks: ctx.drinks,
+        });
+      }
+      if (parts.length === 1 && method === "POST") {
+        const newId = await createExpense(env, await body(request), ctx, user.email);
+        return json({ expense: await getExpense(env, newId, ctx) }, 201);
+      }
+      if (id && parts.length === 2) {
+        if (method === "GET") {
+          const expense = await getExpense(env, id, ctx);
+          if (!expense) return json({ error: "No such expense." }, 404);
+          return json({
+            expense,
+            payments: await all(env, "SELECT * FROM payments WHERE expense_id = ? ORDER BY paid_on, id", id),
+            history: await all(env, "SELECT * FROM expense_history WHERE expense_id = ? ORDER BY at, id", id),
+            attachments: await all(env, "SELECT * FROM attachments WHERE expense_id = ? ORDER BY id", id),
+          });
+        }
+        if (method === "PUT") {
+          const updated = await updateExpense(env, id, await body(request), ctx, user.email);
+          if (!updated) return json({ error: "No such expense." }, 404);
+          return json({ expense: await getExpense(env, id, ctx) });
+        }
+        if (method === "DELETE") {
+          await run(env, "DELETE FROM expenses WHERE id = ?", id);
+          await markDirty(env);
+          return json({ ok: true });
+        }
+      }
+      if (id && parts[2] === "payments" && method === "POST") {
+        const paymentId = await addPayment(env, id, await body(request), ctx, user.email);
+        return json({ payment_id: paymentId, expense: await getExpense(env, id, ctx) }, 201);
+      }
+      if (id && parts[2] === "attachments" && method === "POST") {
+        const form = await request.formData();
+        const file = form.get("file");
+        if (!file || typeof file === "string") return json({ error: "Choose a file to upload." }, 400);
+        if (file.size > MAX_UPLOAD_BYTES) return json({ error: "Files must be under 20 MB." }, 400);
+        const expense = await first(env, "SELECT * FROM expenses WHERE id = ?", id);
+        if (!expense) return json({ error: "No such expense." }, 404);
+        const paymentId = Number(form.get("payment_id")) || null;
+        const uploaded = await uploadReceipt(env, file, [expense.vendor, expense.item].filter(Boolean).join(" "));
+        await run(
+          env,
+          "INSERT INTO attachments (expense_id, payment_id, drive_file_id, name, web_link, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)",
+          id,
+          paymentId,
+          uploaded.id,
+          uploaded.name,
+          uploaded.webViewLink || null,
+          user.email
+        );
+        await markDirty(env);
+        return json({ attachment: uploaded }, 201);
+      }
+    }
+
+    if (parts[0] === "payments" && id && method === "DELETE") {
+      const ok = await deletePayment(env, id);
+      return ok ? json({ ok: true }) : json({ error: "No such payment." }, 404);
+    }
+
+    // ---- guests ------------------------------------------------------------------
+    if (route === "guests" && method === "GET") {
+      const ctx = await loadContext(env);
+      return json({ households: await listGuests(env), counts: ctx.counts, settings: ctx.settings });
+    }
+
+    if (parts[0] === "households") {
+      if (parts[1] === "bulk" && method === "POST") {
+        const input = await body(request);
+        if (!HOUSEHOLD_FLAGS.includes(input.field)) return json({ error: "Unknown field." }, 400);
+        const ids = (Array.isArray(input.ids) ? input.ids : []).map(Number).filter(Number.isInteger);
+        if (!ids.length) return json({ error: "Pick at least one household." }, 400);
+        await run(
+          env,
+          `UPDATE households SET ${input.field} = ?, updated_at = datetime('now') WHERE id IN (${ids.map(() => "?").join(",")})`,
+          bool(input.value),
+          ...ids
+        );
+        await markDirty(env);
+        return json({ ok: true, updated: ids.length });
+      }
+      if (parts.length === 1 && method === "POST") {
+        const input = await body(request);
+        const patch = cleanHousehold(input);
+        if (!patch.code) patch.code = await nextHouseholdCode(env);
+        const columns = Object.keys(patch);
+        const result = await run(
+          env,
+          `INSERT INTO households (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+          ...columns.map((c) => patch[c])
+        );
+        const householdId = result.meta.last_row_id;
+        for (const guest of Array.isArray(input.guests) ? input.guests : []) {
+          const g = cleanGuest(guest);
+          const cols = Object.keys(g);
+          await run(
+            env,
+            `INSERT INTO guests (household_id${cols.map((c) => `, ${c}`).join("")}) VALUES (?${cols.map(() => ", ?").join("")})`,
+            householdId,
+            ...cols.map((c) => g[c])
+          );
+        }
+        await markDirty(env);
+        return json({ id: householdId }, 201);
+      }
+      if (id && method === "PUT") {
+        const { sql, values } = updateClause(cleanHousehold(await body(request)), [...HOUSEHOLD_TEXT, ...HOUSEHOLD_FLAGS]);
+        if (sql) await run(env, `UPDATE households SET ${sql}, updated_at = datetime('now') WHERE id = ?`, ...values, id);
+        await markDirty(env);
+        return json({ household: await first(env, "SELECT * FROM households WHERE id = ?", id) });
+      }
+      if (id && method === "DELETE") {
+        await run(env, "DELETE FROM guests WHERE household_id = ?", id);
+        await run(env, "DELETE FROM households WHERE id = ?", id);
+        await markDirty(env);
+        return json({ ok: true });
+      }
+    }
+
+    if (parts[0] === "guests") {
+      if (parts.length === 1 && method === "POST") {
+        const input = await body(request);
+        const householdId = Number(input.household_id);
+        if (!(await first(env, "SELECT id FROM households WHERE id = ?", householdId))) {
+          return json({ error: "Pick the household this guest belongs to." }, 400);
+        }
+        const g = cleanGuest(input);
+        const cols = Object.keys(g);
+        const result = await run(
+          env,
+          `INSERT INTO guests (household_id${cols.map((c) => `, ${c}`).join("")}) VALUES (?${cols.map(() => ", ?").join("")})`,
+          householdId,
+          ...cols.map((c) => g[c])
+        );
+        await markDirty(env);
+        return json({ id: result.meta.last_row_id }, 201);
+      }
+      if (id && method === "PUT") {
+        const input = await body(request);
+        const patch = cleanGuest(input);
+        if (has(input, "household_id")) {
+          const target = await first(env, "SELECT id FROM households WHERE id = ?", Number(input.household_id));
+          if (!target) return json({ error: "No such household." }, 400);
+          patch.household_id = target.id;
+        }
+        const { sql, values } = updateClause(patch, [...GUEST_TEXT, ...GUEST_FLAGS, "side", "priority", "rsvp", "plus_one_rsvp", "sort_order", "household_id"]);
+        if (sql) await run(env, `UPDATE guests SET ${sql}, updated_at = datetime('now') WHERE id = ?`, ...values, id);
+        await markDirty(env);
+        return json({ guest: await first(env, "SELECT * FROM guests WHERE id = ?", id) });
+      }
+      if (id && method === "DELETE") {
+        await run(env, "DELETE FROM guests WHERE id = ?", id);
+        await markDirty(env);
+        return json({ ok: true });
+      }
+    }
+
+    // ---- settings ----------------------------------------------------------------
+    if (route === "settings" && method === "GET") {
+      const ctx = await loadContext(env);
+      return json({ settings: ctx.settings, counts: ctx.counts, drinks: ctx.drinks, basis_count: ctx.basisCount, user });
+    }
+    if (route === "settings" && method === "PUT") {
+      const patch = cleanSettings(await body(request));
+      for (const [key, value] of Object.entries(patch)) await setSetting(env, key, value);
+      await markDirty(env);
+      const ctx = await loadContext(env);
+      return json({ settings: ctx.settings, counts: ctx.counts, drinks: ctx.drinks, basis_count: ctx.basisCount });
+    }
+    if (route === "basis" && method === "POST") {
+      const { basis } = await body(request);
+      if (!["weighted", "confirmed"].includes(basis)) return json({ error: "Basis must be weighted or confirmed." }, 400);
+      await setSetting(env, "guest_basis", basis);
+      await markDirty(env);
+      const ctx = await loadContext(env);
+      return json({ basis: ctx.basis, basis_count: ctx.basisCount });
+    }
+
+    if (route === "form-link") {
+      if (method === "POST") await setSetting(env, "_form_key", randomToken(18));
+      const key = await formKey(env);
+      return json({ url: `${new URL(request.url).origin}/submit/?k=${key}` });
+    }
+
+    // ---- spreadsheet import ------------------------------------------------------
+    if (route === "import" && method === "POST") {
+      const form = await request.formData();
+      const file = form.get("file");
+      if (!file || typeof file === "string") return json({ error: "Choose the .xlsx file to import." }, 400);
+      if (file.size > MAX_UPLOAD_BYTES) return json({ error: "That file is over 20 MB." }, 400);
+      const partsToImport = {
+        guests: bool(form.get("guests")),
+        budget: bool(form.get("budget")),
+        constants: bool(form.get("constants")),
+      };
+      if (!partsToImport.guests && !partsToImport.budget && !partsToImport.constants) {
+        return json({ error: "Pick at least one thing to import." }, 400);
+      }
+      const summary = await importWorkbook(env, await file.arrayBuffer(), partsToImport, user.email);
+      return json({ ok: true, summary });
+    }
+
+    // ---- Google Drive ------------------------------------------------------------
+    if (parts[0] === "drive") {
+      const sub = parts.slice(1).join("/");
+      if (sub === "status" && method === "GET") return json(await driveStatus(env));
+      if (sub === "connect" && method === "GET") return startOAuth(request, env, "drive", { loginHint: user.email });
+      if (sub === "folders" && method === "GET") {
+        const parent = new URL(request.url).searchParams.get("parent") || "root";
+        return json({ parent, folders: await listFolders(env, parent) });
+      }
+      if (sub === "folder" && method === "POST") {
+        const { id: folderId } = await body(request);
+        if (!folderId) return json({ error: "Pick a folder." }, 400);
+        const info = await folderInfo(env, String(folderId));
+        await setSetting(env, "_drive_folder", { id: info.id, name: info.name });
+        await markDirty(env);
+        return json({ folder: { id: info.id, name: info.name } });
+      }
+      if (sub === "folder/create" && method === "POST") {
+        const input = await body(request);
+        const name = String(input.name || "").trim();
+        if (!name) return json({ error: "Name the new folder." }, 400);
+        const created = await createFolder(env, name, String(input.parent || "root"));
+        return json({ folder: created }, 201);
+      }
+      if (sub === "sync" && method === "POST") return json({ ok: true, result: await syncToDrive(env) });
+      if (sub === "disconnect" && method === "POST") {
+        await disconnectDrive(env);
+        return json({ ok: true });
+      }
+    }
+
+    return json({ error: "Not found." }, 404);
+  } catch (error) {
+    return json({ error: error.message || String(error) }, 400);
+  }
+}

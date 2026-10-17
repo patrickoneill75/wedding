@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
+<title>Settings — Wedding planner</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  .results { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  .results div { background: var(--wash); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; color: var(--text-secondary); }
+  .results b { display: block; font-size: 17px; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .folder-row { display: flex; align-items: center; justify-content: space-between; padding: 7px 9px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+  .folder-row:hover { background: var(--wash); }
+  .picker { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; max-height: 360px; overflow: auto; }
+  .crumbs { font-size: 12.5px; margin-bottom: 8px; }
+  .crumbs button { color: var(--accent); }
+  code.url { display: block; background: var(--wash); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; word-break: break-all; margin-bottom: 10px; }
+  h3.part { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 14px 0 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar" id="topbar"></div>
+  <h1>Settings</h1>
+  <p class="sub">Changes here re-price every expense that depends on them.</p>
+
+  <form class="card" id="weddingForm">
+    <h2>Wedding details</h2>
+    <p class="desc">Shown on the public RSVP page.</p>
+    <div class="fields" id="weddingFields"></div>
+    <div class="row"><button type="submit" class="primary">Save</button></div>
+    <p class="msg"></p>
+  </form>
+
+  <form class="card" id="budgetForm">
+    <h2>Budget</h2>
+    <p class="desc">Tax applies to items marked taxable. The people and payment methods fill the "who paid" and "method" menus.</p>
+    <div class="fields" id="budgetFields"></div>
+    <div class="row"><button type="submit" class="primary">Save</button></div>
+    <p class="msg"></p>
+  </form>
+
+  <form class="card" id="calcForm">
+    <h2>Guest weighting and drinks calculator</h2>
+    <p class="desc">Weighted invites count each invitee by how likely they are to come, then round up. The drinks math is the
+      spreadsheet's (bevmo.com drink calculator) and runs on the guest count costs are using.</p>
+    <h3 class="part">Priority weights</h3>
+    <div class="fields" id="weightFields"></div>
+    <h3 class="part">Drinking assumptions</h3>
+    <div class="fields" id="drinkFields"></div>
+    <h3 class="part" id="resultsTitle">Results</h3>
+    <div class="results" id="drinkResults"></div>
+    <div class="row" style="margin-top:14px"><button type="submit" class="primary">Save</button></div>
+    <p class="msg"></p>
+  </form>
+
+  <div class="card">
+    <h2>Expense form link</h2>
+    <p class="desc">An unlisted page for adding expenses and payments from your phone without signing in. Anyone with the link can
+      add expenses, so keep it between the two of you. Making a new link stops the old one working.</p>
+    <code class="url" id="formUrl">…</code>
+    <div class="row">
+      <button id="copyLink">Copy</button>
+      <a class="btn" id="openLink" target="_blank" rel="noopener">Open</a>
+      <button class="danger" id="rotateLink">Make a new link</button>
+    </div>
+    <p class="msg" id="linkMsg"></p>
+  </div>
+
+  <div class="card" id="drive">
+    <h2>Google Drive</h2>
+    <p class="desc">Guests, RSVPs, contact details, expenses, payments and price history are saved as CSV files in the folder you pick,
+      every five minutes when something changes. Receipts and contracts go in a "Receipts" folder inside it.</p>
+    <div id="driveBody">Loading…</div>
+    <p class="msg" id="driveMsg"></p>
+  </div>
+
+  <form class="card" id="importForm">
+    <h2>Import the planning spreadsheet</h2>
+    <p class="desc">Upload <b>Wedding_Data.xlsx</b>. Each part you tick <b>replaces</b> what's here now. Guests come from the Guest List tab,
+      the budget from the Data tab, and weights and drink assumptions from Constants. Round 2 Invites and Decor are skipped.</p>
+    <div class="row" style="gap:18px; margin-bottom:12px">
+      <input type="file" name="file" accept=".xlsx" style="width:auto">
+      <label class="check"><input type="checkbox" name="guests" checked> Guest list</label>
+      <label class="check"><input type="checkbox" name="budget" checked> Budget</label>
+      <label class="check"><input type="checkbox" name="constants" checked> Weights and drinks</label>
+    </div>
+    <button type="submit" class="primary">Import</button>
+    <p class="msg"></p>
+  </form>
+</div>
+
+<script type="module">
+import { api, initPage, h, field, check, formValues, setMsg, fmtDate } from "/admin/admin.js";
+
+await initPage("settings.html");
+let state = await api("/api/admin/settings");
+
+const DRINK_LABELS = {
+  hours: "Hours of drinking",
+  first_hour_drinks: "Drinks per guest, first hour",
+  later_hour_drinks: "Drinks per guest per hour after",
+  wine_share: "Share that's wine (0–1)",
+  red_share: "Of the wine, red (0–1)",
+  white_share: "Of the wine, white (0–1)",
+  beer_share: "Share that's beer (0–1)",
+  liquor_share: "Share that's liquor (0–1)",
+  drinks_per_wine_bottle: "Drinks per wine bottle",
+  drinks_per_liquor_bottle: "Drinks per liquor bottle",
+  ounces_per_beer: "Ounces in a beer",
+  nonalc_per_guest_hour: "Non-alcoholic drinks per guest per hour",
+};
+
+function fill() {
+  const s = state.settings;
+  document.getElementById("weddingFields").replaceChildren(
+    field("Couple's names", "couple_names", { value: s.couple_names, placeholder: "Patrick & …" }),
+    field("Wedding date", "wedding_date", { type: "date", value: s.wedding_date }),
+    field("Venue", "venue", { value: s.venue }),
+    field("RSVP by", "rsvp_deadline", { type: "date", value: s.rsvp_deadline }),
+    field("Message on the RSVP page", "rsvp_intro", { type: "textarea", value: s.rsvp_intro, wide: true }),
+    h("div", {}, check("RSVPs are open", "rsvp_open", s.rsvp_open)),
+  );
+  document.getElementById("budgetFields").replaceChildren(
+    field("Sales tax %", "tax_percent", { type: "number", step: "any", value: Math.round(s.tax_rate * 10000) / 100 }),
+    field("Total budget ($, optional)", "budget_target", { type: "number", step: "1", value: s.budget_target ?? "" }),
+    field("Who pays (comma-separated)", "payers", { value: s.payers.join(", ") }),
+    field("Payment methods (comma-separated)", "payment_methods", { value: s.payment_methods.join(", ") }),
+  );
+  document.getElementById("weightFields").replaceChildren(
+    ...["High", "Medium", "Low"].map((p) => field(`${p} priority`, `w_${p}`, { type: "number", step: "any", value: s.priority_weights[p], oninput: preview })),
+  );
+  document.getElementById("drinkFields").replaceChildren(
+    ...Object.entries(DRINK_LABELS).map(([key, label]) => field(label, `d_${key}`, { type: "number", step: "any", value: s.drinks[key], oninput: preview })),
+  );
+  preview();
+}
+
+/* Mirrors drinksPlan() in src/calc.js for a live preview; the server recalculates on save. */
+function drinksPlan(p, g) {
+  const total = Math.ceil(p.first_hour_drinks * g + Math.max(p.hours - 1, 0) * p.later_hour_drinks * g - 1e-9);
+  const wineDrinks = Math.round(total * p.wine_share);
+  const wineBottles = Math.round(wineDrinks / Math.max(p.drinks_per_wine_bottle || 5, 1));
+  const beerDrinks = Math.round(total * p.beer_share);
+  const beerOunces = beerDrinks * (p.ounces_per_beer || 12);
+  const liquorDrinks = Math.round(total * p.liquor_share);
+  return {
+    total, wineBottles, red: Math.round(wineBottles * p.red_share), white: Math.round(wineBottles * p.white_share),
+    beerDrinks, beerOunces, half: beerOunces / 1984, quarter: beerOunces / 992, sixth: beerOunces / 672,
+    liquorBottles: Math.round(liquorDrinks / Math.max(p.drinks_per_liquor_bottle || 15, 1)),
+    nonalc: Math.round(p.hours * g * p.nonalc_per_guest_hour),
+  };
+}
+
+function preview() {
+  const v = formValues(document.getElementById("calcForm"));
+  const p = {};
+  for (const key of Object.keys(DRINK_LABELS)) p[key] = Number(v[`d_${key}`]) || 0;
+  const s = state.settings;
+  let guests = state.basis_count;
+  let basisLabel = s.guest_basis === "confirmed" ? "confirmed guests" : "weighted invites";
+  if (s.guest_basis !== "confirmed") {
+    // Re-weigh live with the weights being edited.
+    const c = state.counts.invitees_by_priority;
+    guests = Math.ceil(c.High * Number(v.w_High) + c.Medium * Number(v.w_Medium) + c.Low * Number(v.w_Low) - 1e-9);
+  }
+  const r = drinksPlan(p, guests);
+  document.getElementById("resultsTitle").textContent = `Results for ${guests} ${basisLabel}`;
+  const cell = (value, label) => h("div", {}, h("b", {}, String(value)), label);
+  document.getElementById("drinkResults").replaceChildren(
+    cell(r.total, "alcoholic drinks"), cell(r.wineBottles, "wine bottles"), cell(r.red, "red bottles"), cell(r.white, "white bottles"),
+    cell(r.beerDrinks, `beers (${r.beerOunces.toLocaleString()} oz)`), cell(r.half.toFixed(2), "½ kegs, or"), cell(r.quarter.toFixed(2), "¼ kegs, or"),
+    cell(r.sixth.toFixed(2), "⅙ kegs"), cell(r.liquorBottles, "liquor bottles"), cell(r.nonalc, "non-alcoholic drinks"),
+  );
+}
+
+async function save(form, payload) {
+  const msg = form.querySelector(".msg");
+  try {
+    state = { ...state, ...(await api("/api/admin/settings", { method: "PUT", body: payload })) };
+    fill();
+    setMsg(msg, "Saved.", "ok");
+  } catch (error) {
+    setMsg(msg, error.message, "err");
+  }
+}
+
+document.getElementById("weddingForm").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  save(ev.target, formValues(ev.target));
+});
+document.getElementById("budgetForm").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const v = formValues(ev.target);
+  save(ev.target, {
+    tax_rate: (Number(v.tax_percent) || 0) / 100,
+    budget_target: v.budget_target,
+    payers: v.payers.split(","),
+    payment_methods: v.payment_methods.split(","),
+  });
+});
+document.getElementById("calcForm").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const v = formValues(ev.target);
+  const drinks = {};
+  for (const key of Object.keys(DRINK_LABELS)) drinks[key] = v[`d_${key}`];
+  save(ev.target, { priority_weights: { High: v.w_High, Medium: v.w_Medium, Low: v.w_Low }, drinks });
+});
+
+/* ------------------------------------------------------------ form link -- */
+async function showLink(method = "GET") {
+  const { url } = await api("/api/admin/form-link", { method });
+  document.getElementById("formUrl").textContent = url;
+  document.getElementById("openLink").href = url;
+}
+document.getElementById("copyLink").addEventListener("click", async () => {
+  await navigator.clipboard.writeText(document.getElementById("formUrl").textContent).catch(() => {});
+  setMsg(document.getElementById("linkMsg"), "Copied.", "ok");
+});
+document.getElementById("rotateLink").addEventListener("click", async () => {
+  if (!confirm("Make a new link? The current one stops working right away.")) return;
+  await showLink("POST");
+  setMsg(document.getElementById("linkMsg"), "New link made. Share it with your partner again.", "ok");
+});
+
+/* ---------------------------------------------------------------- Drive -- */
+const driveMsg = document.getElementById("driveMsg");
+async function renderDrive() {
+  const s = await api("/api/admin/drive/status");
+  const body = document.getElementById("driveBody");
+  if (!s.client_configured) {
+    body.replaceChildren(h("p", { class: "msg err" }, "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET aren't set on the Worker. See SETUP.md."));
+    return;
+  }
+  if (!s.connected) {
+    body.replaceChildren(h("div", { class: "row" }, h("span", { class: "pill" }, "Not connected"),
+      h("a", { class: "btn primary", href: "/api/admin/drive/connect" }, "Log in with Google to connect Drive")));
+    return;
+  }
+  const sync = s.last_sync || {};
+  body.replaceChildren(
+    h("div", { class: "row", style: "margin-bottom:10px" },
+      h("span", { class: "pill paid" }, "Connected"), h("span", {}, s.email),
+      h("span", { class: "spacer" }),
+      h("button", { class: "small danger", onclick: async () => {
+        if (!confirm("Disconnect Google Drive? Files already in Drive stay there.")) return;
+        await api("/api/admin/drive/disconnect", { method: "POST" });
+        renderDrive();
+      } }, "Disconnect")),
+    h("p", { style: "margin:0 0 8px" }, "Folder: ", s.folder ? h("b", {}, s.folder.name) : h("span", { class: "muted" }, "none picked yet")),
+    h("p", { class: "desc", style: "margin:0 0 10px" },
+      sync.ok_at ? `Last synced ${new Date(sync.ok_at).toLocaleString()}. ` : "Not synced yet. ",
+      s.pending_changes ? "Changes waiting to sync." : "Everything is synced.",
+      sync.error && (!sync.ok_at || sync.error_at > sync.ok_at) ? h("span", { style: "color:var(--bad)" }, ` Last attempt failed: ${sync.error}`) : null),
+    h("div", { class: "row" },
+      h("button", { onclick: () => openPicker(body) }, s.folder ? "Change folder" : "Pick a folder"),
+      s.folder ? h("button", { class: "primary", onclick: async (ev) => {
+        ev.target.disabled = true;
+        setMsg(driveMsg, "Syncing…");
+        try {
+          await api("/api/admin/drive/sync", { method: "POST" });
+          setMsg(driveMsg, "Synced.", "ok");
+        } catch (error) {
+          setMsg(driveMsg, error.message, "err");
+        }
+        renderDrive();
+      } }, "Sync now") : null),
+  );
+}
+
+async function openPicker(body) {
+  body.querySelector(".picker")?.remove();
+  const picker = h("div", { class: "picker" });
+  body.append(picker);
+  const trail = [{ id: "root", name: "My Drive" }];
+  async function show() {
+    const here = trail[trail.length - 1];
+    picker.replaceChildren(h("div", { class: "muted" }, "Loading…"));
+    try {
+      const { folders } = await api(`/api/admin/drive/folders?parent=${encodeURIComponent(here.id)}`);
+      const newName = h("input", { placeholder: "New folder name", style: "width:auto; flex:1" });
+      picker.replaceChildren(
+        h("div", { class: "crumbs" }, trail.flatMap((t, i) => [i ? " / " : "",
+          h("button", { class: "link", onclick: () => { trail.length = i + 1; show(); } }, t.name)])),
+        here.id !== "root" ? h("div", { class: "row", style: "margin-bottom:8px" },
+          h("button", { class: "primary small", onclick: () => choose(here) }, `Use "${here.name}"`)) : "",
+        folders.length ? folders.map((f) => h("div", { class: "folder-row", onclick: () => { trail.push(f); show(); } },
+          h("span", {}, `📁 ${f.name}`), h("span", { class: "muted" }, "open ›"))) : h("p", { class: "muted" }, "No folders here."),
+        h("div", { class: "row", style: "margin-top:10px" }, newName, h("button", { class: "small", onclick: async () => {
+          if (!newName.value.trim()) return;
+          const { folder } = await api("/api/admin/drive/folder/create", { method: "POST", body: { name: newName.value.trim(), parent: here.id } });
+          trail.push(folder);
+          show();
+        } }, "Create folder here")),
+      );
+    } catch (error) {
+      picker.replaceChildren(h("p", { class: "msg err" }, error.message));
+    }
+  }
+  async function choose(folder) {
+    await api("/api/admin/drive/folder", { method: "POST", body: { id: folder.id } });
+    setMsg(driveMsg, `Files will be saved in "${folder.name}". Syncing…`, "ok");
+    await api("/api/admin/drive/sync", { method: "POST" }).then(() => setMsg(driveMsg, `Synced to "${folder.name}".`, "ok"))
+      .catch((error) => setMsg(driveMsg, error.message, "err"));
+    renderDrive();
+  }
+  show();
+}
+
+/* --------------------------------------------------------------- import -- */
+document.getElementById("importForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const form = ev.target;
+  const msg = form.querySelector(".msg");
+  const file = form.elements.file.files[0];
+  if (!file) return setMsg(msg, "Choose the .xlsx file first.", "err");
+  const parts = ["guests", "budget", "constants"].filter((p) => form.elements[p].checked);
+  if (!confirm(`This replaces the current ${parts.join(", ")} with what's in ${file.name}. Continue?`)) return;
+  const data = new FormData();
+  data.append("file", file);
+  for (const p of parts) data.append(p, "1");
+  setMsg(msg, "Importing…");
+  try {
+    const { summary } = await api("/api/admin/import", { method: "POST", form: data });
+    const bits = [];
+    if (summary.guests != null) bits.push(`${summary.guests} guests in ${summary.households} households`);
+    if (summary.expenses != null) bits.push(`${summary.expenses} budget items (${summary.payments} already paid)`);
+    if (summary.constants) bits.push("weights and drink assumptions");
+    setMsg(msg, `Imported ${bits.join(", ")}.`, "ok");
+    state = await api("/api/admin/settings");
+    fill();
+  } catch (error) {
+    setMsg(msg, error.message, "err");
+  }
+});
+
+fill();
+showLink();
+renderDrive();
+const params = new URLSearchParams(location.search);
+if (params.get("error")) setMsg(driveMsg, params.get("error"), "err");
+if (params.get("drive") === "connected") setMsg(driveMsg, "Google Drive connected. Now pick a folder.", "ok");
+if (location.hash === "#drive") document.getElementById("drive").scrollIntoView();
+</script>
+</body>
+</html>

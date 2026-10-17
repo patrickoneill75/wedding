@@ -1,0 +1,6 @@
+node_modules/
+.wrangler/
+.dev.vars
+*.xlsx
+!tests/fixtures/*.xlsx
+__pycache__/

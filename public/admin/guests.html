@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
+<title>Guests — Wedding planner</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  .guest { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 2px 0; }
+  .tag { font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; }
+  td.c { text-align: center; }
+  .bulk { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; }
+  .guest-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 10px; }
+  .guest-card .flags { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
+  .summary { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); margin-bottom: 14px; }
+  .summary b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar" id="topbar"></div>
+  <div class="row" style="margin-bottom:6px">
+    <div><h1>Guests</h1></div>
+    <span class="spacer"></span>
+    <button class="primary" id="addBtn">+ Add household</button>
+  </div>
+  <div class="summary" id="summary"></div>
+
+  <div class="filters">
+    <input type="search" id="search" placeholder="Search names, cities, notes…">
+    <select id="side"><option value="">Both sides</option><option>Bride</option><option>Groom</option></select>
+    <select id="priority"><option value="">Any priority</option><option>High</option><option>Medium</option><option>Low</option></select>
+    <select id="rsvp"><option value="">Any RSVP</option><option value="pending">Awaiting reply</option><option value="yes">Coming</option><option value="no">Not coming</option></select>
+    <select id="track">
+      <option value="">All households</option>
+      <option value="std">Save-the-date not sent</option>
+      <option value="invite">Invite not sent</option>
+      <option value="thanks">Gift received, no thank-you yet</option>
+      <option value="plusone">Has a plus-one</option>
+      <option value="noaddress">Missing an address</option>
+    </select>
+  </div>
+
+  <div class="bulk" id="bulk" hidden>
+    <span id="bulkCount"></span>
+    <button class="small" data-field="save_the_date_sent" data-value="1">Mark save-the-date sent</button>
+    <button class="small" data-field="invite_sent" data-value="1">Mark invite sent</button>
+    <button class="small" data-field="thank_you_sent" data-value="1">Mark thank-you sent</button>
+    <button class="small link" id="clearSel">Clear selection</button>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th><input type="checkbox" id="selectAll" title="Select all shown"></th>
+        <th>Household</th><th>Guests</th><th class="c">Save the date</th><th class="c">Invite</th><th>Gift</th><th class="c">Thank-you</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</div>
+
+<script type="module">
+import { api, initPage, h, openDialog, field, check, formValues, setMsg, fmtDate } from "/admin/admin.js";
+
+await initPage("guests.html");
+let data;
+const selected = new Set();
+const RSVP_LABEL = { pending: "Awaiting", yes: "Coming", no: "Not coming" };
+
+async function load() {
+  data = await api("/api/admin/guests");
+  const c = data.counts;
+  const item = (n, label) => h("span", {}, h("b", {}, String(n)), ` ${label}`);
+  document.getElementById("summary").replaceChildren(
+    item(c.invited, "invited"), item(c.weighted, "weighted"), item(c.confirmed, "coming"), item(c.declined, "not coming"),
+    item(c.pending, "awaiting reply"), item(c.households, "households"), item(c.plus_ones_allowed, "plus-ones offered"),
+  );
+  render();
+}
+
+function matches(hh) {
+  const q = document.getElementById("search").value.trim().toLowerCase();
+  const side = document.getElementById("side").value;
+  const priority = document.getElementById("priority").value;
+  const rsvp = document.getElementById("rsvp").value;
+  const track = document.getElementById("track").value;
+  if (q) {
+    const hay = [hh.display_name, hh.greeting, hh.city, hh.state, hh.notes, hh.email, ...hh.guests.flatMap((g) => [g.first_name, g.last_name, g.plus_one_name, g.notes])]
+      .join(" ").toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  if (side && !hh.guests.some((g) => g.side === side)) return false;
+  if (priority && !hh.guests.some((g) => g.priority === priority)) return false;
+  if (rsvp && !hh.guests.some((g) => g.rsvp === rsvp || (g.plus_one_allowed && g.plus_one_rsvp === rsvp))) return false;
+  if (track === "std" && hh.save_the_date_sent) return false;
+  if (track === "invite" && hh.invite_sent) return false;
+  if (track === "thanks" && !(hh.gift_received && !hh.thank_you_sent)) return false;
+  if (track === "plusone" && !hh.guests.some((g) => g.plus_one_allowed)) return false;
+  if (track === "noaddress" && hh.address1) return false;
+  return true;
+}
+
+async function toggle(hh, fieldName, value) {
+  await api(`/api/admin/households/${hh.id}`, { method: "PUT", body: { [fieldName]: value } });
+  hh[fieldName] = value ? 1 : 0;
+}
+
+function render() {
+  const shown = data.households.filter(matches);
+  const rows = shown.map((hh) => {
+    const box = (fieldName) => h("td", { class: "c" }, h("input", { type: "checkbox", checked: Boolean(hh[fieldName]),
+      onchange: (ev) => toggle(hh, fieldName, ev.target.checked).catch((e) => { alert(e.message); ev.target.checked = !ev.target.checked; }) }));
+    return h("tr", {},
+      h("td", {}, h("input", { type: "checkbox", checked: selected.has(hh.id), onchange: (ev) => { ev.target.checked ? selected.add(hh.id) : selected.delete(hh.id); updateBulk(); } })),
+      h("td", {}, h("button", { class: "link", onclick: () => openHousehold(hh) }, hh.display_name || "(no name)"),
+        h("div", { class: "muted", style: "font-size:12px" }, [hh.code, [hh.city, hh.state].filter(Boolean).join(", ")].filter(Boolean).join(" · ")),
+        hh.rsvp_at ? h("div", { class: "muted", style: "font-size:12px" }, `RSVP'd ${fmtDate(hh.rsvp_at)}`) : null),
+      h("td", {}, hh.guests.map((g) => h("div", { class: "guest" },
+        h("span", {}, `${g.first_name} ${g.last_name}`),
+        h("span", { class: `pill ${g.rsvp}` }, RSVP_LABEL[g.rsvp]),
+        g.side ? h("span", { class: "tag" }, g.side) : h("span", { class: "tag", style: "color:var(--bad)" }, "no side"),
+        h("span", { class: "tag" }, g.priority),
+        g.wedding_party ? h("span", { class: "tag" }, "wedding party") : null,
+        g.immediate_family ? h("span", { class: "tag" }, "immediate family") : g.extended_family ? h("span", { class: "tag" }, "extended family") : null,
+        g.ceremony ? h("span", { class: "tag" }, "ceremony") : null,
+        g.table_name ? h("span", { class: "tag" }, `table ${g.table_name}`) : null,
+        g.plus_one_allowed ? h("span", { class: `pill ${g.plus_one_rsvp}` }, `+1${g.plus_one_name ? ` ${g.plus_one_name}` : ""}: ${RSVP_LABEL[g.plus_one_rsvp]}`) : null,
+      ))),
+      box("save_the_date_sent"),
+      box("invite_sent"),
+      h("td", {}, hh.gift ? hh.gift : h("span", { class: "muted" }, "—"), hh.gift_received ? h("div", { class: "muted", style: "font-size:12px" }, "received") : null),
+      box("thank_you_sent"),
+    );
+  });
+  if (!rows.length) rows.push(h("tr", {}, h("td", { colspan: 7, class: "muted" }, data.households.length ? "Nobody matches those filters." : "No guests yet. Import the spreadsheet in Settings, or add a household.")));
+  document.getElementById("rows").replaceChildren(...rows);
+  updateBulk();
+}
+
+function updateBulk() {
+  document.getElementById("bulk").hidden = selected.size === 0;
+  document.getElementById("bulkCount").textContent = `${selected.size} selected`;
+}
+
+for (const id of ["search", "side", "priority", "rsvp", "track"]) document.getElementById(id).addEventListener("input", render);
+document.getElementById("selectAll").addEventListener("change", (ev) => {
+  for (const hh of data.households.filter(matches)) ev.target.checked ? selected.add(hh.id) : selected.delete(hh.id);
+  render();
+});
+document.getElementById("clearSel").addEventListener("click", () => { selected.clear(); document.getElementById("selectAll").checked = false; render(); });
+for (const button of document.querySelectorAll("#bulk [data-field]")) {
+  button.addEventListener("click", async () => {
+    await api("/api/admin/households/bulk", { method: "POST", body: { ids: [...selected], field: button.dataset.field, value: true } });
+    selected.clear();
+    document.getElementById("selectAll").checked = false;
+    await load();
+  });
+}
+document.getElementById("addBtn").addEventListener("click", () => openHousehold(null));
+
+/* ------------------------------------------------------------- household editor -- */
+
+function guestCard(g, onRemove) {
+  const card = h("div", { class: "guest-card" });
+  const plusOneFields = h("div", { class: "fields" },
+    field("Plus-one's name (optional, shows on their RSVP)", "plus_one_name", { value: g.plus_one_name || "" }),
+    field("Plus-one RSVP", "plus_one_rsvp", { options: [["pending", "Awaiting"], ["yes", "Coming"], ["no", "Not coming"]], value: g.plus_one_rsvp || "pending" }),
+    field("Plus-one dietary needs", "plus_one_dietary", { value: g.plus_one_dietary || "" }),
+  );
+  const plusOneBox = check("Allow a plus-one", "plus_one_allowed", g.plus_one_allowed, (ev) => { plusOneFields.hidden = !ev.target.checked; });
+  plusOneFields.hidden = !g.plus_one_allowed;
+  card.append(
+    h("div", { class: "fields" },
+      field("First name", "first_name", { value: g.first_name || "" }),
+      field("Last name", "last_name", { value: g.last_name || "" }),
+      field("Side", "side", { options: [["", "—"], ["Bride", "Bride"], ["Groom", "Groom"]], value: g.side || "" }),
+      field("Priority", "priority", { options: [["High", "High"], ["Medium", "Medium"], ["Low", "Low"]], value: g.priority || "High" }),
+    ),
+    h("div", { class: "flags" },
+      check("Wedding party", "wedding_party", g.wedding_party),
+      check("Immediate family", "immediate_family", g.immediate_family),
+      check("Extended family", "extended_family", g.extended_family),
+      check("Ceremony", "ceremony", g.ceremony),
+      plusOneBox,
+    ),
+    plusOneFields,
+    h("div", { class: "fields" },
+      field("RSVP", "rsvp", { options: [["pending", "Awaiting"], ["yes", "Coming"], ["no", "Not coming"]], value: g.rsvp || "pending" }),
+      field("Dietary needs", "dietary", { value: g.dietary || "" }),
+      field("Table", "table_name", { value: g.table_name || "" }),
+      field("Notes", "notes", { value: g.notes || "" }),
+    ),
+    h("button", { type: "button", class: "small danger", onclick: () => onRemove(card) }, "Remove guest"),
+  );
+  card.guestId = g.id || null;
+  return card;
+}
+
+function cardValues(card) {
+  const out = {};
+  for (const el of card.querySelectorAll("input, select, textarea")) {
+    if (!el.name) continue;
+    out[el.name] = el.type === "checkbox" ? el.checked : el.value;
+  }
+  return out;
+}
+
+async function openHousehold(hh) {
+  const changed = await openDialog(hh ? hh.display_name || "Household" : "New household", (close) => {
+    const msg = h("p", { class: "msg" });
+    const removed = [];
+    const guestList = h("div", {});
+    const addGuest = (g) => guestList.append(guestCard(g, (card) => { if (card.guestId) removed.push(card.guestId); card.remove(); }));
+    (hh?.guests?.length ? hh.guests : [{ priority: "High" }]).forEach(addGuest);
+
+    const form = h("form", { onsubmit: (ev) => ev.preventDefault() },
+      h("div", { class: "fields" },
+        field("Name on the envelope", "display_name", { value: hh?.display_name || "", placeholder: "Jane and John Smith" }),
+        field("Greeting", "greeting", { value: hh?.greeting || "", placeholder: "Jane and John" }),
+        field("Email", "email", { type: "email", value: hh?.email || "" }),
+        field("Phone", "phone", { value: hh?.phone || "" }),
+      ),
+      h("div", { class: "fields" },
+        field("Address", "address1", { value: hh?.address1 || "" }),
+        field("Address line 2", "address2", { value: hh?.address2 || "" }),
+        field("City", "city", { value: hh?.city || "" }),
+        field("State", "state", { value: hh?.state || "" }),
+        field("ZIP", "zip", { value: hh?.zip || "" }),
+        field("Country", "country", { value: hh?.country || "" }),
+      ),
+      h("div", { class: "row", style: "gap:18px; margin-bottom:12px" },
+        check("Save-the-date sent", "save_the_date_sent", hh?.save_the_date_sent),
+        check("Invite sent", "invite_sent", hh?.invite_sent),
+        check("Gift received", "gift_received", hh?.gift_received),
+        check("Thank-you sent", "thank_you_sent", hh?.thank_you_sent),
+      ),
+      h("div", { class: "fields" },
+        field("Gift", "gift", { value: hh?.gift || "" }),
+        field("Household notes", "notes", { value: hh?.notes || "" }),
+      ),
+      hh?.rsvp_message ? h("p", { class: "desc" }, `Message with their RSVP: “${hh.rsvp_message}”`) : null,
+    );
+
+    async function save() {
+      const household = formValues(form);
+      const guests = [...guestList.children].map((card) => ({ id: card.guestId, ...cardValues(card) }));
+      try {
+        let householdId = hh?.id;
+        if (householdId) await api(`/api/admin/households/${householdId}`, { method: "PUT", body: household });
+        else householdId = (await api("/api/admin/households", { method: "POST", body: household })).id;
+        for (const guestId of removed) await api(`/api/admin/guests/${guestId}`, { method: "DELETE" });
+        for (const g of guests) {
+          if (g.id) await api(`/api/admin/guests/${g.id}`, { method: "PUT", body: g });
+          else await api("/api/admin/guests", { method: "POST", body: { ...g, household_id: householdId } });
+        }
+        close(true);
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    }
+
+    return h("div", {}, form,
+      h("section", {}, h("h3", {}, "Guests in this household"), guestList,
+        h("button", { type: "button", class: "small", onclick: () => addGuest({ priority: "High", side: hh?.guests?.[0]?.side || "" }) }, "+ Add a guest")),
+      h("div", { class: "row", style: "margin-top:16px" },
+        h("button", { class: "primary", onclick: save }, hh ? "Save" : "Add household"),
+        hh ? h("button", { class: "danger", onclick: async () => {
+          if (!confirm(`Delete ${hh.display_name} and everyone in it?`)) return;
+          await api(`/api/admin/households/${hh.id}`, { method: "DELETE" });
+          close(true);
+        } }, "Delete household") : null),
+      msg);
+  });
+  if (changed) await load();
+}
+
+await load();
+</script>
+</body>
+</html>

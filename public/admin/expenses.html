@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
+<title>Expenses — Wedding planner</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  .preview { background: var(--wash); border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
+  .preview b { font-variant-numeric: tabular-nums; }
+  td .muted { font-size: 12px; }
+  tfoot td { font-weight: 650; background: var(--surface-2); }
+  .pricing { font-size: 12px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar" id="topbar"></div>
+  <div class="row" style="margin-bottom:6px">
+    <div>
+      <h1>Expenses</h1>
+      <p class="sub" id="subtitle" style="margin:0"></p>
+    </div>
+    <span class="spacer"></span>
+    <button id="formLinkBtn">Copy expense form link</button>
+    <button class="primary" id="addBtn">+ Add expense</button>
+  </div>
+  <p class="msg" id="topMsg"></p>
+
+  <div class="filters">
+    <input type="search" id="search" placeholder="Search items, vendors, notes…">
+    <select id="catFilter"><option value="">All categories</option></select>
+    <select id="statusFilter"><option value="">All stages</option></select>
+    <label class="check"><input type="checkbox" id="unpricedOnly"> Needs a price</label>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Item</th><th>Stage</th><th>Pricing</th><th class="num">Estimate</th><th class="num">Projected</th>
+        <th class="num">Paid</th><th class="num">Owed</th><th>Due</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+      <tfoot id="foot"></tfoot>
+    </table>
+  </div>
+</div>
+
+<datalist id="categories"></datalist>
+<datalist id="subcategories"></datalist>
+
+<script type="module">
+import { api, initPage, h, money, fmtDate, today, statusPill, openDialog, field, check, formValues, setMsg } from "/admin/admin.js";
+
+await initPage("expenses.html");
+let data;
+const STAGES = ["estimate", "quote", "booked", "partially_paid", "paid"];
+
+async function load() {
+  data = await api("/api/admin/expenses");
+  const cats = [...new Set(data.expenses.map((e) => e.category).filter(Boolean))].sort();
+  const subs = [...new Set(data.expenses.map((e) => e.subcategory).filter(Boolean))].sort();
+  document.getElementById("categories").replaceChildren(...cats.map((c) => h("option", { value: c })));
+  document.getElementById("subcategories").replaceChildren(...subs.map((c) => h("option", { value: c })));
+  const catFilter = document.getElementById("catFilter");
+  const keep = catFilter.value;
+  catFilter.replaceChildren(h("option", { value: "" }, "All categories"), ...cats.map((c) => h("option", { value: c, selected: c === keep }, c)));
+  const statusFilter = document.getElementById("statusFilter");
+  if (statusFilter.options.length === 1) {
+    for (const s of data.statuses) statusFilter.append(h("option", { value: s }, data.status_labels[s]));
+  }
+  const basisText = data.basis === "confirmed" ? `${data.basis_count} confirmed guests` : `${data.basis_count} weighted invites`;
+  document.getElementById("subtitle").textContent =
+    `Per-guest items are priced on ${basisText}. Tax is ${Math.round(data.settings.tax_rate * 1000) / 10}% on taxable items.`;
+  renderRows();
+}
+
+function quantityLabel(e) {
+  if (e.pricing !== "variable") return `× ${e.units}`;
+  const src = data.quantity_sources[e.quantity_source] || e.quantity_source;
+  const factor = Number(e.quantity_factor) !== 1 ? ` × ${e.quantity_factor}` : "";
+  return `× ${e.quantity} (${src.replace(/^Drinks: /, "")}${factor})`;
+}
+
+function renderRows() {
+  const q = document.getElementById("search").value.trim().toLowerCase();
+  const cat = document.getElementById("catFilter").value;
+  const status = document.getElementById("statusFilter").value;
+  const unpriced = document.getElementById("unpricedOnly").checked;
+  const shown = data.expenses.filter((e) =>
+    (!cat || e.category === cat) && (!status || e.status === status) && (!unpriced || (!e.priced && e.status !== "cancelled")) &&
+    (!q || [e.item, e.vendor, e.notes, e.category, e.subcategory].some((v) => String(v || "").toLowerCase().includes(q))));
+  const rows = [];
+  let group = null;
+  for (const e of shown) {
+    const key = `${e.category} · ${e.subcategory}`;
+    if (key !== group) {
+      group = key;
+      rows.push(h("tr", { class: "group" }, h("td", { colspan: 8 }, e.subcategory ? `${e.category} — ${e.subcategory}` : e.category || "Uncategorized")));
+    }
+    rows.push(h("tr", { class: "clickable", onclick: () => openEditor(e.id) },
+      h("td", {}, e.item, e.vendor ? h("div", { class: "muted" }, e.vendor) : null),
+      h("td", {}, statusPill(e.status, data.status_labels)),
+      h("td", { class: "pricing" }, e.priced ? `${money(e.unit_cost)} ${quantityLabel(e)}` : h("span", { class: "muted" }, "No price yet"),
+        e.taxable || e.gratuity_rate ? h("div", {}, [e.taxable ? "+ tax" : "", e.gratuity_rate ? `+ ${Math.round(e.gratuity_rate * 100)}% gratuity` : ""].filter(Boolean).join(" ")) : null),
+      h("td", { class: "num" }, money(e.estimate)),
+      h("td", { class: "num" }, money(e.projected)),
+      h("td", { class: "num" }, e.paid ? money(e.paid) : "—"),
+      h("td", { class: "num" }, e.owed ? money(e.owed) : "—"),
+      h("td", {}, e.due_date ? (e.due_date < today() && e.owed > 0 ? h("span", { class: "pill overdue" }, fmtDate(e.due_date)) : fmtDate(e.due_date)) : ""),
+    ));
+  }
+  if (!shown.length) rows.push(h("tr", {}, h("td", { colspan: 8, class: "muted" }, data.expenses.length ? "Nothing matches those filters." : "No expenses yet. Add one, or import the spreadsheet in Settings.")));
+  document.getElementById("rows").replaceChildren(...rows);
+  const sum = (k) => shown.reduce((s, e) => s + (e[k] || 0), 0);
+  document.getElementById("foot").replaceChildren(h("tr", {},
+    h("td", { colspan: 3 }, `${shown.length} items`),
+    h("td", { class: "num" }, money(sum("estimate"))), h("td", { class: "num" }, money(sum("projected"))),
+    h("td", { class: "num" }, money(sum("paid"))), h("td", { class: "num" }, money(sum("owed"))), h("td", {})));
+}
+
+for (const id of ["search", "catFilter", "statusFilter", "unpricedOnly"]) {
+  document.getElementById(id).addEventListener("input", renderRows);
+}
+document.getElementById("addBtn").addEventListener("click", () => openEditor(null));
+document.getElementById("formLinkBtn").addEventListener("click", async () => {
+  const msg = document.getElementById("topMsg");
+  try {
+    const { url } = await api("/api/admin/form-link");
+    await navigator.clipboard.writeText(url).catch(() => {});
+    setMsg(msg, `Copied: ${url} — anyone with this link can add expenses, so only share it with each other. Rotate it in Settings.`, "ok");
+  } catch (error) {
+    setMsg(msg, error.message, "err");
+  }
+});
+
+/* ------------------------------------------------------------ preview math --
+ * Mirrors src/calc.js so the editor can show the total before saving. The server
+ * recomputes on save; this is display only. */
+function sourceValue(source) {
+  if (source === "guests") return data.basis_count;
+  if (source === "invited") return data.counts.invited;
+  if (source === "households") return data.counts.households;
+  if (source.startsWith("drinks:")) return data.drinks[source.slice(7)] ?? 0;
+  return 0;
+}
+function previewTotals(v) {
+  let qty;
+  if (v.pricing === "variable") {
+    const raw = sourceValue(v.quantity_source) * (Number(v.quantity_factor) || 1);
+    qty = v.round_up ? Math.ceil(raw - 1e-9) : Math.round(raw * 100) / 100;
+  } else qty = Number(v.units) || 0;
+  const subtotal = Math.round((Number(v.unit_cost) || 0) * qty * 100) / 100;
+  const tax = v.taxable ? Math.round(subtotal * data.settings.tax_rate * 100) / 100 : 0;
+  const grat = Math.round(subtotal * ((Number(v.gratuity_percent) || 0) / 100) * 100) / 100;
+  return { qty, subtotal, tax, grat, total: subtotal + tax + grat };
+}
+
+/* ----------------------------------------------------------------- editor -- */
+
+async function openEditor(id) {
+  let detail = null;
+  if (id) detail = await api(`/api/admin/expenses/${id}`);
+  const e = detail?.expense || {
+    category: "", subcategory: "", item: "", vendor: "", status: "estimate", pricing: "fixed", unit_cost: null, units: 1,
+    quantity_source: "guests", quantity_factor: 1, round_up: 0, taxable: 0, gratuity_rate: 0, due_date: "", due_amount: null, payer: "", notes: "",
+  };
+  history.replaceState(null, "", id ? `#${id}` : location.pathname);
+
+  await openDialog(id ? e.item : "New expense", (close) => {
+    let status = e.status;
+    const form = h("form", { onsubmit: (ev) => ev.preventDefault() });
+    const msg = h("p", { class: "msg" });
+    const preview = h("div", { class: "preview" });
+
+    const stepper = h("div", { class: "stepper" });
+    const drawStepper = () => {
+      const at = STAGES.indexOf(status);
+      stepper.replaceChildren(...STAGES.flatMap((s, i) => [
+        i ? h("span", { class: "arrow" }, "→") : null,
+        h("button", { type: "button", class: s === status ? "current" : at > i ? "done" : "", onclick: () => { status = s; drawStepper(); } }, data.status_labels[s]),
+      ].filter(Boolean)), h("span", { class: "spacer" }),
+      h("button", { type: "button", class: status === "cancelled" ? "current" : "danger", onclick: () => { status = status === "cancelled" ? "estimate" : "cancelled"; drawStepper(); } },
+        status === "cancelled" ? "Cancelled" : "Cancel item"));
+    };
+    drawStepper();
+
+    const payerOptions = [["", "—"], ...data.settings.payers.map((p) => [p, p])];
+    const sourceOptions = Object.entries(data.quantity_sources);
+    const variableFields = h("div", { class: "fields" },
+      field("Quantity comes from", "quantity_source", { options: sourceOptions, value: e.quantity_source, onchange: update }),
+      field("Multiply by", "quantity_factor", { type: "number", step: "any", value: e.quantity_factor, oninput: update }),
+      h("label", { class: "check", style: "align-self:end; padding-bottom:8px" }, h("input", { type: "checkbox", name: "round_up", checked: Boolean(e.round_up), onchange: update }), "Round up"),
+    );
+    const fixedFields = h("div", { class: "fields" }, field("Units", "units", { type: "number", step: "any", value: e.units, oninput: update }));
+
+    form.append(
+      // A div, not a label: a label forwards every click inside it to its first button.
+      h("div", { class: "field", style: "margin-bottom:12px; font-size:12.5px; color:var(--text-secondary)" }, "Stage — click to move it along; skipping stages is fine", stepper),
+      h("div", { class: "fields" },
+        field("Item", "item", { value: e.item, required: true }),
+        field("Vendor", "vendor", { value: e.vendor || "" }),
+        field("Category", "category", { value: e.category, list: "categories" }),
+        field("Subcategory", "subcategory", { value: e.subcategory, list: "subcategories" }),
+      ),
+      h("div", { class: "row", style: "margin-bottom:10px" },
+        h("label", { class: "check" }, h("input", { type: "radio", name: "pricing", value: "fixed", checked: e.pricing !== "variable", onchange: update }), "Fixed price"),
+        h("label", { class: "check" }, h("input", { type: "radio", name: "pricing", value: "variable", checked: e.pricing === "variable", onchange: update }), "Variable (scales with guests or drinks)"),
+      ),
+      h("div", { class: "fields" },
+        field("Price per unit ($)", "unit_cost", { type: "number", step: "0.01", value: e.unit_cost ?? "", oninput: update }),
+        field("Gratuity %", "gratuity_percent", { type: "number", step: "any", value: Math.round((e.gratuity_rate || 0) * 10000) / 100, oninput: update }),
+        h("label", { class: "check", style: "align-self:end; padding-bottom:8px" }, h("input", { type: "checkbox", name: "taxable", checked: Boolean(e.taxable), onchange: update }), `Taxable (${Math.round(data.settings.tax_rate * 1000) / 10}%)`),
+      ),
+      fixedFields,
+      variableFields,
+      preview,
+      h("div", { class: "fields" },
+        field("Next payment due", "due_date", { type: "date", value: e.due_date || "" }),
+        field("Amount due ($)", "due_amount", { type: "number", step: "0.01", value: e.due_amount ?? "", placeholder: "Defaults to what's owed" }),
+        field("Who's paying", "payer", { options: payerOptions, value: e.payer || "" }),
+      ),
+      h("div", { class: "fields" },
+        field("Notes", "notes", { type: "textarea", value: e.notes || "", wide: true }),
+        id ? field("What changed? (saved to the price history)", "history_note", { placeholder: "e.g. Got the final quote from the venue", wide: true }) : null,
+      ),
+      h("div", { class: "row" },
+        h("button", { type: "button", class: "primary", onclick: save }, id ? "Save changes" : "Add expense"),
+        id ? h("button", { type: "button", class: "danger", onclick: remove }, "Delete") : null,
+      ),
+      msg,
+    );
+
+    function update() {
+      const v = formValues(form);
+      const variable = v.pricing === "variable";
+      variableFields.hidden = !variable;
+      fixedFields.hidden = variable;
+      const t = previewTotals(v);
+      preview.replaceChildren(
+        h("div", {}, `${money(Number(v.unit_cost) || 0)} × ${t.qty} = `, h("b", {}, money(t.subtotal)),
+          t.tax ? ` + tax ${money(t.tax)}` : "", t.grat ? ` + gratuity ${money(t.grat)}` : "", " = ", h("b", {}, money(t.total))),
+        variable && v.quantity_source === "guests"
+          ? h("div", { class: "muted" }, `Guest count is ${data.basis_count} (${data.basis}). It updates on its own as the guest list and RSVPs change.`) : "",
+      );
+    }
+    update();
+
+    async function save() {
+      const v = formValues(form);
+      const payload = {
+        ...v,
+        status,
+        gratuity_rate: (Number(v.gratuity_percent) || 0) / 100,
+        unit_cost: v.unit_cost === "" ? null : v.unit_cost,
+        due_amount: v.due_amount === "" ? null : v.due_amount,
+      };
+      delete payload.gratuity_percent;
+      try {
+        if (id) await api(`/api/admin/expenses/${id}`, { method: "PUT", body: payload });
+        else await api("/api/admin/expenses", { method: "POST", body: payload });
+        close(true);
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    }
+    async function remove() {
+      if (!confirm(`Delete "${e.item}" and its payments and history?`)) return;
+      await api(`/api/admin/expenses/${id}`, { method: "DELETE" });
+      close(true);
+    }
+
+    const sections = [form];
+    if (id) sections.push(paymentsSection(id, detail, close), attachmentsSection(id, detail), historySection(detail));
+    return h("div", {}, ...sections);
+  });
+  history.replaceState(null, "", location.pathname);
+  await load();
+}
+
+function paymentsSection(id, detail, closeDialog) {
+  const msg = h("p", { class: "msg" });
+  const form = h("form", { onsubmit: (ev) => ev.preventDefault() },
+    h("div", { class: "fields" },
+      field("Amount ($)", "amount", { type: "number", step: "0.01", value: detail.expense.owed || "" }),
+      field("Date paid", "paid_on", { type: "date", value: today() }),
+      field("Paid by", "payer", { options: [["", "—"], ...data.settings.payers.map((p) => [p, p])], value: detail.expense.payer || "" }),
+      field("Method", "method", { options: [["", "—"], ...data.settings.payment_methods.map((p) => [p, p])] }),
+    ),
+    h("div", { class: "fields" },
+      field("Note", "note", {}),
+      h("label", { class: "field" }, "Receipt (optional, saved to Drive)", h("input", { type: "file", name: "file" })),
+    ),
+    h("button", { type: "button", class: "primary", onclick: add }, "Record payment"),
+    msg,
+  );
+  async function add() {
+    const v = formValues(form);
+    try {
+      const r = await api(`/api/admin/expenses/${id}/payments`, { method: "POST", body: v });
+      const file = form.elements.file.files[0];
+      if (file) {
+        const upload = new FormData();
+        upload.append("file", file);
+        upload.append("payment_id", r.payment_id);
+        await api(`/api/admin/expenses/${id}/attachments`, { method: "POST", form: upload }).catch((error) => {
+          alert(`Payment saved, but the receipt didn't upload: ${error.message}`);
+        });
+      }
+      closeDialog(true);
+      openEditor(id);
+    } catch (error) {
+      setMsg(msg, error.message, "err");
+    }
+  }
+  const list = detail.payments.length
+    ? h("div", { class: "list" }, detail.payments.map((p) => h("div", { class: "item" },
+        h("b", {}, money(p.amount)), h("span", {}, p.paid_on ? fmtDate(p.paid_on) : "date unknown"),
+        p.payer ? h("span", {}, `by ${p.payer}`) : null, p.method ? h("span", { class: "muted" }, p.method) : null,
+        p.note ? h("span", { class: "muted" }, p.note) : null, h("span", { class: "spacer" }),
+        h("button", { class: "small danger", onclick: async () => {
+          if (!confirm("Delete this payment? The stage won't move back on its own.")) return;
+          await api(`/api/admin/payments/${p.id}`, { method: "DELETE" });
+          closeDialog(true);
+          openEditor(id);
+        } }, "Delete"))))
+    : h("p", { class: "muted", style: "margin:0 0 10px" }, "No payments yet.");
+  return h("section", {}, h("h3", {}, `Payments · ${money(detail.expense.paid)} paid, ${money(detail.expense.owed)} owed`), list, h("div", { style: "margin-top:12px" }, form));
+}
+
+function attachmentsSection(id, detail) {
+  const msg = h("p", { class: "msg" });
+  const input = h("input", { type: "file" });
+  const list = h("div", { class: "list" }, detail.attachments.length
+    ? detail.attachments.map((a) => h("div", { class: "item" }, a.web_link ? h("a", { href: a.web_link, target: "_blank", rel: "noopener" }, a.name) : a.name,
+        h("span", { class: "muted" }, fmtDate(a.created_at))))
+    : h("span", { class: "muted" }, "No files yet."));
+  return h("section", {}, h("h3", {}, "Contracts, quotes and receipts"), list,
+    h("div", { class: "row", style: "margin-top:10px" }, input, h("button", { onclick: async () => {
+      if (!input.files[0]) return setMsg(msg, "Choose a file first.", "err");
+      const form = new FormData();
+      form.append("file", input.files[0]);
+      setMsg(msg, "Uploading to Google Drive…");
+      try {
+        const r = await api(`/api/admin/expenses/${id}/attachments`, { method: "POST", form });
+        list.prepend(h("div", { class: "item" }, r.attachment.webViewLink ? h("a", { href: r.attachment.webViewLink, target: "_blank", rel: "noopener" }, r.attachment.name) : r.attachment.name));
+        setMsg(msg, "Saved to Drive.", "ok");
+        input.value = "";
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    } }, "Upload")), msg);
+}
+
+function historySection(detail) {
+  return h("section", {}, h("h3", {}, "Price history"),
+    h("div", { class: "list" }, [...detail.history].reverse().map((r) => h("div", { class: "item" },
+      h("span", { class: "muted" }, fmtDate(r.at)), statusPill(r.status, data.status_labels),
+      r.total != null ? h("b", {}, money(r.total)) : null, r.note ? h("span", {}, r.note) : null,
+      r.changed_by ? h("span", { class: "muted" }, r.changed_by) : null))));
+}
+
+await load();
+const hashId = Number(location.hash.slice(1));
+if (hashId) openEditor(hashId);
+</script>
+</body>
+</html>
