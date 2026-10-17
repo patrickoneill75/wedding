@@ -25,6 +25,13 @@
    returns names and signed picks only (2+ letters, 8 results), and a household opens
    from a pick, never from a raw guest id.
 
+9. The home page copies the Zola site (`src/site.js`). Zola's class names are generated
+   and change on every Zola deploy, so the clean-up never relies on them: it finds the
+   footer by its text, the countdown by `data-testid`, and its own phone menu shows
+   whenever the site's menu links are hidden in the browser. When something can't be
+   found, the page is still copied and Settings shows a warning. Never copy real Zola
+   pages into the repo; tests use a made-up page.
+
 ## Tests
 
 `npm test` (`node tests/worker_test.mjs`, Node 22.5+) drives the real Worker `fetch()`

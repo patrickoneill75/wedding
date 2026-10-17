@@ -22,6 +22,8 @@
  *   POST   basis                       { basis: "confirmed" | "weighted" }
  *   GET    form-link / POST form-link  the unlisted expense form's URL; POST rotates it
  *   POST   import                      the original spreadsheet (multipart)
+ *   GET    site/status                 the Zola copy: address, last check, pages, warnings
+ *   POST   site/refresh                fetch the Zola site now ("Refresh from Zola")
  *   GET    drive/status, GET drive/connect, GET drive/folders?parent=,
  *   POST   drive/folder, POST drive/folder/create, POST drive/sync, POST drive/disconnect
  */
@@ -58,6 +60,7 @@ import {
 } from "./google.js";
 import { syncToDrive } from "./sync.js";
 import { importWorkbook } from "./importer.js";
+import { refreshSite, siteSlug } from "./site.js";
 
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
@@ -172,6 +175,16 @@ function cleanSettings(input) {
       drinks[key] = asNumber(input.drinks?.[key] ?? DEFAULT_SETTINGS.drinks[key], key.replace(/_/g, " "));
     }
     patch.drinks = drinks;
+  }
+  if (has(input, "zola_url")) {
+    const url = String(input.zola_url || "").trim().replace(/\/+$/, "");
+    if (url && !siteSlug(url)) throw new Error("The Zola address should look like https://www.zola.com/wedding/your-site.");
+    patch.zola_url = url;
+  }
+  if (has(input, "rsvp_button_color")) {
+    const color = String(input.rsvp_button_color || "").trim();
+    if (color && !/^#[0-9a-f]{6}$/i.test(color)) throw new Error("The RSVP button color must be a hex color like #2f5d62.");
+    patch.rsvp_button_color = color;
   }
   for (const key of ["payers", "payment_methods"]) {
     if (has(input, key)) {
@@ -484,6 +497,18 @@ export async function handleAdminApi(route, request, env) {
       }
       const summary = await importWorkbook(env, await file.arrayBuffer(), partsToImport, user.email);
       return json({ ok: true, summary });
+    }
+
+    // ---- the public website (copied from Zola) --------------------------------------
+    if (route === "site/status" && method === "GET") {
+      const s = await loadSettings(env);
+      const pages = await all(env, "SELECT path, title, fetched_at, changed_at FROM site_pages ORDER BY path");
+      return json({ zola_url: s.zola_url || env.ZOLA_URL || "", status: (await getSetting(env, "_site_status")) || null, pages });
+    }
+    if (route === "site/refresh" && method === "POST") {
+      const s = await loadSettings(env);
+      const status = await refreshSite(env, { zolaUrl: s.zola_url || env.ZOLA_URL, rsvpColor: s.rsvp_button_color });
+      return json({ ok: true, status });
     }
 
     // ---- Google Drive ------------------------------------------------------------

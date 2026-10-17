@@ -4,9 +4,15 @@ import { handleAdminApi } from "./admin_api.js";
 import { handlePublicApi } from "./public_api.js";
 import { saveDriveTokens } from "./google.js";
 import { scheduledSync } from "./sync.js";
+import { scheduledSiteRefresh, serveFont, servePage } from "./site.js";
+import { loadSettings } from "./store.js";
 
 /**
- * Worker entry point. public/ is served by Cloudflare's asset layer; /api/* runs here.
+ * Worker entry point. Every request comes here first (run_worker_first in
+ * wrangler.jsonc): /api/* is handled below, "/" and the copied Zola pages ("/travel",
+ * ...) come from D1 (src/site.js), /_site/fonts/* proxies the theme's fonts, and
+ * everything else is a static file from public/ -- the RSVP page at /rsvp/, the expense
+ * form at /submit/, the control panel at /admin/.
  *
  *   /api/auth/login      start Google sign-in for the control panel
  *   /api/auth/callback   Google's redirect target (sign-in and Drive connection)
@@ -25,8 +31,11 @@ import { scheduledSync } from "./sync.js";
  *                                   this repo is public.
  *   DB                    (D1 binding, wrangler.jsonc)
  *
+ *   ZOLA_URL              (var)     the Zola wedding website to copy onto the home page;
+ *                                   Settings can override it.
+ *
  * The cron (every five minutes) pushes CSV exports to Google Drive when something
- * changed since the last sync.
+ * changed since the last sync, and re-copies the Zola site once a day.
  */
 
 const SECRETS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "ADMIN_EMAILS"];
@@ -63,15 +72,32 @@ export default {
         return json({ error: error.message || String(error) }, 500);
       }
     }
+    if (url.pathname.startsWith("/_site/fonts/")) return serveFont(url.pathname);
+    const method = request.method.toUpperCase();
+    const pageLike = url.pathname === "/index.html" || !url.pathname.includes(".", url.pathname.lastIndexOf("/"));
+    if ((method === "GET" || method === "HEAD") && env.DB && pageLike) {
+      try {
+        await ensureSchema(env);
+        const page = await servePage(env, url.pathname);
+        if (page) return page;
+      } catch (error) {
+        console.error("Serving the website copy failed:", error.message);
+      }
+      // No copy of the Zola site yet: the RSVP page is the home page.
+      if (url.pathname === "/" || url.pathname === "/index.html") return Response.redirect(`${url.origin}/rsvp/`, 302);
+    }
     return env.ASSETS.fetch(request);
   },
 
   async scheduled(_event, env, ctx) {
     if (!env.DB) return;
+    const ready = ensureSchema(env);
+    ctx.waitUntil(ready.then(() => scheduledSync(env)).catch((error) => console.error("Drive sync failed:", error.message)));
     ctx.waitUntil(
-      ensureSchema(env)
-        .then(() => scheduledSync(env))
-        .catch((error) => console.error("Drive sync failed:", error.message))
+      ready
+        .then(() => loadSettings(env))
+        .then((s) => scheduledSiteRefresh(env, s.zola_url || env.ZOLA_URL, s.rsvp_button_color))
+        .catch((error) => console.error("Zola refresh failed:", error.message))
     );
   },
 };
