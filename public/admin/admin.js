@@ -184,7 +184,8 @@ export function showTooltip(event, title, rows) {
   }
   tooltipNode.replaceChildren(
     h("div", { class: "t-title" }, title),
-    rows.map(([label, value]) => h("div", { class: "t-row" }, h("span", {}, label), h("b", {}, value)))
+    // Spread: replaceChildren() turns an array argument into the text "[object …]".
+    ...rows.map(([label, value]) => h("div", { class: "t-row" }, h("span", {}, label), h("b", {}, value)))
   );
   tooltipNode.hidden = false;
   const pad = 14;

@@ -6,14 +6,15 @@ A Cloudflare Worker with two sides:
   household, and an unlisted expense form at `/submit/?k=…` for the two of us to log
   expenses, payments and receipts from a phone.
 - **Control panel** (`/admin/`, Google sign-in, admins only):
-  - **Dashboard**: original estimate vs. current projection by category, money by stage,
-    paid over time, upcoming payments and guest counts.
+  - **Dashboard**: guest counts, projected / paid / owed / overdue, upcoming payments,
+    a pie of projected cost by category or subcategory, and an estimated vs. actual cost
+    table by category, subcategory and item.
   - **Expenses**: every budget line moving through
     Estimate → Quote → Booked → Partially paid → Paid (stages can be skipped, or an item
     cancelled), with price history, payments, who paid, due dates, and contracts and
     receipts in Drive.
-  - **Guests**: households and guests like a small CRM. Address, side, priority, invite
-    type (ceremony or reception), family and wedding-party flags, plus-ones (named by the
+  - **Guests**: households and guests like a small CRM. Address, side, priority, separate
+    ceremony and reception invitations, family and wedding-party flags, plus-ones (named by the
     guest when they RSVP), save-the-date / invite / gift / thank-you tracking, RSVPs,
     dietary needs and tables. Bulk edits and filters, and a Reset RSVP to un-answer a
     household.

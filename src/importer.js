@@ -6,9 +6,9 @@
  * What comes across:
  *   Guest List  households (grouped by "Household ID"; the row marked as the new
  *               household carries the mailing name and address) and their guests,
- *               with side, priority, wedding party and family flags. The Ceremony
- *               column's "x" sets the invite type to ceremony; everyone else is
- *               reception.
+ *               with side, priority, wedding party and family flags. Everyone is
+ *               invited to the reception; an "x" in the Ceremony column adds the
+ *               ceremony.
  *               Plus-one placeholder rows ("Guest" / "Guest Conor Smith") become a
  *               plus-one allowance on their host, with no name -- the guest types it
  *               in when they RSVP. "Round 2 Invites" and "Decor" are deliberately ignored.
@@ -121,7 +121,8 @@ export function parseGuests(sheet) {
       wedding_party: flag(get(row, "wedding party?")),
       immediate_family: flag(get(row, "immediate family")),
       extended_family: flag(get(row, "extended")),
-      invite_type: flag(get(row, "ceremony")) ? "ceremony" : "reception",
+      invite_ceremony: flag(get(row, "ceremony")),
+      invite_reception: 1,
       plus_one_allowed: 0,
       sort_order: order++,
     });
@@ -268,7 +269,8 @@ export async function importWorkbook(env, buffer, parts, by) {
         "wedding_party",
         "immediate_family",
         "extended_family",
-        "invite_type",
+        "invite_ceremony",
+        "invite_reception",
         "plus_one_allowed",
         "sort_order",
       ],
