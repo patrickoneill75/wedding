@@ -13,6 +13,9 @@
   td .muted { font-size: 12px; }
   tfoot td { font-weight: 650; background: var(--surface-2); }
   .pricing { font-size: 12px; color: var(--text-secondary); }
+  button.toggle { border: 0; background: none; padding: 0 6px 0 0; color: var(--text-muted); font-size: 11px; }
+  tr.child td { background: var(--wash); }
+  tr.child td.child-name { padding-left: 34px; }
 </style>
 </head>
 <body>
@@ -50,6 +53,7 @@
 
 <datalist id="categories"></datalist>
 <datalist id="subcategories"></datalist>
+<datalist id="vendors"></datalist>
 
 <script type="module">
 import { api, initPage, h, money, fmtDate, today, statusPill, openDialog, field, check, formValues, setMsg } from "/admin/admin.js";
@@ -64,6 +68,7 @@ async function load() {
   const subs = [...new Set(data.expenses.map((e) => e.subcategory).filter(Boolean))].sort();
   document.getElementById("categories").replaceChildren(...cats.map((c) => h("option", { value: c })));
   document.getElementById("subcategories").replaceChildren(...subs.map((c) => h("option", { value: c })));
+  document.getElementById("vendors").replaceChildren(...data.vendors.map((v) => h("option", { value: v })));
   const catFilter = document.getElementById("catFilter");
   const keep = catFilter.value;
   catFilter.replaceChildren(h("option", { value: "" }, "All categories"), ...cats.map((c) => h("option", { value: c, selected: c === keep }, c)));
@@ -84,14 +89,22 @@ function quantityLabel(e) {
   return `× ${e.quantity} (${src.replace(/^Drinks: /, "")}${factor})`;
 }
 
+// Items whose purchases are showing. Filtering opens any item with a matching purchase.
+const expanded = new Set();
+
 function renderRows() {
   const q = document.getElementById("search").value.trim().toLowerCase();
   const cat = document.getElementById("catFilter").value;
   const status = document.getElementById("statusFilter").value;
   const unpriced = document.getElementById("unpricedOnly").checked;
-  const shown = data.expenses.filter((e) =>
+  const filtering = Boolean(q || status || unpriced);
+  const matches = (e) =>
     (!cat || e.category === cat) && (!status || e.status === status) && (!unpriced || (!e.priced && e.status !== "cancelled")) &&
-    (!q || [e.item, e.vendor, e.notes, e.category, e.subcategory].some((v) => String(v || "").toLowerCase().includes(q))));
+    (!q || [e.item, e.vendor, e.notes, e.category, e.subcategory].some((v) => String(v || "").toLowerCase().includes(q)));
+  const kidsOf = new Map();
+  for (const e of data.expenses) if (e.parent_id) (kidsOf.get(e.parent_id) || kidsOf.set(e.parent_id, []).get(e.parent_id)).push(e);
+  const shown = data.expenses.filter((e) => !e.parent_id && (matches(e) || (kidsOf.get(e.id) || []).some(matches)));
+  const dueCell = (e) => h("td", {}, e.due_date ? (e.due_date < today() && e.owed > 0 ? h("span", { class: "pill overdue" }, fmtDate(e.due_date)) : fmtDate(e.due_date)) : "");
   const rows = [];
   let group = null;
   for (const e of shown) {
@@ -100,20 +113,42 @@ function renderRows() {
       group = key;
       rows.push(h("tr", { class: "group" }, h("td", { colspan: 8 }, e.subcategory ? `${e.category} — ${e.subcategory}` : e.category || "Uncategorized")));
     }
+    const kids = kidsOf.get(e.id) || [];
+    const open = kids.length && (expanded.has(e.id) || (filtering && kids.some(matches)));
     rows.push(h("tr", { class: "clickable", onclick: () => openEditor(e.id) },
-      h("td", {}, e.item, e.vendor ? h("div", { class: "muted" }, e.vendor) : null),
+      h("td", {},
+        kids.length ? h("button", { class: "toggle", "aria-label": open ? "Hide purchases" : "Show purchases",
+          onclick: (ev) => { ev.stopPropagation(); expanded.has(e.id) ? expanded.delete(e.id) : expanded.add(e.id); renderRows(); } }, open ? "▼" : "▶") : null,
+        e.item,
+        kids.length ? h("div", { class: "muted" }, `${kids.length} purchase${kids.length === 1 ? "" : "s"} · ${money(e.spent)} so far`)
+          : e.vendor ? h("div", { class: "muted" }, e.vendor) : null),
       h("td", {}, statusPill(e.status, data.status_labels)),
-      h("td", { class: "pricing" }, e.priced ? `${money(e.unit_cost)} ${quantityLabel(e)}` : h("span", { class: "muted" }, "No price yet"),
-        e.taxable || e.gratuity_rate ? h("div", {}, [e.taxable ? "+ tax" : "", e.gratuity_rate ? `+ ${Math.round(e.gratuity_rate * 100)}% gratuity` : ""].filter(Boolean).join(" ")) : null),
+      h("td", { class: "pricing" }, kids.length ? `Budget ${e.priced && e.current ? money(e.current) : "not set"}`
+        : e.priced ? `${money(e.unit_cost)} ${quantityLabel(e)}` : h("span", { class: "muted" }, "No price yet"),
+        !kids.length && (e.taxable || e.gratuity_rate) ? h("div", {}, [e.taxable ? "+ tax" : "", e.gratuity_rate ? `+ ${Math.round(e.gratuity_rate * 100)}% gratuity` : ""].filter(Boolean).join(" ")) : null),
       h("td", { class: "num" }, money(e.estimate)),
       h("td", { class: "num" }, money(e.projected)),
       h("td", { class: "num" }, e.paid ? money(e.paid) : "—"),
       h("td", { class: "num" }, e.owed ? money(e.owed) : "—"),
-      h("td", {}, e.due_date ? (e.due_date < today() && e.owed > 0 ? h("span", { class: "pill overdue" }, fmtDate(e.due_date)) : fmtDate(e.due_date)) : ""),
+      dueCell(e),
     ));
+    if (!open) continue;
+    for (const k of kids) {
+      rows.push(h("tr", { class: "clickable child", onclick: () => openEditor(k.id) },
+        h("td", { class: "child-name" }, k.item, k.vendor ? h("div", { class: "muted" }, k.vendor) : null),
+        h("td", {}, statusPill(k.status, data.status_labels)),
+        h("td", { class: "pricing" }, k.priced ? `${money(k.unit_cost)} ${quantityLabel(k)}` : h("span", { class: "muted" }, "No price yet")),
+        h("td", { class: "num muted" }, "—"),
+        h("td", { class: "num" }, money(k.projected)),
+        h("td", { class: "num" }, k.paid ? money(k.paid) : "—"),
+        h("td", { class: "num" }, k.owed ? money(k.owed) : "—"),
+        dueCell(k),
+      ));
+    }
   }
   if (!shown.length) rows.push(h("tr", {}, h("td", { colspan: 8, class: "muted" }, data.expenses.length ? "Nothing matches those filters." : "No expenses yet. Add one, or import the spreadsheet in Settings.")));
   document.getElementById("rows").replaceChildren(...rows);
+  // Totals over items only: an item already includes its purchases.
   const sum = (k) => shown.reduce((s, e) => s + (e[k] || 0), 0);
   document.getElementById("foot").replaceChildren(h("tr", {},
     h("td", { colspan: 3 }, `${shown.length} items`),
@@ -160,17 +195,26 @@ function previewTotals(v) {
 
 /* ----------------------------------------------------------------- editor -- */
 
-async function openEditor(id) {
+/**
+ * Edit an expense, or make a new one. `parentId` makes the new one a purchase under
+ * that item; `returnTo` reopens that item's editor afterwards.
+ */
+async function openEditor(id, { parentId = null, returnTo = null } = {}) {
   let detail = null;
   if (id) detail = await api(`/api/admin/expenses/${id}`);
   const e = detail?.expense || {
     category: "", subcategory: "", item: "", vendor: "", status: "estimate", pricing: "fixed", unit_cost: null, units: 1,
     quantity_source: "guests", quantity_factor: 1, round_up: 0, taxable: 0, gratuity_rate: 0, due_date: "", due_amount: null, payer: "", notes: "",
   };
+  const parent = data.expenses.find((x) => x.id === (e.parent_id || parentId)) || null;
+  const isPurchase = Boolean(parent);
+  const hasPurchases = Boolean(e.purchases);
   history.replaceState(null, "", id ? `#${id}` : location.pathname);
 
-  await openDialog(id ? e.item : "New expense", (close) => {
+  const title = id ? (isPurchase ? `${parent.item} › ${e.item}` : e.item) : isPurchase ? `New purchase for ${parent.item}` : "New expense";
+  await openDialog(title, (close) => {
     let status = e.status;
+    const paidNote = h("p", { class: "desc", style: "margin:6px 0 0" });
     const form = h("form", { onsubmit: (ev) => ev.preventDefault() });
     const msg = h("p", { class: "msg" });
     const preview = h("div", { class: "preview" });
@@ -184,6 +228,9 @@ async function openEditor(id) {
       ].filter(Boolean)), h("span", { class: "spacer" }),
       h("button", { type: "button", class: status === "cancelled" ? "current" : "danger", onclick: () => { status = status === "cancelled" ? "estimate" : "cancelled"; drawStepper(); } },
         status === "cancelled" ? "Cancelled" : "Cancel item"));
+      paidNote.textContent = status !== "paid" ? ""
+        : hasPurchases ? "Paid here means you're done buying: the projected cost becomes what the purchases add up to."
+        : "Saving as Paid records a payment for whatever is still owed (dated today, paid by whoever is under Who's paying).";
     };
     drawStepper();
 
@@ -198,13 +245,15 @@ async function openEditor(id) {
 
     form.append(
       // A div, not a label: a label forwards every click inside it to its first button.
-      h("div", { class: "field", style: "margin-bottom:12px; font-size:12.5px; color:var(--text-secondary)" }, "Stage — click to move it along; skipping stages is fine", stepper),
+      h("div", { class: "field", style: "margin-bottom:12px; font-size:12.5px; color:var(--text-secondary)" }, "Stage — click to move it along; skipping stages is fine", stepper, paidNote),
       h("div", { class: "fields" },
-        field("Item", "item", { value: e.item, required: true }),
-        field("Vendor", "vendor", { value: e.vendor || "" }),
-        field("Category", "category", { value: e.category, list: "categories" }),
-        field("Subcategory", "subcategory", { value: e.subcategory, list: "subcategories" }),
+        field(isPurchase ? "What was bought" : "Item", "item", { value: e.item, required: true, placeholder: isPurchase ? "e.g. 40 dinner plates" : "" }),
+        field("Vendor (pick or type a new one)", "vendor", { value: e.vendor || "", list: "vendors" }),
+        // A purchase files under its item's category.
+        isPurchase ? null : field("Category", "category", { value: e.category, list: "categories" }),
+        isPurchase ? null : field("Subcategory", "subcategory", { value: e.subcategory, list: "subcategories" }),
       ),
+      hasPurchases ? h("p", { class: "desc" }, `This item's price is your budget for it. ${e.purchases} purchase${e.purchases === 1 ? "" : "s"} so far add up to ${money(e.spent)}.`) : null,
       h("div", { class: "row", style: "margin-bottom:10px" },
         h("label", { class: "check" }, h("input", { type: "radio", name: "pricing", value: "fixed", checked: e.pricing !== "variable", onchange: update }), "Fixed price"),
         h("label", { class: "check" }, h("input", { type: "radio", name: "pricing", value: "variable", checked: e.pricing === "variable", onchange: update }), "Variable (scales with guests or drinks)"),
@@ -258,6 +307,7 @@ async function openEditor(id) {
         due_amount: v.due_amount === "" ? null : v.due_amount,
       };
       delete payload.gratuity_percent;
+      if (!id && isPurchase) payload.parent_id = parent.id;
       try {
         if (id) await api(`/api/admin/expenses/${id}`, { method: "PUT", body: payload });
         else await api("/api/admin/expenses", { method: "POST", body: payload });
@@ -267,17 +317,37 @@ async function openEditor(id) {
       }
     }
     async function remove() {
-      if (!confirm(`Delete "${e.item}" and its payments and history?`)) return;
+      const extra = hasPurchases ? `, its ${e.purchases} purchase${e.purchases === 1 ? "" : "s"},` : "";
+      if (!confirm(`Delete "${e.item}"${extra} and its payments and history?`)) return;
       await api(`/api/admin/expenses/${id}`, { method: "DELETE" });
       close(true);
     }
 
     const sections = [form];
+    if (id && !isPurchase) sections.push(purchasesSection(id, detail, close));
     if (id) sections.push(paymentsSection(id, detail, close), attachmentsSection(id, detail), historySection(detail));
     return h("div", {}, ...sections);
   });
   history.replaceState(null, "", location.pathname);
   await load();
+  if (returnTo) await openEditor(returnTo);
+}
+
+function purchasesSection(id, detail, closeDialog) {
+  const list = detail.expense.purchase_list || [];
+  const open = (kidId, opts = {}) => {
+    closeDialog(true);
+    openEditor(kidId, { ...opts, returnTo: id });
+  };
+  return h("section", {},
+    h("h3", {}, list.length ? `Purchases · ${money(detail.expense.spent)} spent, ${money(detail.expense.paid)} paid` : "Purchases"),
+    list.length
+      ? h("div", { class: "list" }, list.map((k) => h("div", { class: "item", style: "cursor:pointer", onclick: () => open(k.id) },
+          h("b", {}, k.item), k.vendor ? h("span", { class: "muted" }, k.vendor) : null, statusPill(k.status, data.status_labels),
+          h("span", { class: "spacer" }), h("span", {}, money(k.projected)), k.owed ? h("span", { class: "muted" }, `${money(k.owed)} owed`) : null)))
+      : h("p", { class: "desc", style: "margin:0 0 8px" }, "Buying this a bit at a time, maybe from several vendors? Add each purchase here. "
+          + "The item's price stays your budget for it; mark the item Paid when you're done buying."),
+    h("button", { type: "button", class: "small", style: "margin-top:10px", onclick: () => open(null, { parentId: id }) }, "+ Add a purchase"));
 }
 
 function paymentsSection(id, detail, closeDialog) {

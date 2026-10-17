@@ -137,7 +137,7 @@ const DRINK_LABELS = {
 function fill() {
   const s = state.settings;
   document.getElementById("weddingFields").replaceChildren(
-    field("Couple's names", "couple_names", { value: s.couple_names, placeholder: "Patrick & …" }),
+    field("Couple's names", "couple_names", { value: s.couple_names, placeholder: "Patrick & Kaitlyn" }),
     field("Wedding date", "wedding_date", { type: "date", value: s.wedding_date }),
     field("Venue", "venue", { value: s.venue }),
     field("RSVP by", "rsvp_deadline", { type: "date", value: s.rsvp_deadline }),

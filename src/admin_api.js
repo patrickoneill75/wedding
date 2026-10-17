@@ -4,7 +4,7 @@
  *
  *   GET    summary                     dashboard numbers, charts' data, what's due
  *   GET    expenses                    every expense with computed totals
- *   POST   expenses                    create
+ *   POST   expenses                    create; with parent_id, a purchase under that item
  *   GET    expenses/:id                one expense + payments, history, attachments
  *   PUT    expenses/:id                update (status moves, price changes)
  *   DELETE expenses/:id
@@ -46,6 +46,7 @@ import {
   deletePayment,
   getExpense,
   listExpenses,
+  listVendors,
   loadContext,
   loadSettings,
   updateExpense,
@@ -229,8 +230,9 @@ export async function handleAdminApi(route, request, env) {
         statuses: STATUSES,
         status_labels: STATUS_LABELS,
         ...summarize(expenses, payments, ctx),
-        // Just what the dashboard's category table needs, one row per expense.
-        items: expenses.map((e) => ({
+        // Just what the dashboard's category table needs: one row per item (an item
+        // with purchases already includes them).
+        items: expenses.filter((e) => !e.parent_id).map((e) => ({
           id: e.id,
           category: e.category,
           subcategory: e.subcategory,
@@ -239,6 +241,7 @@ export async function handleAdminApi(route, request, env) {
           estimate: e.estimate,
           actual: e.actual,
           projected: e.projected,
+          purchases: e.purchases,
         })),
         drive: await driveStatus(env),
       });
@@ -258,6 +261,7 @@ export async function handleAdminApi(route, request, env) {
           basis: ctx.basis,
           basis_count: ctx.basisCount,
           drinks: ctx.drinks,
+          vendors: await listVendors(env),
         });
       }
       if (parts.length === 1 && method === "POST") {
@@ -281,6 +285,8 @@ export async function handleAdminApi(route, request, env) {
           return json({ expense: await getExpense(env, id, ctx) });
         }
         if (method === "DELETE") {
+          // Its purchases go with it (also enforced by the foreign key).
+          await run(env, "DELETE FROM expenses WHERE parent_id = ?", id);
           await run(env, "DELETE FROM expenses WHERE id = ?", id);
           await markDirty(env);
           return json({ ok: true });
