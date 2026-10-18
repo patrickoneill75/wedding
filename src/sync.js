@@ -2,7 +2,8 @@
  * Google Drive sync: writes the whole database out as CSV files in the chosen folder.
  *
  *   guests.csv           one row per guest, with household address, contact details,
- *                        save-the-date/invite/gift/thank-you tracking and RSVP answers
+ *                        save-the-date/invite/gift/thank-you tracking, RSVP answers and
+ *                        reception seats
  *   expenses.csv         one row per expense with its computed totals
  *   payments.csv         every payment
  *   price_history.csv    every status/price change
@@ -17,6 +18,7 @@ import { getSetting, setSetting, all } from "./db.js";
 import { driveStatus, requireFolder, upsertFile } from "./google.js";
 import { listExpenses, loadContext } from "./store.js";
 import { STATUS_LABELS } from "./calc.js";
+import { seatsByGuest } from "./seating.js";
 
 export function toCsv(header, rows) {
   const cell = (value) => {
@@ -44,44 +46,51 @@ export async function buildExports(env) {
        FROM guests g JOIN households h ON h.id = g.household_id
       ORDER BY h.id, g.sort_order, g.id`
   );
-  const guestRows = guests.map((g) => ({
-    household: g.household_code || g.household_id,
-    first_name: g.first_name,
-    last_name: g.last_name,
-    side: g.side,
-    priority: g.priority,
-    wedding_party: yesNo(g.wedding_party),
-    immediate_family: yesNo(g.immediate_family),
-    extended_family: yesNo(g.extended_family),
-    ceremony: yesNo(g.invite_ceremony),
-    reception: yesNo(g.invite_reception),
-    rsvp: g.rsvp,
-    dietary: g.dietary,
-    plus_one_allowed: yesNo(g.plus_one_allowed),
-    plus_one_name: g.plus_one_name,
-    plus_one_rsvp: g.plus_one_allowed ? g.plus_one_rsvp : "",
-    plus_one_dietary: g.plus_one_dietary,
-    table: g.table_name,
-    guest_notes: g.notes,
-    mailing_name: g.display_name,
-    greeting: g.greeting,
-    address1: g.address1,
-    address2: g.address2,
-    city: g.city,
-    state: g.state,
-    zip: g.zip,
-    country: g.country,
-    email: g.email,
-    phone: g.phone,
-    save_the_date_sent: yesNo(g.save_the_date_sent),
-    invite_sent: yesNo(g.invite_sent),
-    gift: g.gift,
-    gift_received: yesNo(g.gift_received),
-    thank_you_sent: yesNo(g.thank_you_sent),
-    rsvp_message: g.rsvp_message,
-    rsvp_at: g.rsvp_at,
-    household_notes: g.household_notes,
-  }));
+  const seats = await seatsByGuest(env);
+  const guestRows = guests.map((g) => {
+    const seat = seats.get(g.id) || {};
+    return {
+      household: g.household_code || g.household_id,
+      first_name: g.first_name,
+      last_name: g.last_name,
+      side: g.side,
+      priority: g.priority,
+      wedding_party: yesNo(g.wedding_party),
+      immediate_family: yesNo(g.immediate_family),
+      extended_family: yesNo(g.extended_family),
+      ceremony: yesNo(g.invite_ceremony),
+      reception: yesNo(g.invite_reception),
+      rsvp: g.rsvp,
+      dietary: g.dietary,
+      plus_one_allowed: yesNo(g.plus_one_allowed),
+      plus_one_name: g.plus_one_name,
+      plus_one_rsvp: g.plus_one_allowed ? g.plus_one_rsvp : "",
+      plus_one_dietary: g.plus_one_dietary,
+      table: seat.guest?.table ?? g.table_name,
+      seat: seat.guest?.seat,
+      plus_one_table: seat.plus_one?.table,
+      plus_one_seat: seat.plus_one?.seat,
+      guest_notes: g.notes,
+      mailing_name: g.display_name,
+      greeting: g.greeting,
+      address1: g.address1,
+      address2: g.address2,
+      city: g.city,
+      state: g.state,
+      zip: g.zip,
+      country: g.country,
+      email: g.email,
+      phone: g.phone,
+      save_the_date_sent: yesNo(g.save_the_date_sent),
+      invite_sent: yesNo(g.invite_sent),
+      gift: g.gift,
+      gift_received: yesNo(g.gift_received),
+      thank_you_sent: yesNo(g.thank_you_sent),
+      rsvp_message: g.rsvp_message,
+      rsvp_at: g.rsvp_at,
+      household_notes: g.household_notes,
+    };
+  });
 
   const expenses = await listExpenses(env, ctx);
   const itemName = new Map(expenses.map((e) => [e.id, e.item]));

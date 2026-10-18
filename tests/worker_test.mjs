@@ -15,7 +15,7 @@ import worker from "../src/worker.js";
 import { resetSchemaMemo } from "../src/db.js";
 import { sign } from "../src/auth.js";
 import { buildContext, drinksPlan, enrichExpense, guestCounts, mergeSettings, statusAfterPayment } from "../src/calc.js";
-import { toCsv } from "../src/sync.js";
+import { buildExports, toCsv } from "../src/sync.js";
 import { sqlValue } from "../src/importer.js";
 import { normalizeName, searchGuests } from "../src/public_api.js";
 
@@ -1629,6 +1629,121 @@ test("Settings only accepts a Zola wedding address and a hex RSVP color", async 
   const ok = await api("/api/admin/settings", { method: "PUT", body: { zola_url: `https://www.zola.com/wedding/${SLUG}/`, rsvp_button_color: "#2F5D62" } });
   assert.equal(ok.status, 200);
   assert.equal(ok.data.settings.zola_url, `https://www.zola.com/wedding/${SLUG}`);
+});
+
+/* ----------------------------------------------------------------- seating chart -- */
+
+async function seatingSetup() {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const made = await api("/api/admin/households", {
+    method: "POST",
+    body: {
+      display_name: "Test Household",
+      guests: [
+        { first_name: "Avery", last_name: "Test", plus_one_allowed: true },
+        { first_name: "Blake", last_name: "Test" },
+        { first_name: "Casey", last_name: "Test", invite_reception: false, invite_ceremony: true },
+      ],
+    },
+  });
+  assert.equal(made.status, 201);
+  const guests = (await api("/api/admin/guests")).data.households[0].guests;
+  const id = Object.fromEntries(guests.map((g) => [g.first_name, g.id]));
+  const room = await api("/api/admin/seating/rooms", { method: "POST", body: { name: "Hall", kind: "reception", width_ft: 60, length_ft: 40 } });
+  assert.equal(room.status, 201, JSON.stringify(room.data));
+  return { env, api, id, roomId: room.data.id };
+}
+
+test("seating: tables come from templates, get the next table number, and numbers don't repeat in a room", async () => {
+  const { api, roomId } = await seatingSetup();
+  const start = (await api("/api/admin/seating")).data;
+  assert.ok(start.templates.length >= 4, "a new install has the common rental sizes as templates");
+  const t = await api("/api/admin/seating/templates", { method: "POST", body: { name: "8 ft round, 6 seats", shape: "round", width_ft: 8, length_ft: 3, seats: 6 } });
+  assert.equal(t.status, 201, JSON.stringify(t.data));
+  const template = t.data.templates.find((x) => x.id === t.data.id);
+  assert.equal(template.length_ft, 8, "a round template's length is its diameter");
+  const first = await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", template_id: template.id } });
+  assert.equal(first.status, 201, JSON.stringify(first.data));
+  const table = first.data.items.find((i) => i.id === first.data.ids[0]);
+  assert.deepEqual([table.label, table.shape, table.width_ft, table.seats], ["1", "round", 8, 6]);
+  const second = await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", template_id: template.id } });
+  assert.equal(second.data.items.find((i) => i.id === second.data.ids[0]).label, "2");
+  const clash = await api(`/api/admin/seating/items/${second.data.ids[0]}`, { method: "PUT", body: { label: "1" } });
+  assert.equal(clash.status, 400, "two tables in one room can't share a number");
+  const note = await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "note", label: "DJ booth" } });
+  assert.equal(note.data.items.find((i) => i.id === note.data.ids[0]).label, "DJ booth");
+  assert.equal((await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "note", label: " " } })).status, 400);
+});
+
+test("seating: a person has one seat; seating them again moves them, and taking a seat bumps whoever had it", async () => {
+  const { env, api, id, roomId } = await seatingSetup();
+  const tableId = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 6 } })).data.ids[0];
+  const seat = (letter, guest_id, plus_one = 0) => api("/api/admin/seating/assign", { method: "POST", body: { item_id: tableId, seat_letter: letter, guest_id, plus_one } });
+  assert.equal((await seat("B", id.Avery)).status, 200);
+  let r = await seat("c", id.Avery);
+  assert.equal(r.status, 200, "lowercase letters are fine");
+  assert.deepEqual(r.data.assignments.map((a) => [a.seat_letter, a.guest_id]), [["C", id.Avery]], "moving to C leaves B");
+  r = await seat("C", id.Blake);
+  assert.deepEqual(r.data.assignments.map((a) => [a.seat_letter, a.guest_id]), [["C", id.Blake]], "Blake takes C from Avery");
+  r = await seat("D", id.Avery, 1);
+  assert.equal(r.status, 200, "a plus-one is a person with a seat of their own");
+  assert.equal(r.data.assignments.length, 2);
+
+  const guests = (await api("/api/admin/guests")).data.households[0].guests;
+  const blake = guests.find((g) => g.id === id.Blake);
+  assert.deepEqual([blake.seat.table, blake.seat.seat], ["1", "C"]);
+  assert.deepEqual([guests.find((g) => g.id === id.Avery).plus_one_seat.seat], ["D"]);
+
+  const csv = (await buildExports(env))["guests.csv"];
+  const [header, ...lines] = csv.replace(/^\uFEFF/, "").trim().split("\r\n").map((l) => l.split(","));
+  const row = lines.find((l) => l[header.indexOf("first_name")] === "Blake");
+  assert.deepEqual([row[header.indexOf("table")], row[header.indexOf("seat")]], ["1", "C"], "guests.csv carries the table and seat");
+
+  r = await api("/api/admin/seating/assign", { method: "POST", body: { item_id: tableId, seat_letter: "C", guest_id: null } });
+  assert.deepEqual(r.data.assignments.map((a) => a.seat_letter), ["D"], "emptying a seat");
+});
+
+test("seating: only reception rooms, reception guests, real seats and real plus-ones can be seated", async () => {
+  const { api, id, roomId } = await seatingSetup();
+  const tableId = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 4 } })).data.ids[0];
+  const seat = (body) => api("/api/admin/seating/assign", { method: "POST", body: { item_id: tableId, seat_letter: "A", guest_id: id.Avery, ...body } });
+  assert.equal((await seat({ seat_letter: "E" })).status, 400, "a 4-seat table has no seat E");
+  assert.equal((await seat({ guest_id: id.Casey })).status, 400, "Casey is invited to the ceremony only");
+  assert.equal((await seat({ guest_id: id.Blake, plus_one: 1 })).status, 400, "Blake has no plus-one");
+  const chapel = (await api("/api/admin/seating/rooms", { method: "POST", body: { name: "Chapel", kind: "ceremony", width_ft: 30, length_ft: 50 } })).data.id;
+  const pew = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: chapel, kind: "table", seats: 4 } })).data.ids[0];
+  assert.equal((await seat({ item_id: pew })).status, 400, "no assigned seats at the ceremony");
+  assert.equal((await api("/api/admin/seating/rooms", { method: "POST", body: { name: "X", kind: "constructor" } })).status, 400);
+});
+
+test("seating: fewer seats, a room that stops being the reception, or a deleted guest unseats people", async () => {
+  const { api, id, roomId } = await seatingSetup();
+  const tableId = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 8 } })).data.ids[0];
+  const seat = (letter, guest_id) => api("/api/admin/seating/assign", { method: "POST", body: { item_id: tableId, seat_letter: letter, guest_id } });
+  await seat("A", id.Avery);
+  await seat("H", id.Blake);
+  let r = await api(`/api/admin/seating/items/${tableId}`, { method: "PUT", body: { seats: 6 } });
+  assert.deepEqual(r.data.assignments.map((a) => a.seat_letter), ["A"], "seat H is gone, and Blake with it");
+  await api(`/api/admin/guests/${id.Avery}`, { method: "DELETE" });
+  assert.equal((await api("/api/admin/seating")).data.assignments.length, 0, "a deleted guest's seat is freed");
+  await seat("B", id.Blake);
+  r = await api(`/api/admin/seating/rooms/${roomId}`, { method: "PUT", body: { kind: "other" } });
+  assert.equal(r.data.assignments.length, 0, "only reception rooms keep assigned seats");
+});
+
+test("seating: a long row of chairs is one insert, numbered in a reception room and unlabeled at the ceremony", async () => {
+  const { api, roomId } = await seatingSetup();
+  const row = await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "seat", count: 40 } });
+  assert.equal(row.status, 201, JSON.stringify(row.data));
+  const chairs = row.data.items.filter((i) => row.data.ids.includes(i.id));
+  assert.equal(chairs.length, 40);
+  assert.deepEqual(chairs.map((c) => c.label).slice(0, 3), ["1", "2", "3"]);
+  assert.equal(chairs[1].x - chairs[0].x, 2, "chairs sit 2 ft apart");
+  const chapel = (await api("/api/admin/seating/rooms", { method: "POST", body: { name: "Chapel", kind: "ceremony" } })).data.id;
+  const pews = await api("/api/admin/seating/items", { method: "POST", body: { room_id: chapel, kind: "seat", count: 10 } });
+  assert.ok(pews.data.items.filter((i) => pews.data.ids.includes(i.id)).every((c) => c.label === ""));
+  assert.equal((await api("/api/admin/seating/items", { method: "POST", body: { room_id: chapel, kind: "seat", count: 500 } })).status, 400);
 });
 
 /* ------------------------------------------------------------------------- runner -- */

@@ -154,8 +154,9 @@ function render() {
           return h("button", { class: `invite ${on ? "on" : "off"}`, title: `${on ? "Invited to" : "Not invited to"} the ${event}. Click to change.`,
             onclick: () => toggleInvite(g, `invite_${event}`) }, event === "ceremony" ? "Ceremony" : "Reception");
         }),
-        g.table_name ? h("span", { class: "tag" }, `table ${g.table_name}`) : null,
+        g.seat ? h("span", { class: "tag" }, `table ${g.seat.table}, seat ${g.seat.seat}`) : g.table_name ? h("span", { class: "tag" }, `table ${g.table_name}`) : null,
         g.plus_one_allowed ? h("span", { class: `pill ${g.plus_one_rsvp}` }, `+1${g.plus_one_name ? ` ${g.plus_one_name}` : ""}: ${RSVP_LABEL[g.plus_one_rsvp]}`) : null,
+        g.plus_one_seat ? h("span", { class: "tag" }, `+1 at table ${g.plus_one_seat.table}, seat ${g.plus_one_seat.seat}`) : null,
       ))),
       box("save_the_date_sent"),
       box("invite_sent"),
@@ -243,7 +244,9 @@ function guestCard(g, onRemove) {
     h("div", { class: "fields" },
       field("RSVP", "rsvp", { options: [["pending", "Awaiting"], ["yes", "Coming"], ["no", "Not coming"]], value: g.rsvp || "pending" }),
       field("Dietary needs", "dietary", { value: g.dietary || "" }),
-      field("Table", "table_name", { value: g.table_name || "" }),
+      g.seat
+        ? h("label", { class: "field" }, "Reception seat", h("a", { href: "/admin/seating.html" }, `Table ${g.seat.table}, seat ${g.seat.seat}`))
+        : field("Table", "table_name", { value: g.table_name || "" }),
       field("Notes", "notes", { value: g.notes || "" }),
     ),
     h("button", { type: "button", class: "small danger", onclick: () => onRemove(card) }, "Remove guest"),

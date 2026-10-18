@@ -211,6 +211,63 @@ const MIGRATIONS = [
        status = CASE WHEN status IN ('paid', 'cancelled') THEN status ELSE 'estimate' END
      WHERE parent_id IS NULL AND EXISTS (SELECT 1 FROM expenses c WHERE c.parent_id = expenses.id)`,
   ],
+  // 9: the seating chart (src/seating.js). Rooms with their size in feet; tables, single
+  // chairs and text notes placed in a room (x, y is the center, in feet from the room's
+  // top-left corner); reusable table templates; and who sits where at the reception.
+  // A seat is a table plus a letter (A, B, C ...). A person is a guest or, with
+  // plus_one = 1, that guest's plus-one, and has at most one seat.
+  [
+    `CREATE TABLE IF NOT EXISTS seating_rooms (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       name TEXT NOT NULL DEFAULT '',
+       kind TEXT NOT NULL DEFAULT 'reception',
+       width_ft REAL NOT NULL DEFAULT 60,
+       length_ft REAL NOT NULL DEFAULT 40,
+       sort_order INTEGER NOT NULL DEFAULT 0,
+       created_at TEXT NOT NULL DEFAULT (datetime('now'))
+     )`,
+    `CREATE TABLE IF NOT EXISTS seating_templates (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       name TEXT NOT NULL DEFAULT '',
+       shape TEXT NOT NULL DEFAULT 'round',
+       width_ft REAL NOT NULL,
+       length_ft REAL NOT NULL,
+       seats INTEGER NOT NULL DEFAULT 0,
+       seat_sides TEXT NOT NULL DEFAULT 'both',
+       created_at TEXT NOT NULL DEFAULT (datetime('now'))
+     )`,
+    `INSERT INTO seating_templates (name, shape, width_ft, length_ft, seats, seat_sides) VALUES
+       ('5 ft round, 8 seats', 'round', 5, 5, 8, 'both'),
+       ('6 ft round, 10 seats', 'round', 6, 6, 10, 'both'),
+       ('6 ft banquet, 6 seats', 'rect', 6, 2.5, 6, 'both'),
+       ('8 ft banquet, 8 seats', 'rect', 8, 2.5, 8, 'both')`,
+    `CREATE TABLE IF NOT EXISTS seating_items (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       room_id INTEGER NOT NULL REFERENCES seating_rooms(id) ON DELETE CASCADE,
+       kind TEXT NOT NULL,
+       shape TEXT,
+       label TEXT NOT NULL DEFAULT '',
+       x REAL NOT NULL DEFAULT 0,
+       y REAL NOT NULL DEFAULT 0,
+       width_ft REAL NOT NULL DEFAULT 0,
+       length_ft REAL NOT NULL DEFAULT 0,
+       rotation REAL NOT NULL DEFAULT 0,
+       seats INTEGER NOT NULL DEFAULT 0,
+       seat_sides TEXT NOT NULL DEFAULT 'both',
+       font_size REAL NOT NULL DEFAULT 1.5,
+       created_at TEXT NOT NULL DEFAULT (datetime('now'))
+     )`,
+    `CREATE INDEX IF NOT EXISTS seating_items_room ON seating_items(room_id)`,
+    `CREATE TABLE IF NOT EXISTS seat_assignments (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       item_id INTEGER NOT NULL REFERENCES seating_items(id) ON DELETE CASCADE,
+       seat_letter TEXT NOT NULL,
+       guest_id INTEGER NOT NULL REFERENCES guests(id) ON DELETE CASCADE,
+       plus_one INTEGER NOT NULL DEFAULT 0,
+       UNIQUE (item_id, seat_letter),
+       UNIQUE (guest_id, plus_one)
+     )`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
