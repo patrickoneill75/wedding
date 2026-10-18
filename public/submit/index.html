@@ -201,28 +201,57 @@ async function send(text) {
   pending = null;
   showAttached();
   messages.push({ role: "user", content });
-  const thinking = say("them", "Thinking…");
-  thinking.firstChild.classList.add("thinking");
+  // The reply streams in: "Thinking…" until the first words, then the words as they come.
+  let bubble = say("them", "Thinking…");
+  bubble.firstChild.classList.add("thinking");
+  let written = "";
+  const write = (text) => {
+    if (!written) bubble.firstChild.classList.remove("thinking");
+    written += text;
+    bubble.firstChild.textContent = written.trimStart();
+    bubble.scrollIntoView({ block: "end" });
+  };
+  let done = null;
   try {
     const r = await fetch("/api/public/expense/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ key, who: $("who").value, today: localToday(), messages }),
     });
-    const body = await r.json().catch(() => ({}));
-    thinking.remove();
-    if (!r.ok) {
-      messages.pop();
-      say("them", body.error || "Something went wrong. Try again.");
-      return;
+    if (!r.ok || !(r.headers.get("content-type") || "").includes("ndjson")) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.error || "Something went wrong. Try again.");
     }
-    messages = body.messages;
-    if (body.reply) say("them", body.reply);
-    if (body.proposal) showProposal(body.proposal);
-  } catch {
-    thinking.remove();
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done: end } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !end });
+      const lines = buffer.split("\n");
+      buffer = end ? "" : lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === "text") write(event.text);
+        else if (event.type === "break" && written) {
+          bubble = say("them", "");
+          written = "";
+        } else if (event.type === "done") done = event;
+        else if (event.type === "error") throw new Error(event.error);
+      }
+      if (end) break;
+    }
+    if (!done) throw new Error("The answer was cut off. Send it again.");
+    messages = done.messages;
+    // Claude may have said nothing (just the proposal), or its text was replaced.
+    if (!written && done.reply) write(done.reply);
+    if (!bubble.firstChild.textContent) bubble.remove();
+    if (done.proposal) showProposal(done.proposal);
+  } catch (error) {
+    if (!written) bubble.remove();
     messages.pop();
-    say("them", "Couldn't reach the server. Check your connection and send it again.");
+    say("them", error instanceof TypeError ? "Couldn't reach the server. Check your connection and send it again." : error.message);
   } finally {
     busy = false;
     $("send").disabled = false;

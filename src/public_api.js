@@ -429,6 +429,7 @@ export async function handlePublicApi(route, request, env) {
         return json({ error: "This form link isn't valid any more. Get the current one from the control panel." }, 403);
       }
       const turn = await intakeTurn(env, input, await loadContext(env));
+      if (turn.stream) return new Response(turn.stream, { headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" } });
       return json(turn.body, turn.status);
     }
     if (route === "expense" && method === "POST") {

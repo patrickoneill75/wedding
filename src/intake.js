@@ -20,7 +20,7 @@
 import { STATUSES, STATUS_LABELS } from "./calc.js";
 import { listExpenses, listVendors } from "./store.js";
 
-const MODEL = "claude-opus-5-5";
+const MODEL = "claude-sonnet-5-5";
 const API_URL = "https://api.anthropic.com/v1/messages";
 const MAX_MESSAGES = 60;
 const MAX_BODY_CHARS = 12_000_000; // a few downsized receipt photos
@@ -210,7 +210,11 @@ export function answerOpenCalls(messages) {
   });
 }
 
-async function askClaude(env, system, messages) {
+/**
+ * Ask Claude, streaming: each piece of reply text goes to onText as it arrives, and the
+ * whole reply comes back at the end, assembled from the stream's events.
+ */
+async function streamClaude(env, system, messages, onText) {
   const response = await fetch(API_URL, {
     method: "POST",
     headers: {
@@ -223,7 +227,10 @@ async function askClaude(env, system, messages) {
     body: JSON.stringify({
       model: MODEL,
       max_tokens: 16000,
+      stream: true,
       fallbacks: "default",
+      // No thinking: placing an expense doesn't need it, and the reply starts sooner.
+      thinking: { type: "between_tools" },
       output_config: { effort: "low" },
       cache_control: { type: "ephemeral" },
       system,
@@ -233,18 +240,80 @@ async function askClaude(env, system, messages) {
       messages,
     }),
   });
-  const body = await response.json().catch(() => null);
   if (!response.ok) {
-    const why = body?.error?.message || `status ${response.status}`;
-    throw Object.assign(new Error(`Claude couldn't answer (${why}).`), { status: response.status });
+    const body = await response.json().catch(() => null);
+    throw new Error(`Claude couldn't answer (${body?.error?.message || `status ${response.status}`}).`);
   }
-  return body;
+  const content = [];
+  const json = [];
+  let stopReason = null;
+  for await (const event of serverSentEvents(response.body)) {
+    if (event.type === "content_block_start") {
+      content[event.index] = { ...event.content_block };
+      if (event.content_block.type === "tool_use") {
+        json[event.index] = "";
+        content[event.index].input = {};
+      }
+    } else if (event.type === "content_block_delta") {
+      const block = content[event.index];
+      const d = event.delta;
+      if (d.type === "text_delta") {
+        block.text += d.text;
+        onText(d.text);
+      } else if (d.type === "input_json_delta") json[event.index] += d.partial_json;
+      else if (d.type === "thinking_delta") block.thinking += d.thinking;
+      else if (d.type === "signature_delta") block.signature = d.signature;
+    } else if (event.type === "content_block_stop") {
+      if (json[event.index] !== undefined) {
+        try {
+          content[event.index].input = json[event.index] ? JSON.parse(json[event.index]) : {};
+        } catch {
+          content[event.index].input = {};
+        }
+      }
+    } else if (event.type === "message_delta") {
+      stopReason = event.delta?.stop_reason ?? stopReason;
+    } else if (event.type === "error") {
+      throw new Error(`Claude couldn't answer (${event.error?.message || "stream error"}).`);
+    }
+  }
+  return { content: content.filter(Boolean), stop_reason: stopReason };
+}
+
+/** The `data:` of each server-sent event, parsed. */
+async function* serverSentEvents(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const chunks = buffer.split(/\r?\n\r?\n/);
+    // The last piece may be an event still arriving.
+    buffer = done ? "" : chunks.pop();
+    for (const chunk of chunks) {
+      const data = chunk.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart()).join("\n");
+      if (!data) continue;
+      try {
+        yield JSON.parse(data);
+      } catch {
+        /* not JSON: skip */
+      }
+    }
+    if (done) return;
+  }
 }
 
 /**
- * One turn: send the conversation, check any proposal (telling Claude what's wrong and
- * asking again, a couple of times at most), and return the updated conversation with
- * Claude's reply and, when it made one that checks out, the proposal.
+ * One turn. Errors found before Claude is asked come back as { status, body }; otherwise
+ * { stream }: newline-delimited JSON events for the page --
+ *   { type: "text", text }     a piece of Claude's reply, as it's written
+ *   { type: "break" }          Claude is starting over (a proposal didn't check out)
+ *   { type: "done", messages, reply, proposal }   the conversation to send next time,
+ *                              and the checked proposal (form fields + summary), if any
+ *   { type: "error", error }
+ * A proposal that doesn't check out goes back to Claude with what's wrong, a couple of
+ * times at most.
  */
 export async function intakeTurn(env, input, ctx) {
   if (!env.ANTHROPIC_API_KEY) {
@@ -262,24 +331,49 @@ export async function intakeTurn(env, input, ctx) {
     { type: "text", text: catalog(expenses, vendors, ctx.settings, { who, today: input.today && isDate(input.today) ? input.today : new Date().toISOString().slice(0, 10) }) },
   ];
 
-  for (let attempt = 0; ; attempt++) {
-    const reply = await askClaude(env, system, messages);
-    messages.push({ role: "assistant", content: reply.content });
-    const said = (reply.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n\n").trim();
-    if (reply.stop_reason === "refusal") {
-      return { status: 200, body: { messages, reply: said || "Sorry, I can't help with that one. Try the plain form.", proposal: null, ended: true } };
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+  const send = (event) => writer.write(encoder.encode(`${JSON.stringify(event)}\n`));
+  (async () => {
+    try {
+      for (let attempt = 0; ; attempt++) {
+        if (attempt) await send({ type: "break" });
+        const reply = await streamClaude(env, system, messages, (text) => send({ type: "text", text }));
+        messages.push({ role: "assistant", content: reply.content });
+        const said = reply.content.filter((b) => b.type === "text").map((b) => b.text).join("\n\n").trim();
+        if (reply.stop_reason === "refusal") {
+          const sorry = "Sorry, I can't help with that one. Try the plain form.";
+          if (!said) await send({ type: "text", text: sorry });
+          await send({ type: "done", messages, reply: said || sorry, proposal: null, ended: true });
+          break;
+        }
+        const call = reply.content.find((b) => b.type === "tool_use" && b.name === "propose_expense");
+        if (!call) {
+          await send({ type: "done", messages, reply: said, proposal: null });
+          break;
+        }
+        const checked = checkProposal(call.input || {}, expenses, ctx.settings);
+        if (!checked.error) {
+          await send({ type: "done", messages, reply: said, proposal: { tool_use_id: call.id, form: checked.form, summary: checked.summary } });
+          break;
+        }
+        if (attempt >= MAX_RETRIES) {
+          const giveUp = "I couldn't put that entry together. Could you say it another way?";
+          await send({ type: "break" });
+          await send({ type: "text", text: giveUp });
+          await send({ type: "done", messages: messages.slice(0, -1), reply: giveUp, proposal: null });
+          break;
+        }
+        messages.push({ role: "user", content: reply.content.filter((b) => b.type === "tool_use").map((b) => (b.id === call.id
+          ? { type: "tool_result", tool_use_id: b.id, is_error: true, content: checked.error }
+          : { type: "tool_result", tool_use_id: b.id, is_error: true, content: "One entry at a time." })) });
+      }
+    } catch (error) {
+      await send({ type: "error", error: error.message || String(error) });
+    } finally {
+      await writer.close();
     }
-    const call = (reply.content || []).find((b) => b.type === "tool_use" && b.name === "propose_expense");
-    if (!call) return { status: 200, body: { messages, reply: said, proposal: null } };
-    const checked = checkProposal(call.input || {}, expenses, ctx.settings);
-    if (!checked.error) {
-      return { status: 200, body: { messages, reply: said, proposal: { tool_use_id: call.id, form: checked.form, summary: checked.summary } } };
-    }
-    if (attempt >= MAX_RETRIES) {
-      return { status: 200, body: { messages: messages.slice(0, -1), reply: "I couldn't put that entry together. Could you say it another way?", proposal: null } };
-    }
-    messages.push({ role: "user", content: (reply.content || []).filter((b) => b.type === "tool_use").map((b) => (b.id === call.id
-      ? { type: "tool_result", tool_use_id: b.id, is_error: true, content: checked.error }
-      : { type: "tool_result", tool_use_id: b.id, is_error: true, content: "One entry at a time." })) });
-  }
+  })();
+  return { stream: readable };
 }

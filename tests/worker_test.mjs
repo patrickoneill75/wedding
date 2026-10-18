@@ -88,6 +88,14 @@ async function call(env, pathname, { method = "GET", body, cookie, form, headers
   const response = await worker.fetch(new Request(`${ORIGIN}${pathname}`, init), env);
   const text = await response.text();
   let data = null;
+  // The expense chat streams newline-delimited events: report the last ("done" or
+  // "error") with the text that streamed before it.
+  if ((response.headers.get("content-type") || "").includes("ndjson")) {
+    const events = text.split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const last = events[events.length - 1] || {};
+    data = { ...last, streamed: events.filter((e) => e.type === "text").map((e) => e.text).join(""), events };
+    return { status: response.status, data, headers: response.headers };
+  }
   try {
     data = JSON.parse(text);
   } catch {
@@ -785,7 +793,27 @@ test("the expense form still updates an item itself in update mode", async () =>
 
 /* ------------------------------------------------------ conversational form -- */
 
-const claudeReply = (content, stop_reason = "end_turn") => okJson({ id: "msg_1", type: "message", role: "assistant", content, stop_reason });
+/** A streamed Messages API reply, as server-sent events, for the given content blocks. */
+function claudeReply(content, stop_reason = "end_turn") {
+  const events = [{ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", content: [] } }];
+  content.forEach((block, index) => {
+    if (block.type === "text") {
+      events.push({ type: "content_block_start", index, content_block: { type: "text", text: "" } });
+      // Two pieces, so the test sees text arrive in parts.
+      const half = Math.ceil(block.text.length / 2);
+      for (const text of [block.text.slice(0, half), block.text.slice(half)]) events.push({ type: "content_block_delta", index, delta: { type: "text_delta", text } });
+    } else if (block.type === "tool_use") {
+      events.push({ type: "content_block_start", index, content_block: { type: "tool_use", id: block.id, name: block.name, input: {} } });
+      const json = JSON.stringify(block.input);
+      const half = Math.ceil(json.length / 2);
+      for (const partial_json of [json.slice(0, half), json.slice(half)]) events.push({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json } });
+    }
+    events.push({ type: "content_block_stop", index });
+  });
+  events.push({ type: "message_delta", delta: { stop_reason } }, { type: "message_stop" });
+  const body = events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("");
+  return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
 const proposeCall = (input, id = "toolu_1") => ({ type: "tool_use", id, name: "propose_expense", input: {
   mode: "new", expense_id: null, item: null, category: null, subcategory: null, vendor: null, stage: "paid", price: null, quantity: 1,
   taxable: false, gratuity_percent: 0, due_date: null, payment_amount: null, paid_on: null, payer: null, method: null, notes: null, ...input,
@@ -814,7 +842,9 @@ test("Claude sees the items, line items and vendors, and its proposal saves thro
     assert.equal(url, "https://api.anthropic.com/v1/messages");
     assert.equal(init.headers["x-api-key"], "sk-test");
     const req = JSON.parse(init.body);
-    assert.equal(req.model, "claude-opus-5-5");
+    assert.equal(req.model, "claude-sonnet-5-5");
+    assert.equal(req.stream, true);
+    assert.deepEqual(req.thinking, { type: "between_tools" });
     assert.equal(req.fallbacks, "default");
     const sys = req.system.map((b) => b.text).join("\n");
     assert.match(sys, new RegExp(`#${ps} Place Settings · Ceremony & Reception › Decor`));
@@ -829,7 +859,10 @@ test("Claude sees the items, line items and vendors, and its proposal saves thro
     ], "tool_use");
   }, () => call(env, "/api/public/expense/chat", { method: "POST", body: { key, who: "Kaitlyn", today: "2026-10-18", messages: [{ role: "user", content: "bought glassware at target, $45" }] } }));
   assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.type, "done");
   assert.equal(r.data.reply, "That sounds like it goes under Place Settings.");
+  assert.equal(r.data.streamed, "That sounds like it goes under Place Settings.", "the reply streams to the page as it's written");
+  assert.ok(r.data.events.filter((e) => e.type === "text").length >= 2);
   assert.equal(r.data.messages.length, 2, "the browser gets the conversation back to send next time");
   const { form, summary } = r.data.proposal;
   assert.deepEqual([form.mode, form.expense_id, form.item, form.status, form.price], ["purchase", String(ps), "Glassware", "paid", "45"]);
@@ -840,6 +873,16 @@ test("Claude sees the items, line items and vendors, and its proposal saves thro
   const kid = (await api(`/api/admin/expenses/${saved.data.expense_id}`)).data;
   assert.equal(kid.expense.parent_id, ps);
   assert.deepEqual(kid.payments.map((p) => [p.amount, p.payer, p.method]), [[45, "Kaitlyn", "Credit card"]]);
+});
+
+test("when Claude is unavailable, the chat says so instead of hanging", async () => {
+  const env = makeEnv({ ANTHROPIC_API_KEY: "sk-test" });
+  const api = await adminClient(env);
+  const key = await formKeyFor(api);
+  const r = await withFetch(async () => new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }), { status: 529 }),
+    () => call(env, "/api/public/expense/chat", { method: "POST", body: { key, messages: [{ role: "user", content: "cake $400" }] } }));
+  assert.equal(r.data.type, "error");
+  assert.match(r.data.error, /Claude couldn't answer \(Overloaded\)/);
 });
 
 test("a proposal that doesn't check out goes back to Claude to fix before anyone sees it", async () => {
