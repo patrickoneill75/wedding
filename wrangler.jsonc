@@ -35,6 +35,16 @@
     }
   ],
 
+  // The site's own domain (registered at Hover, DNS on Cloudflare). Cloudflare creates
+  // the DNS records and certificates for these on deploy; the domain must already be
+  // active in this Cloudflare account. The workers.dev address keeps working too: the
+  // "Refresh website from Zola" workflow and older expense-form links use it.
+  "routes": [
+    { "pattern": "patrickandkaitlyn.com", "custom_domain": true },
+    { "pattern": "www.patrickandkaitlyn.com", "custom_domain": true }
+  ],
+  "workers_dev": true,
+
   // Every five minutes: push guests/expenses/payments to Google Drive if anything
   // changed since the last sync (src/sync.js).
   "triggers": {
