@@ -39,6 +39,9 @@ import { loadSettings } from "./store.js";
  *   ZOLA_INGEST_SECRET    (secret)  shared with the GitHub Action that copies the site.
  *   GH_DISPATCH_TOKEN     (secret)  lets "Refresh from Zola" start that Action; with
  *   GITHUB_REPO           (var)     the repo it lives in.
+ *   PUBLIC_URL            (var)     the site's address (https://www.patrickandkaitlyn.com):
+ *                                   the expense form link uses it, and the bare domain
+ *                                   redirects to it.
  *   ANTHROPIC_API_KEY     (secret)  Claude, for the expense form's conversation.
  *
  * The cron (every five minutes) pushes CSV exports to Google Drive when something
@@ -93,7 +96,9 @@ async function handleApi(route, request, env) {
   if (!env.DB) return json({ error: "The D1 database isn't bound to this Worker. See SETUP.md." }, 500);
   await ensureSchema(env);
 
-  if (route === "auth/login" && method === "GET") return startOAuth(request, env, "login");
+  if (route === "auth/login" && method === "GET") {
+    return startOAuth(request, env, "login", { next: new URL(request.url).searchParams.get("next") });
+  }
   if (route === "auth/callback" && method === "GET") return handleOAuthCallback(request, env, saveDriveTokens);
   if (route === "auth/logout" && method === "POST") return logoutResponse();
   if (route === "auth/me" && method === "GET") {
@@ -109,6 +114,12 @@ async function handleApi(route, request, env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    // One address: the bare domain goes to the www one (PUBLIC_URL), so sign-in cookies
+    // and links all live on one host.
+    const canonical = env.PUBLIC_URL ? new URL(env.PUBLIC_URL) : null;
+    if (canonical && url.hostname !== canonical.hostname && `www.${url.hostname}` === canonical.hostname) {
+      return Response.redirect(`${canonical.origin}${url.pathname}${url.search}`, 301);
+    }
     if (url.pathname.startsWith("/api/")) {
       try {
         return await handleApi(url.pathname.slice("/api/".length).replace(/\/+$/, ""), request, env);

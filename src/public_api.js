@@ -17,12 +17,11 @@
  *   A guest can only answer for their own household (the token names it), and a
  *   plus-one is only accepted for a guest who was given one.
  *
- * Expense form (unlisted, for the couple): every route needs the form key from
- * the control panel (?k=... or the "key" field). Rotating the key in Settings kills
- * the old link.
- *   GET  expense/options?k=   categories, items (top level, not line items), vendors,
- *                             payers, methods
- *   POST expense/chat         { key, messages, who, today }: one turn of the conversational
+ * Expense form (/submit, for the two of us): every route needs the control panel's
+ * Google sign-in (and the X-Wedding header on POSTs), and knows who is signed in.
+ *   GET  expense/options      categories, items (top level, not line items), vendors,
+ *                             payers, methods, and `me`: the payer who is signed in
+ *   POST expense/chat         { messages, who, today }: one turn of the conversational
  *                             form (src/intake.js). Proposes an entry; never saves one.
  *   POST expense              multipart: a new item, a line item under an existing item
  *                             (mode=purchase), or an update to an item that isn't split
@@ -31,8 +30,8 @@
  *                             records the payment by itself, so no amount is needed.
  */
 
-import { json, sign, verify } from "./auth.js";
-import { all, first, getSetting, markDirty, run } from "./db.js";
+import { json, requireAdmin, sign, verify } from "./auth.js";
+import { all, first, markDirty, run } from "./db.js";
 import { STATUSES, STATUS_LABELS } from "./calc.js";
 import { addPayment, createExpense, loadContext, loadSettings, listExpenses, listVendors, updateExpense } from "./store.js";
 import { uploadReceipt } from "./google.js";
@@ -229,17 +228,20 @@ async function rsvpSubmit(env, input) {
 
 /* ------------------------------------------------------------- expense form ---- */
 
-async function checkFormKey(env, key) {
-  const expected = await getSetting(env, "_form_key");
-  return Boolean(expected && key && String(key) === expected);
+/** Which of the payers the signed-in person is, by first name or email ("" if neither fits). */
+export function payerFor(user, payers) {
+  const first = String(user?.name || "").trim().split(/\s+/)[0].toLowerCase();
+  const local = String(user?.email || "").split("@")[0].toLowerCase();
+  return payers.find((p) => p.toLowerCase() === first) || payers.find((p) => p.length > 2 && local.startsWith(p.toLowerCase())) || "";
 }
 
-async function expenseOptions(env) {
+async function expenseOptions(env, user) {
   const ctx = await loadContext(env);
   const expenses = await listExpenses(env, ctx);
   return {
     statuses: STATUSES.filter((s) => s !== "cancelled").map((s) => ({ value: s, label: STATUS_LABELS[s] })),
     payers: ctx.settings.payers,
+    me: payerFor(user, ctx.settings.payers),
     payment_methods: ctx.settings.payment_methods,
     categories: [...new Set(expenses.map((e) => e.category).filter(Boolean))].sort(),
     subcategories: [...new Set(expenses.map((e) => e.subcategory).filter(Boolean))].sort(),
@@ -417,26 +419,23 @@ export async function handlePublicApi(route, request, env) {
       if (route === "rsvp/lookup" && method === "POST") return rsvpLookup(env, await body(request));
       if (route === "rsvp/submit" && method === "POST") return rsvpSubmit(env, await body(request));
     }
-    if (route === "expense/options" && method === "GET") {
-      if (!(await checkFormKey(env, new URL(request.url).searchParams.get("k")))) {
-        return json({ error: "This form link isn't valid any more. Get the current one from the control panel." }, 403);
-      }
-      return json(await expenseOptions(env));
+    // The expense form is for the two of us: it takes the control panel's sign-in.
+    let user = null;
+    if (route === "expense" || route.startsWith("expense/")) {
+      const [admin, denied] = await requireAdmin(request, env);
+      if (denied) return denied;
+      user = admin;
     }
+    if (route === "expense/options" && method === "GET") return json(await expenseOptions(env, user));
     if (route === "expense/chat" && method === "POST") {
       const input = await body(request);
-      if (!(await checkFormKey(env, input.key))) {
-        return json({ error: "This form link isn't valid any more. Get the current one from the control panel." }, 403);
-      }
       const turn = await intakeTurn(env, input, await loadContext(env));
       if (turn.stream) return new Response(turn.stream, { headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" } });
       return json(turn.body, turn.status);
     }
     if (route === "expense" && method === "POST") {
       const form = await request.formData();
-      if (!(await checkFormKey(env, form.get("key")))) {
-        return json({ error: "This form link isn't valid any more. Get the current one from the control panel." }, 403);
-      }
+      if (!form.get("submitted_by")) form.set("submitted_by", payerFor(user, (await loadSettings(env)).payers) || user.name);
       return submitExpense(env, form);
     }
     return json({ error: "Not found." }, 404);
