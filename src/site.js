@@ -222,8 +222,8 @@ export function contrastingColor(themeText) {
 
 // Countdown ticking, our phone menu, the RSVP pill's place, and hiding Zola's dead menu
 // icon. Added as each page is served (see servePage), so a fix here reaches pages
-// copied before it. The pill sits at the right end of the site's menu row when the
-// whole menu fits on one line with room for it, and in our bar at the top otherwise.
+// copied before it. The pill sits just after the last menu link, 40px clear of it, when
+// the whole menu fits on one line with room for it, and in our bar at the top otherwise.
 export const PAGE_SCRIPT = `(function(){var L=[["day","d"],["hour","h"],["minute","min"],["second","s"]];
 function tick(){document.querySelectorAll("[data-wm-target]").forEach(function(box){
 var left=Math.max(0,Math.floor((Number(box.getAttribute("data-wm-target"))-Date.now())/1000));
@@ -245,14 +245,14 @@ var box=links[0].parentElement;while(box&&!links.every(function(a){return box.co
 while(box&&box.parentElement&&box.parentElement!==document.body&&box.getBoundingClientRect().width<document.documentElement.clientWidth*0.8)box=box.parentElement;
 var right=Math.max.apply(null,links.map(function(a){return a.getBoundingClientRect().right}));
 return box?{box:box,link:links[0],right:right}:null}
-function toBar(){pill.classList.remove("wm-in-nav");pill.style.top="";bar.insertBefore(pill,menu);bar.style.display=""}
+function toBar(){pill.classList.remove("wm-in-nav");pill.style.top=pill.style.left=pill.style.right="";bar.insertBefore(pill,menu);bar.style.display=""}
 function layout(){var phone=!navShown();bar.classList.toggle("wm-phone",phone);if(!phone)close();
 if(!pill){bar.style.display=phone?"":"none";return}
 toBar();if(phone)return;var row=menuRow();if(!row)return;
 var w=pill.getBoundingClientRect().width,br=row.box.getBoundingClientRect();
-if(br.right-24-w-64<row.right)return;
+var GAP=40;if(row.right+GAP+w>br.right-8)return;
 if(getComputedStyle(row.box).position==="static")row.box.style.position="relative";
-var lr=row.link.getBoundingClientRect();pill.classList.add("wm-in-nav");pill.style.top=(lr.top+lr.height/2-br.top)+"px";row.box.appendChild(pill);bar.style.display="none"}
+var lr=row.link.getBoundingClientRect();pill.classList.add("wm-in-nav");pill.style.top=(lr.top+lr.height/2-br.top)+"px";pill.style.left=(row.right-br.left+GAP)+"px";pill.style.right="auto";row.box.appendChild(pill);bar.style.display="none"}
 function close(){menu.hidden=true;btn.setAttribute("aria-expanded","false")}
 btn.addEventListener("click",function(){var open=menu.hidden;menu.hidden=!open;btn.setAttribute("aria-expanded",String(open))});
 document.addEventListener("keydown",function(e){if(e.key==="Escape")close()});
@@ -379,7 +379,7 @@ export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpCol
     + `.wm-rsvp:hover,.wm-rsvp:focus-visible{transform:translateY(-1px);box-shadow:0 4px 16px rgba(0,0,0,.2);color:#fff}`
     + `.wm-rsvp:focus-visible{outline:3px solid ${pill};outline-offset:3px}`
     // On a wide screen the pill sits at the right end of the site's menu row.
-    + `.wm-rsvp.wm-in-nav{position:absolute;right:24px;transform:translateY(-50%);z-index:5}`
+    + `.wm-rsvp.wm-in-nav{position:absolute;transform:translateY(-50%);z-index:5}`
     + `.wm-rsvp.wm-in-nav:hover,.wm-rsvp.wm-in-nav:focus-visible{transform:translateY(calc(-50% - 1px))}`,
   ]));
 

@@ -35,7 +35,9 @@ import { all, first, markDirty, run } from "./db.js";
 import { STATUSES, STATUS_LABELS } from "./calc.js";
 import { addPayment, createExpense, loadContext, loadSettings, listExpenses, listVendors, updateExpense } from "./store.js";
 import { uploadReceipt } from "./google.js";
-import { intakeTurn } from "./intake.js";
+import { intakeTurn, payerFor } from "./intake.js";
+
+export { payerFor };
 
 const RSVP_TOKEN_TTL = 60 * 60 * 2;
 const PICK_TOKEN_TTL = 60 * 30;
@@ -228,13 +230,6 @@ async function rsvpSubmit(env, input) {
 
 /* ------------------------------------------------------------- expense form ---- */
 
-/** Which of the payers the signed-in person is, by first name or email ("" if neither fits). */
-export function payerFor(user, payers) {
-  const first = String(user?.name || "").trim().split(/\s+/)[0].toLowerCase();
-  const local = String(user?.email || "").split("@")[0].toLowerCase();
-  return payers.find((p) => p.toLowerCase() === first) || payers.find((p) => p.length > 2 && local.startsWith(p.toLowerCase())) || "";
-}
-
 async function expenseOptions(env, user) {
   const ctx = await loadContext(env);
   const expenses = await listExpenses(env, ctx);
@@ -242,7 +237,6 @@ async function expenseOptions(env, user) {
     statuses: STATUSES.filter((s) => s !== "cancelled").map((s) => ({ value: s, label: STATUS_LABELS[s] })),
     payers: ctx.settings.payers,
     me: payerFor(user, ctx.settings.payers),
-    payment_methods: ctx.settings.payment_methods,
     categories: [...new Set(expenses.map((e) => e.category).filter(Boolean))].sort(),
     subcategories: [...new Set(expenses.map((e) => e.subcategory).filter(Boolean))].sort(),
     vendors: await listVendors(env),
@@ -429,7 +423,7 @@ export async function handlePublicApi(route, request, env) {
     if (route === "expense/options" && method === "GET") return json(await expenseOptions(env, user));
     if (route === "expense/chat" && method === "POST") {
       const input = await body(request);
-      const turn = await intakeTurn(env, input, await loadContext(env));
+      const turn = await intakeTurn(env, input, await loadContext(env), user);
       if (turn.stream) return new Response(turn.stream, { headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" } });
       return json(turn.body, turn.status);
     }

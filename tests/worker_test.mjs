@@ -817,7 +817,7 @@ function claudeReply(content, stop_reason = "end_turn") {
 }
 const proposeCall = (input, id = "toolu_1") => ({ type: "tool_use", id, name: "propose_expense", input: {
   mode: "new", expense_id: null, item: null, category: null, subcategory: null, vendor: null, stage: "paid", price: null, quantity: 1,
-  taxable: false, gratuity_percent: 0, due_date: null, payment_amount: null, paid_on: null, payer: null, method: null, notes: null, ...input,
+  taxable: false, gratuity_percent: 0, due_date: null, payment_amount: null, paid_on: null, payer: null, notes: null, ...input,
 } });
 
 test("the conversational form needs the sign-in, and says when Claude isn't set up", async () => {
@@ -850,13 +850,17 @@ test("Claude sees the items, line items and vendors, and its proposal saves thro
     const sys = req.system.map((b) => b.text).join("\n");
     assert.match(sys, new RegExp(`#${ps} Place Settings · Ceremony & Reception › Decor`));
     assert.match(sys, /Plates · Goodwill · Paid · \$38\.50/);
-    assert.match(sys, /Filling this in: Kaitlyn\./);
+    assert.match(sys, /Signed in and filling this in: Kaitlyn/);
+    // Asked for: she's signed in, so don't ask who made the purchase.
+    assert.match(sys, /Unless they say someone else paid, Kaitlyn paid: set payer to Kaitlyn and don't ask\./);
+    assert.match(sys, /Never ask who paid/);
+    assert.ok(!("method" in req.tools[0].input_schema.properties), "no payment method");
     // Asked for: a new line item under the item it fits, rather than changing that item.
     assert.match(sys, /By default, record an expense as a new line item/);
     assert.equal(req.tools[0].input_schema.properties.mode.enum[0], "line_item");
     return claudeReply([
       { type: "text", text: "That sounds like it goes under Place Settings." },
-      proposeCall({ mode: "line_item", expense_id: ps, item: "Glassware", vendor: "Target", price: 45, paid_on: "2026-10-18", payer: "Kaitlyn", method: "Credit card" }),
+      proposeCall({ mode: "line_item", expense_id: ps, item: "Glassware", vendor: "Target", price: 45, paid_on: "2026-10-18" }),
     ], "tool_use");
   }, () => api("/api/public/expense/chat", { method: "POST", body: { key, who: "Kaitlyn", today: "2026-10-18", messages: [{ role: "user", content: "bought glassware at target, $45" }] } }));
   assert.equal(r.status, 200, JSON.stringify(r.data));
@@ -873,7 +877,7 @@ test("Claude sees the items, line items and vendors, and its proposal saves thro
   assert.equal(saved.status, 201, JSON.stringify(saved.data));
   const kid = (await api(`/api/admin/expenses/${saved.data.expense_id}`)).data;
   assert.equal(kid.expense.parent_id, ps);
-  assert.deepEqual(kid.payments.map((p) => [p.amount, p.payer, p.method]), [[45, "Kaitlyn", "Credit card"]]);
+  assert.deepEqual(kid.payments.map((p) => [p.amount, p.payer]), [[45, "Kaitlyn"]], "the signed-in person paid, without being asked");
 });
 
 test("when Claude is unavailable, the chat says so instead of hanging", async () => {
@@ -946,7 +950,7 @@ test("a line item can be updated through the expense form, and Claude may propos
   const expenses = (await api("/api/admin/expenses")).data.expenses;
   const settings = { payers: ["Patrick"], payment_methods: [] };
   const base = { mode: "update", expense_id: books, item: null, category: null, subcategory: null, vendor: null, stage: "quote", price: 25, quantity: 4,
-    taxable: false, gratuity_percent: 0, due_date: null, payment_amount: null, paid_on: null, payer: null, method: null, notes: null };
+    taxable: false, gratuity_percent: 0, due_date: null, payment_amount: null, paid_on: null, payer: null, notes: null };
   const checked = checkProposal(base, expenses, settings);
   assert.equal(checked.error, undefined);
   assert.deepEqual(checked.summary[0], ["Update", "Books, under Groom Party Gifts"]);
@@ -964,7 +968,7 @@ test("a proposal is checked: paid in full ignores a payment amount, and payers a
   const settings = { payers: ["Patrick", "Kaitlyn"], payment_methods: ["Cash"] };
   const expenses = [{ id: 1, item: "Venue", status: "booked", purchases: 2 }, { id: 2, item: "Deposit", parent_id: 1, status: "paid" }];
   const base = { mode: "new", expense_id: null, item: "Cake", category: "Food", subcategory: null, vendor: null, stage: "paid", price: 400, quantity: 1,
-    taxable: false, gratuity_percent: 0, due_date: "2027-01-01", payment_amount: 100, paid_on: null, payer: null, method: null, notes: null };
+    taxable: false, gratuity_percent: 0, due_date: "2027-01-01", payment_amount: 100, paid_on: null, payer: null, notes: null };
   const ok = checkProposal(base, expenses, settings);
   assert.equal(ok.form.payment_amount, "", "at Paid the price is what's paid");
   assert.equal(ok.form.due_date, "");
@@ -1168,7 +1172,13 @@ test("the expense form takes the admin sign-in, lives at PUBLIC_URL/submit, and 
   const payers = ["Patrick", "Kaitlyn", "Joint"];
   assert.equal(payerFor({ name: "Kaitlyn Wright", email: "kw@example.com" }, payers), "Kaitlyn");
   assert.equal(payerFor({ name: "pat", email: "patrick.oneill@example.com" }, payers), "Patrick", "by email when the name doesn't match");
+  assert.equal(payerFor({ name: "K Wright", email: "wright.kaitlyn@example.com" }, payers), "Kaitlyn", "a payer's name anywhere in the email");
   assert.equal(payerFor({ name: "Someone", email: "x@example.com" }, payers), "");
+  const { checkProposal } = await import("../src/intake.js");
+  const p = { mode: "new", expense_id: null, item: "Cake", category: "Food", subcategory: null, vendor: null, stage: "paid", price: 400, quantity: 1,
+    taxable: false, gratuity_percent: 0, due_date: null, payment_amount: null, paid_on: null, payer: null, notes: null };
+  assert.equal(checkProposal(p, [], { payers }, "Kaitlyn").form.payer, "Kaitlyn", "whoever is signed in paid");
+  assert.equal(checkProposal({ ...p, payer: "Patrick" }, [], { payers }, "Kaitlyn").form.payer, "Patrick", "unless they said otherwise");
 });
 
 test("signing in returns to the page that asked, and the bare domain redirects to www", async () => {
@@ -1519,7 +1529,7 @@ test("pages get the current page script as they're served, replacing any copy st
   const page = (await call(env, "/")).data;
   assert.ok(!page.includes("an older version"), "the stored copy is gone");
   assert.equal(page.split(PAGE_SCRIPT).length, 2, "the current script appears once");
-  assert.ok(PAGE_SCRIPT.includes("wm-in-nav") && PAGE_SCRIPT.includes("br.right-24-w-64<row.right"), "the pill only joins the menu row when it fits");
+  assert.ok(PAGE_SCRIPT.includes("wm-in-nav") && PAGE_SCRIPT.includes("row.right+GAP+w>br.right-8"), "the pill only joins the menu row when it fits");
 });
 
 // Asked for: no RSVP button on the website while RSVPs are closed, and the button in #A4727E.

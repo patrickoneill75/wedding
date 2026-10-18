@@ -40,7 +40,7 @@
 
   <form class="card" id="budgetForm">
     <h2>Budget</h2>
-    <p class="desc">Tax applies to items marked taxable. The people and payment methods fill the "who paid" and "method" menus.</p>
+    <p class="desc">Tax applies to items marked taxable. The people fill the "who paid" menus.</p>
     <div class="fields" id="budgetFields"></div>
     <div class="row"><button type="submit" class="primary">Save</button></div>
     <p class="msg"></p>
@@ -160,7 +160,6 @@ function fill() {
     field("Sales tax %", "tax_percent", { type: "number", step: "any", value: Math.round(s.tax_rate * 10000) / 100 }),
     field("Total budget ($, optional)", "budget_target", { type: "number", step: "1", value: s.budget_target ?? "" }),
     field("Who pays (comma-separated)", "payers", { value: s.payers.join(", ") }),
-    field("Payment methods (comma-separated)", "payment_methods", { value: s.payment_methods.join(", ") }),
   );
   document.getElementById("weightFields").replaceChildren(
     ...["High", "Medium", "Low"].map((p) => field(`${p} priority`, `w_${p}`, { type: "number", step: "any", value: s.priority_weights[p], oninput: preview })),
@@ -266,7 +265,6 @@ document.getElementById("budgetForm").addEventListener("submit", (ev) => {
     tax_rate: (Number(v.tax_percent) || 0) / 100,
     budget_target: v.budget_target,
     payers: v.payers.split(","),
-    payment_methods: v.payment_methods.split(","),
   });
 });
 document.getElementById("calcForm").addEventListener("submit", (ev) => {

@@ -20,6 +20,16 @@
 import { STATUSES, STATUS_LABELS } from "./calc.js";
 import { listExpenses, listVendors } from "./store.js";
 
+/** Which of the payers a signed-in person is, by their Google name or email ("" if neither fits). */
+export function payerFor(user, payers) {
+  const words = String(user?.name || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const local = String(user?.email || "").split("@")[0].toLowerCase();
+  return payers.find((p) => p.toLowerCase() === words[0])
+    || payers.find((p) => words.includes(p.toLowerCase()))
+    || payers.find((p) => p.length > 2 && local.includes(p.toLowerCase()))
+    || "";
+}
+
 const MODEL = "claude-sonnet-5-5";
 const API_URL = "https://api.anthropic.com/v1/messages";
 const MAX_MESSAGES = 60;
@@ -38,7 +48,7 @@ How to work:
 - A receipt for things that belong under different items: propose one entry at a time, and the next once they've saved it. Things that belong together can be one entry.
 - A receipt: read the vendor, the date, what was bought and the total actually paid. Take a receipt as paid in full unless they say otherwise. The total already includes tax and any tip, so set quantity 1, taxable false and gratuity_percent 0, and put the total in price.
 - Stages: estimate (their own guess), quote (a vendor's price), booked (committed to), paid (paid in full). Partially paid comes on its own when a payment is less than the price, so a deposit on a booking (price is the full amount) is stage booked with payment_amount set. At stage paid, the price is recorded as paid; leave payment_amount null.
-- Ask only for what you can't work out, one or two short questions at a time. The person filling this in is usually who paid. Don't ask about optional details such as due dates or notes unless they come up.
+- Ask only for what you can't work out, one or two short questions at a time. Never ask who paid: they're signed in, so it's the person filling this in unless they say someone else paid. Don't ask about optional details such as due dates or notes unless they come up.
 - Never guess a price or an amount: ask.
 - When you have what you need, call propose_expense in the same reply. Don't say it's saved; they save it. If they reply to a proposal instead of saving, adjust and propose again.
 - Write short, plain messages for a phone screen: no headings, no tables.`;
@@ -54,7 +64,7 @@ const PROPOSE_TOOL = {
     additionalProperties: false,
     required: [
       "mode", "expense_id", "item", "category", "subcategory", "vendor", "stage", "price", "quantity", "taxable",
-      "gratuity_percent", "due_date", "payment_amount", "paid_on", "payer", "method", "notes",
+      "gratuity_percent", "due_date", "payment_amount", "paid_on", "payer", "notes",
     ],
     properties: {
       mode: {
@@ -76,7 +86,6 @@ const PROPOSE_TOOL = {
       payment_amount: { type: ["number", "null"], description: "An amount paid now, below the full price (a deposit). null at stage paid or when nothing was paid." },
       paid_on: { type: ["string", "null"], description: "Date paid, YYYY-MM-DD, when something was paid." },
       payer: { type: ["string", "null"], description: "Who paid, from the payers list, when something was paid." },
-      method: { type: ["string", "null"], description: "How it was paid, from the payment methods list, or null." },
       notes: { type: ["string", "null"], description: "Anything worth keeping that has no field, or null." },
     },
   },
@@ -86,7 +95,7 @@ const money = (n) => `$${Number(n || 0).toFixed(2)}`;
 const where = (e) => [e.category, e.subcategory].filter(Boolean).join(" › ") || "Uncategorized";
 
 /** Everything Claude needs to place an expense: items with their line items, categories, vendors. */
-export function catalog(expenses, vendors, settings, { who, today }) {
+export function catalog(expenses, vendors, settings, { who, signedIn, today }) {
   const open = expenses.filter((e) => e.status !== "cancelled");
   const kids = new Map();
   for (const e of open) if (e.parent_id) (kids.get(e.parent_id) || kids.set(e.parent_id, []).get(e.parent_id)).push(e);
@@ -104,8 +113,9 @@ export function catalog(expenses, vendors, settings, { who, today }) {
   }
   const categories = [...new Set(open.filter((e) => !e.parent_id).map(where))].sort();
   return [
-    `Today is ${today}. Filling this in: ${who || "not said"}.`,
-    `Payers: ${settings.payers.join(", ")}. Payment methods: ${settings.payment_methods.join(", ")}.`,
+    `Today is ${today}. Signed in and filling this in: ${who || "not said"}${signedIn ? ` (${signedIn})` : ""}.`
+      + (who ? ` Unless they say someone else paid, ${who} paid: set payer to ${who} and don't ask.` : ""),
+    `Payers: ${settings.payers.join(", ")}.`,
     `Categories in use (category › subcategory): ${categories.join("; ") || "none yet"}.`,
     `Vendors: ${vendors.join(", ") || "none yet"}.`,
     "Items (id · name · category › subcategory · stage · price):",
@@ -120,7 +130,7 @@ const text = (v) => (typeof v === "string" ? v.trim() : "");
  * Check a proposal against the data and turn it into the expense form's fields and a
  * readable summary. Returns { error } for Claude to fix, or { form, summary }.
  */
-export function checkProposal(p, expenses, settings) {
+export function checkProposal(p, expenses, settings, who = "") {
   const byId = new Map(expenses.map((e) => [e.id, e]));
   const target = p.expense_id == null ? null : byId.get(Number(p.expense_id));
   if (!STATUSES.includes(p.stage) || p.stage === "cancelled") return { error: `Unknown stage "${p.stage}".` };
@@ -132,11 +142,12 @@ export function checkProposal(p, expenses, settings) {
   if (p.mode !== "update" && !text(p.item)) return { error: "Give the item or line item a name." };
   if (p.mode === "new" && !text(p.category)) return { error: "A new item needs a category." };
   if (p.payer && !settings.payers.includes(p.payer)) return { error: `Payer must be one of: ${settings.payers.join(", ")}.` };
-  if (p.method && !settings.payment_methods.includes(p.method)) return { error: `Method must be one of: ${settings.payment_methods.join(", ")}.` };
   for (const k of ["due_date", "paid_on"]) if (p[k] && !isDate(p[k])) return { error: `${k} must be YYYY-MM-DD.` };
   for (const k of ["price", "payment_amount"]) if (p[k] != null && !(Number(p[k]) >= 0)) return { error: `${k} can't be negative.` };
 
   const paid = p.stage === "paid";
+  // Whoever is signed in paid, unless Claude was told otherwise.
+  const payer = p.payer || (paid || p.payment_amount != null ? who : "");
   const form = {
     mode: p.mode === "line_item" ? "purchase" : p.mode === "update" ? "update" : "",
     expense_id: target ? String(target.id) : "",
@@ -152,8 +163,7 @@ export function checkProposal(p, expenses, settings) {
     due_date: paid ? "" : p.due_date || "",
     payment_amount: paid || p.payment_amount == null ? "" : String(p.payment_amount),
     paid_on: p.paid_on || "",
-    payer: p.payer || "",
-    method: p.method || "",
+    payer: payer || "",
     notes: text(p.notes),
   };
 
@@ -168,7 +178,7 @@ export function checkProposal(p, expenses, settings) {
     summary.push(["Price", [money(form.price), ...extras].join(" ")]);
   }
   if (paid || form.payment_amount) {
-    const how = [form.paid_on || "today", form.payer ? `by ${form.payer}` : "", form.method].filter(Boolean).join(", ");
+    const how = [form.paid_on || "today", form.payer ? `by ${form.payer}` : ""].filter(Boolean).join(", ");
     summary.push(["Paid", `${paid ? "In full" : money(form.payment_amount)} · ${how}`]);
   }
   if (form.due_date) summary.push(["Due", form.due_date]);
@@ -315,7 +325,7 @@ async function* serverSentEvents(body) {
  * A proposal that doesn't check out goes back to Claude with what's wrong, a couple of
  * times at most.
  */
-export async function intakeTurn(env, input, ctx) {
+export async function intakeTurn(env, input, ctx, user = null) {
   if (!env.ANTHROPIC_API_KEY) {
     return { status: 503, body: { error: "The conversational form isn't set up yet (no ANTHROPIC_API_KEY). Use the plain form for now.", setup: true } };
   }
@@ -325,10 +335,11 @@ export async function intakeTurn(env, input, ctx) {
 
   const expenses = await listExpenses(env, ctx);
   const vendors = await listVendors(env);
-  const who = ctx.settings.payers.includes(input.who) ? input.who : "";
+  // Who is filling this in: the signed-in person, else the "I'm" picked on the page.
+  const who = payerFor(user, ctx.settings.payers) || (ctx.settings.payers.includes(input.who) ? input.who : "");
   const system = [
     { type: "text", text: INSTRUCTIONS },
-    { type: "text", text: catalog(expenses, vendors, ctx.settings, { who, today: input.today && isDate(input.today) ? input.today : new Date().toISOString().slice(0, 10) }) },
+    { type: "text", text: catalog(expenses, vendors, ctx.settings, { who, signedIn: user?.name || "", today: input.today && isDate(input.today) ? input.today : new Date().toISOString().slice(0, 10) }) },
   ];
 
   const { readable, writable } = new TransformStream();
@@ -353,7 +364,7 @@ export async function intakeTurn(env, input, ctx) {
           await send({ type: "done", messages, reply: said, proposal: null });
           break;
         }
-        const checked = checkProposal(call.input || {}, expenses, ctx.settings);
+        const checked = checkProposal(call.input || {}, expenses, ctx.settings, who);
         if (!checked.error) {
           await send({ type: "done", messages, reply: said, proposal: { tool_use_id: call.id, form: checked.form, summary: checked.summary } });
           break;
