@@ -17,6 +17,10 @@
   .crumbs { font-size: 12.5px; margin-bottom: 8px; }
   .crumbs button { color: var(--accent); }
   code.url { display: block; background: var(--wash); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; word-break: break-all; margin-bottom: 10px; }
+  .basis-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .basis-row .text { flex: 1 1 320px; font-size: 13px; color: var(--text-secondary); }
+  .basis-row .text b { color: var(--text-primary); }
+  #guest-count:target { outline: 2px solid var(--accent); outline-offset: 2px; }
   h3.part { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 14px 0 8px; }
 </style>
 </head>
@@ -42,6 +46,14 @@
     <p class="msg"></p>
   </form>
 
+  <div class="card" id="guest-count">
+    <h2>Guest count for costs</h2>
+    <p class="desc">Per-guest expenses and the drinks calculator are priced on this count. Start on weighted invites, and
+      switch to confirmed RSVPs once most replies are in. You can switch back at any time.</p>
+    <div class="basis-row" id="basisRow"></div>
+    <p class="msg" id="basisMsg"></p>
+  </div>
+
   <form class="card" id="calcForm">
     <h2>Guest weighting and drinks calculator</h2>
     <p class="desc">Weighted invites count each invitee by how likely they are to come, then round up. The drinks math is the
@@ -64,8 +76,8 @@
     <div class="fields">
       <label class="field" style="grid-column: span 2">Zola website address
         <input name="zola_url" placeholder="https://www.zola.com/wedding/your-site"></label>
-      <label class="field">RSVP button color (blank picks one from your theme)
-        <div class="row" style="flex-wrap:nowrap"><input name="rsvp_button_color" placeholder="automatic" style="flex:1">
+      <label class="field">RSVP button color (blank for the default, #A4727E)
+        <div class="row" style="flex-wrap:nowrap"><input name="rsvp_button_color" placeholder="#A4727E" style="flex:1">
           <input type="color" id="rsvpColorPick" style="width:44px;padding:2px;height:36px"></div></label>
     </div>
     <div class="row">
@@ -158,6 +170,41 @@ function fill() {
     ...Object.entries(DRINK_LABELS).map(([key, label]) => field(label, `d_${key}`, { type: "number", step: "any", value: s.drinks[key], oninput: preview })),
   );
   preview();
+  drawBasis();
+}
+
+/** Weighted invites or confirmed RSVPs: the one place this switch lives. */
+function drawBasis() {
+  const c = state.counts;
+  const confirmed = state.settings.guest_basis === "confirmed";
+  const msg = document.getElementById("basisMsg");
+  const button = h("button", {
+    type: "button",
+    class: confirmed ? "" : "primary",
+    onclick: async () => {
+      const ok = confirm(confirmed
+        ? `Switch per-guest costs back to weighted invites (${c.weighted})?`
+        : `Re-price every per-guest expense and the drinks calculator on confirmed RSVPs (${c.confirmed} right now)?`);
+      if (!ok) return;
+      button.disabled = true;
+      try {
+        await api("/api/admin/basis", { method: "POST", body: { basis: confirmed ? "weighted" : "confirmed" } });
+        state = { ...state, ...(await api("/api/admin/settings")) };
+        drawBasis();
+        preview();
+        setMsg(msg, confirmed ? "Per-guest costs are back on weighted invites." : "Per-guest costs now use confirmed RSVPs.", "ok");
+      } catch (error) {
+        button.disabled = false;
+        setMsg(msg, error.message, "err");
+      }
+    },
+  }, confirmed ? "Switch back to weighted invites" : "Convert all to confirmed RSVPs");
+  document.getElementById("basisRow").replaceChildren(
+    h("div", { class: "text" }, "Per-guest costs use ",
+      h("b", {}, confirmed ? `${c.confirmed} confirmed RSVPs` : `${c.weighted} weighted invites`),
+      confirmed ? ` (${c.weighted} weighted invites otherwise).` : ` (${c.confirmed} confirmed RSVPs so far).`),
+    button,
+  );
 }
 
 /* Mirrors drinksPlan() in src/calc.js for a live preview; the server recalculates on save. */
@@ -339,7 +386,7 @@ async function renderSite() {
   const { zola_url, status, pages, via_github } = await api("/api/admin/site/status");
   siteForm.elements.zola_url.value = state.settings.zola_url || zola_url || "";
   siteForm.elements.rsvp_button_color.value = state.settings.rsvp_button_color || "";
-  if (state.settings.rsvp_button_color) document.getElementById("rsvpColorPick").value = state.settings.rsvp_button_color;
+  document.getElementById("rsvpColorPick").value = state.settings.rsvp_button_color || "#a4727e";
   const when = (iso) => (iso ? new Date(iso).toLocaleString() : "never");
   const box = document.getElementById("siteStatus");
   if (!status) {
@@ -430,6 +477,9 @@ document.getElementById("importForm").addEventListener("submit", async (ev) => {
 });
 
 fill();
+// The cards above fill in after the page loads, so a link to a card (the dashboard's
+// "Change in Settings") lands on it again once they have.
+if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView();
 showLink();
 renderDrive();
 renderSite();

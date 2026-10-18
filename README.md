@@ -46,7 +46,7 @@ rate, and any item can add a gratuity %.
 
 The guest count starts as **weighted invites**: each invitee counts 0.9 / 0.6 / 0.4 by
 High / Medium / Low priority, rounded up, as in the original spreadsheet. Once RSVPs are
-in, **Convert all to confirmed RSVPs** on the dashboard re-prices everything on the real
+in, **Convert all to confirmed RSVPs** in Settings (Guest count for costs) re-prices everything on the real
 yes count.
 
 On the Expenses page every item's cost sits in one of two columns: **Estimated** (an

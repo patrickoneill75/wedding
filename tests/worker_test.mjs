@@ -1495,7 +1495,29 @@ test("pages get the current page script as they're served, replacing any copy st
   const page = (await call(env, "/")).data;
   assert.ok(!page.includes("an older version"), "the stored copy is gone");
   assert.equal(page.split(PAGE_SCRIPT).length, 2, "the current script appears once");
-  assert.ok(PAGE_SCRIPT.includes("wm-in-nav") && PAGE_SCRIPT.includes("br.right-24-w-16<row.right"), "the pill only joins the menu row when it fits");
+  assert.ok(PAGE_SCRIPT.includes("wm-in-nav") && PAGE_SCRIPT.includes("br.right-24-w-64<row.right"), "the pill only joins the menu row when it fits");
+});
+
+// Asked for: no RSVP button on the website while RSVPs are closed, and the button in #A4727E.
+test("the RSVP button is #A4727E unless Settings picks a color, and disappears while RSVPs are closed", async () => {
+  const { buildSite } = await import("../src/site.js");
+  const env = siteEnv();
+  const built = await buildSite({ zolaUrl: `https://www.zola.com/wedding/${SLUG}`, fetchPage: async (url) => {
+    if (url.endsWith("fonts.css")) return "";
+    if (url.endsWith(SLUG)) return zolaPage();
+    throw new Error(`Zola returned 404 for ${url}`);
+  } });
+  assert.equal((await ingest(env, JSON.parse(JSON.stringify(built)))).status, 200);
+  let page = (await call(env, "/")).data;
+  assert.ok(page.includes('<a class="wm-rsvp" href="/rsvp/">RSVP</a>'));
+  assert.ok(page.includes(".wm-rsvp{background:#A4727E}"));
+  const api = await adminClient(env);
+  await api("/api/admin/settings", { method: "PUT", body: { rsvp_button_color: "#2f5d62" } });
+  assert.ok((await call(env, "/")).data.includes(".wm-rsvp{background:#2f5d62}"), "a color from Settings shows without a refresh");
+  await api("/api/admin/settings", { method: "PUT", body: { rsvp_open: false } });
+  page = (await call(env, "/")).data;
+  assert.ok(!page.includes('class="wm-rsvp"'), "no button while RSVPs are closed");
+  assert.ok(page.includes("Menu"), "the phone menu stays");
 });
 
 test("the ingest route only accepts pages the site would make itself", async () => {
