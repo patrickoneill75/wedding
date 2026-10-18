@@ -596,8 +596,9 @@ test("saving an expense as Paid puts its full price in the Paid column", async (
   assert.equal((await api(`/api/admin/expenses/${dj}`)).data.payments.length, 2);
 });
 
-async function formKeyFor(api) {
-  return new URL((await api("/api/admin/form-link")).data.url).searchParams.get("k");
+// The expense form used to take a key in its link; it now takes the admin sign-in.
+async function formKeyFor() {
+  return "";
 }
 function formOf(fields) {
   const form = new FormData();
@@ -610,7 +611,7 @@ test("the expense form adds a purchase under an existing item, and lists items w
   const api = await adminClient(env);
   const key = await formKeyFor(api);
   const parent = (await api("/api/admin/expenses", { method: "POST", body: { item: "Place Settings", vendor: "Goodwill", unit_cost: 300 } })).data.expense.id;
-  const r = await call(env, "/api/public/expense", { method: "POST", form: formOf({
+  const r = await api("/api/public/expense", { method: "POST", form: formOf({
     key, expense_id: String(parent), mode: "purchase", item: "Glasses", vendor: "Target", price: "45", status: "paid",
     payment_amount: "999", paid_on: "2026-03-04", payer: "Kaitlyn", method: "Credit card",
   }) });
@@ -620,7 +621,7 @@ test("the expense form adds a purchase under an existing item, and lists items w
   assert.equal(kid.expense.vendor, "Target");
   assert.deepEqual(kid.payments.map((p) => [p.amount, p.paid_on, p.payer, p.method]), [[45, "2026-03-04", "Kaitlyn", "Credit card"]],
     "at the Paid stage the price is what's paid; a typed-in amount is ignored");
-  const options = (await call(env, `/api/public/expense/options?k=${key}`)).data;
+  const options = (await api(`/api/public/expense/options?k=${key}`)).data;
   assert.deepEqual(options.items.map((i) => i.item), ["Place Settings"], "purchases aren't offered as items");
   assert.equal(options.items[0].purchases, 2, "the item's own Goodwill booking became its first line item");
   assert.deepEqual(options.vendors, ["Goodwill", "Target"]);
@@ -655,7 +656,7 @@ test("the first line item moves the item's own price and booking into a line ite
   const pay = await api(`/api/admin/expenses/${id}/payments`, { method: "POST", body: { amount: 10 } });
   assert.equal(pay.status, 400, "payments go on a line item, not the item");
   const key = await formKeyFor(api);
-  const r = await call(env, "/api/public/expense", { method: "POST", form: formOf({ key, expense_id: String(id), mode: "update", price: "1", status: "quote" }) });
+  const r = await api("/api/public/expense", { method: "POST", form: formOf({ key, expense_id: String(id), mode: "update", price: "1", status: "quote" }) });
   assert.equal(r.status, 400, "the form can't update a split item's price as if it were one booking");
 });
 
@@ -784,7 +785,7 @@ test("the expense form still updates an item itself in update mode", async () =>
   const api = await adminClient(env);
   const key = await formKeyFor(api);
   const id = (await api("/api/admin/expenses", { method: "POST", body: { item: "Florist", unit_cost: 800 } })).data.expense.id;
-  await call(env, "/api/public/expense", { method: "POST", form: formOf({ key, expense_id: String(id), mode: "update", price: "950", status: "quote" }) });
+  await api("/api/public/expense", { method: "POST", form: formOf({ key, expense_id: String(id), mode: "update", price: "950", status: "quote" }) });
   const e = (await api(`/api/admin/expenses/${id}`)).data.expense;
   assert.equal(e.current, 950);
   assert.equal(e.status, "quote");
@@ -819,13 +820,13 @@ const proposeCall = (input, id = "toolu_1") => ({ type: "tool_use", id, name: "p
   taxable: false, gratuity_percent: 0, due_date: null, payment_amount: null, paid_on: null, payer: null, method: null, notes: null, ...input,
 } });
 
-test("the conversational form needs the form key, and says when Claude isn't set up", async () => {
+test("the conversational form needs the sign-in, and says when Claude isn't set up", async () => {
   const env = makeEnv();
   const api = await adminClient(env);
   const key = await formKeyFor(api);
   const messages = [{ role: "user", content: "glassware" }];
-  assert.equal((await call(env, "/api/public/expense/chat", { method: "POST", body: { key: "nope", messages } })).status, 403);
-  const r = await call(env, "/api/public/expense/chat", { method: "POST", body: { key, messages } });
+  assert.equal((await call(env, "/api/public/expense/chat", { method: "POST", body: { messages } })).status, 401, "signed out");
+  const r = await api("/api/public/expense/chat", { method: "POST", body: { key, messages } });
   assert.equal(r.status, 503);
   assert.equal(r.data.setup, true);
 });
@@ -857,7 +858,7 @@ test("Claude sees the items, line items and vendors, and its proposal saves thro
       { type: "text", text: "That sounds like it goes under Place Settings." },
       proposeCall({ mode: "line_item", expense_id: ps, item: "Glassware", vendor: "Target", price: 45, paid_on: "2026-10-18", payer: "Kaitlyn", method: "Credit card" }),
     ], "tool_use");
-  }, () => call(env, "/api/public/expense/chat", { method: "POST", body: { key, who: "Kaitlyn", today: "2026-10-18", messages: [{ role: "user", content: "bought glassware at target, $45" }] } }));
+  }, () => api("/api/public/expense/chat", { method: "POST", body: { key, who: "Kaitlyn", today: "2026-10-18", messages: [{ role: "user", content: "bought glassware at target, $45" }] } }));
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal(r.data.type, "done");
   assert.equal(r.data.reply, "That sounds like it goes under Place Settings.");
@@ -868,7 +869,7 @@ test("Claude sees the items, line items and vendors, and its proposal saves thro
   assert.deepEqual([form.mode, form.expense_id, form.item, form.status, form.price], ["purchase", String(ps), "Glassware", "paid", "45"]);
   assert.deepEqual(summary[0], ["Line item", "Glassware, under Place Settings"]);
 
-  const saved = await call(env, "/api/public/expense", { method: "POST", form: formOf({ key, submitted_by: "Kaitlyn", ...Object.fromEntries(Object.entries(form).filter(([, v]) => v !== "")) }) });
+  const saved = await api("/api/public/expense", { method: "POST", form: formOf({ key, submitted_by: "Kaitlyn", ...Object.fromEntries(Object.entries(form).filter(([, v]) => v !== "")) }) });
   assert.equal(saved.status, 201, JSON.stringify(saved.data));
   const kid = (await api(`/api/admin/expenses/${saved.data.expense_id}`)).data;
   assert.equal(kid.expense.parent_id, ps);
@@ -880,7 +881,7 @@ test("when Claude is unavailable, the chat says so instead of hanging", async ()
   const api = await adminClient(env);
   const key = await formKeyFor(api);
   const r = await withFetch(async () => new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }), { status: 529 }),
-    () => call(env, "/api/public/expense/chat", { method: "POST", body: { key, messages: [{ role: "user", content: "cake $400" }] } }));
+    () => api("/api/public/expense/chat", { method: "POST", body: { key, messages: [{ role: "user", content: "cake $400" }] } }));
   assert.equal(r.data.type, "error");
   assert.match(r.data.error, /Claude couldn't answer \(Overloaded\)/);
 });
@@ -898,7 +899,7 @@ test("a proposal that doesn't check out goes back to Claude to fix before anyone
     assert.equal(last.is_error, true);
     assert.match(last.content, /#9999 isn't an open item/);
     return claudeReply([proposeCall({ mode: "update", expense_id: dj, stage: "booked", price: 1200, payment_amount: 300, payer: "Patrick" }, "toolu_2")], "tool_use");
-  }, () => call(env, "/api/public/expense/chat", { method: "POST", body: { key, who: "Patrick", messages: [{ role: "user", content: "paid the DJ a $300 deposit" }] } }));
+  }, () => api("/api/public/expense/chat", { method: "POST", body: { key, who: "Patrick", messages: [{ role: "user", content: "paid the DJ a $300 deposit" }] } }));
   assert.equal(r.status, 200);
   assert.equal(r.data.proposal.tool_use_id, "toolu_2");
   assert.deepEqual([r.data.proposal.form.mode, r.data.proposal.form.payment_amount], ["update", "300"]);
@@ -920,7 +921,7 @@ test("every proposal in the conversation is answered before it goes back to Clau
   const r = await withFetch(async (url, init) => {
     sent = JSON.parse(init.body);
     return claudeReply([{ type: "text", text: "Which first?" }]);
-  }, () => call(env, "/api/public/expense/chat", { method: "POST", body: { key, messages } }));
+  }, () => api("/api/public/expense/chat", { method: "POST", body: { key, messages } }));
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.deepEqual(sent.tool_choice, { type: "auto", disable_parallel_tool_use: true });
   const answer = sent.messages[2].content;
@@ -928,7 +929,7 @@ test("every proposal in the conversation is answered before it goes back to Clau
   assert.deepEqual(answer.filter((b) => b.type === "tool_result").map((b) => b.tool_use_id).sort(), ["t1", "t2"]);
   // A plain-text reply to a proposal gets its answer too.
   const plain = await withFetch(async (url, init) => { sent = JSON.parse(init.body); return claudeReply([{ type: "text", text: "ok" }]); },
-    () => call(env, "/api/public/expense/chat", { method: "POST", body: { key, messages: [messages[0], messages[1], { role: "user", content: "never mind" }] } }));
+    () => api("/api/public/expense/chat", { method: "POST", body: { key, messages: [messages[0], messages[1], { role: "user", content: "never mind" }] } }));
   assert.equal(plain.status, 200);
   assert.deepEqual(sent.messages[2].content.map((b) => b.type), ["tool_result", "tool_result", "text"]);
 });
@@ -950,11 +951,11 @@ test("a line item can be updated through the expense form, and Claude may propos
   assert.equal(checked.error, undefined);
   assert.deepEqual(checked.summary[0], ["Update", "Books, under Groom Party Gifts"]);
   assert.match(checkProposal({ ...base, mode: "line_item", item: "Bookmarks" }, expenses, settings).error, /is a line item/);
-  const r = await call(env, "/api/public/expense", { method: "POST", form: formOf({ key, ...Object.fromEntries(Object.entries(checked.form).filter(([, v]) => v !== "")) }) });
+  const r = await api("/api/public/expense", { method: "POST", form: formOf({ key, ...Object.fromEntries(Object.entries(checked.form).filter(([, v]) => v !== "")) }) });
   assert.equal(r.status, 201, JSON.stringify(r.data));
   const e = (await api(`/api/admin/expenses/${books}`)).data.expense;
   assert.deepEqual([e.unit_cost, e.units, e.current, e.parent_id], [25, 4, 100, gifts]);
-  const nested = await call(env, "/api/public/expense", { method: "POST", form: formOf({ key, expense_id: String(books), mode: "purchase", item: "Bookmarks", status: "quote" }) });
+  const nested = await api("/api/public/expense", { method: "POST", form: formOf({ key, expense_id: String(books), mode: "purchase", item: "Bookmarks", status: "quote" }) });
   assert.equal(nested.status, 400, "a line item still takes no line items");
 });
 
@@ -1150,15 +1151,38 @@ test("public info never includes budget settings", async () => {
 
 /* ------------------------------------------------------------ expense form tests -- */
 
-test("the expense form refuses a missing or rotated key", async () => {
-  const env = makeEnv();
+// Asked for: the expense form always at www.patrickandkaitlyn.com/submit, behind the
+// Google sign-in, picking whoever is signed in.
+test("the expense form takes the admin sign-in, lives at PUBLIC_URL/submit, and knows who is signed in", async () => {
+  const env = makeEnv({ PUBLIC_URL: "https://www.patrickandkaitlyn.com" });
+  for (const [path, init] of [["/api/public/expense/options", {}], ["/api/public/expense/chat", { method: "POST", body: { messages: [] } }],
+    ["/api/public/expense", { method: "POST", form: formOf({ item: "Cake", category: "Food", status: "quote" }) }]]) {
+    assert.equal((await call(env, path, init)).status, 401, `${path} needs sign-in`);
+  }
+  const cookie = await sessionCookie(env);
+  const noHeader = await call(env, "/api/public/expense", { method: "POST", cookie, form: formOf({ item: "Cake", category: "Food", status: "quote" }) });
+  assert.equal(noHeader.status, 403, "POSTs need the X-Wedding header, like the control panel");
   const api = await adminClient(env);
-  const link = (await api("/api/admin/form-link")).data.url;
-  const key = new URL(link).searchParams.get("k");
-  assert.equal((await call(env, "/api/public/expense/options?k=wrong")).status, 403);
-  assert.equal((await call(env, `/api/public/expense/options?k=${key}`)).status, 200);
-  await api("/api/admin/form-link", { method: "POST" });
-  assert.equal((await call(env, `/api/public/expense/options?k=${key}`)).status, 403);
+  assert.equal((await api("/api/admin/form-link")).data.url, "https://www.patrickandkaitlyn.com/submit");
+  const { payerFor } = await import("../src/public_api.js");
+  const payers = ["Patrick", "Kaitlyn", "Joint"];
+  assert.equal(payerFor({ name: "Kaitlyn Wright", email: "kw@example.com" }, payers), "Kaitlyn");
+  assert.equal(payerFor({ name: "pat", email: "patrick.oneill@example.com" }, payers), "Patrick", "by email when the name doesn't match");
+  assert.equal(payerFor({ name: "Someone", email: "x@example.com" }, payers), "");
+});
+
+test("signing in returns to the page that asked, and the bare domain redirects to www", async () => {
+  const { safeNext } = await import("../src/auth.js");
+  assert.equal(safeNext("/submit"), "/submit");
+  for (const bad of ["//evil.example", "https://evil.example", "/\\evil", "javascript:alert(1)", ""]) assert.equal(safeNext(bad), "", bad);
+  const env = makeEnv({ PUBLIC_URL: "https://www.patrickandkaitlyn.com", GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "s" });
+  const login = await worker.fetch(new Request(`${ORIGIN}/api/auth/login?next=/submit`), env);
+  const state = new URL(login.headers.get("location")).searchParams.get("state");
+  const { verify } = await import("../src/auth.js");
+  assert.equal((await verify(env, state)).next, "/submit");
+  const r = await worker.fetch(new Request("https://patrickandkaitlyn.com/submit?x=1"), env);
+  assert.equal(r.status, 301);
+  assert.equal(r.headers.get("location"), "https://www.patrickandkaitlyn.com/submit?x=1");
 });
 
 test("the expense form adds a new item with a payment", async () => {
@@ -1177,7 +1201,7 @@ test("the expense form adds a new item with a payment", async () => {
     paid_on: "2026-10-10",
     payer: "Patrick",
   })) form.append(k, v);
-  const r = await call(env, "/api/public/expense", { method: "POST", form });
+  const r = await api("/api/public/expense", { method: "POST", form });
   assert.equal(r.status, 201, JSON.stringify(r.data));
   const detail = (await api(`/api/admin/expenses/${r.data.expense_id}`)).data;
   assert.equal(detail.expense.status, "partially_paid");

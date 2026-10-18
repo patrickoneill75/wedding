@@ -69,13 +69,13 @@
 </div>
 
 <script>
-const key = new URLSearchParams(location.search).get("k") || "";
+// Signed out (or signed in as someone not on the list): sign in, then come back here.
+const toSignIn = () => { location.href = `/admin/login.html?next=${encodeURIComponent(location.pathname)}`; };
 const $ = (id) => document.getElementById(id);
 const thread = $("thread");
 const remember = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 const recall = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
-$("formLink").href = `form.html?k=${encodeURIComponent(key)}`;
 
 function el(tag, attrs = {}, ...kids) {
   const n = document.createElement(tag);
@@ -215,9 +215,10 @@ async function send(text) {
   try {
     const r = await fetch("/api/public/expense/chat", {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ key, who: $("who").value, today: localToday(), messages }),
+      headers: { "content-type": "application/json", "x-wedding": "1" },
+      body: JSON.stringify({ who: $("who").value, today: localToday(), messages }),
     });
+    if (r.status === 401) return toSignIn();
     if (!r.ok || !(r.headers.get("content-type") || "").includes("ndjson")) {
       const body = await r.json().catch(() => ({}));
       throw new Error(body.error || "Something went wrong. Try again.");
@@ -279,7 +280,6 @@ async function saveProposal(p, button, msg) {
   msg.className = "msg";
   msg.textContent = receipt ? "Saving and uploading the receipt…" : "Saving…";
   const data = new FormData();
-  data.append("key", key);
   data.append("submitted_by", $("who").value);
   for (const [k, v] of Object.entries(p.form)) if (v !== "") data.append(k, v);
   // Whoever is filling this in paid, unless Claude was told otherwise.
@@ -287,7 +287,8 @@ async function saveProposal(p, button, msg) {
   if (!p.form.paid_on && (p.form.status === "paid" || p.form.payment_amount)) data.set("paid_on", localToday());
   if (receipt) data.append("file", receipt.file);
   try {
-    const r = await fetch("/api/public/expense", { method: "POST", body: data });
+    const r = await fetch("/api/public/expense", { method: "POST", body: data, headers: { "x-wedding": "1" } });
+    if (r.status === 401) return toSignIn();
     const body = await r.json();
     if (!r.ok) throw new Error(body.error || "Couldn't save.");
     remember("expense-form-who", $("who").value);
@@ -328,18 +329,16 @@ function autosize() { const t = $("text"); t.style.height = "auto"; t.style.heig
 $("text").addEventListener("input", autosize);
 
 async function load() {
-  if (!key) {
-    $("fatal").textContent = "This link is missing its key. Copy the expense form link from the control panel's Settings page.";
-    return;
-  }
-  const r = await fetch(`/api/public/expense/options?k=${encodeURIComponent(key)}`);
+  const r = await fetch("/api/public/expense/options");
+  if (r.status === 401) return toSignIn();
   const options = await r.json().catch(() => ({}));
   if (!r.ok) {
     $("fatal").textContent = options.error || "This form isn't available.";
     return;
   }
-  const last = recall("expense-form-who");
-  $("who").replaceChildren(...options.payers.map((p) => el("option", { value: p, selected: p === last }, p)));
+  // Whoever is signed in, unless they've picked someone else on this phone before.
+  const who = options.me || recall("expense-form-who");
+  $("who").replaceChildren(...options.payers.map((p) => el("option", { value: p, selected: p === who }, p)));
   $("whoWrap").hidden = false;
   $("composer").hidden = false;
   start();

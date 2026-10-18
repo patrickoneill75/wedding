@@ -120,8 +120,8 @@
 <script type="module">
 import { combobox, splitCategory } from "/admin/combobox.js";
 
-const key = new URLSearchParams(location.search).get("k") || "";
-document.getElementById("chatLink").href = `./?k=${encodeURIComponent(key)}`;
+// Signed out (or signed in as someone not on the list): sign in, then come back here.
+const toSignIn = () => { location.href = `/admin/login.html?next=${encodeURIComponent(location.pathname)}`; };
 const $ = (id) => document.getElementById(id);
 const form = $("form");
 const money = (n) => (n == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n));
@@ -174,13 +174,14 @@ combobox($("vendor"), {
 /* ----------------------------------------------------------------------- flow -- */
 
 async function load() {
-  const r = await fetch(`/api/public/expense/options?k=${encodeURIComponent(key)}`);
+  const r = await fetch("/api/public/expense/options");
+  if (r.status === 401) return toSignIn();
   options = await r.json();
   if (!r.ok) {
     $("fatal").textContent = options.error || "This form isn't available.";
     return;
   }
-  const lastWho = recall("expense-form-who");
+  const lastWho = options.me || recall("expense-form-who");
   $("who").replaceChildren(...options.payers.map((p) => opt(p, p, p === lastWho)));
   $("payer").replaceChildren(opt("", "—"), ...options.payers.map((p) => opt(p, p)));
   $("method").replaceChildren(opt("", "—"), ...options.payment_methods.map((m) => opt(m, m)));
@@ -297,7 +298,6 @@ form.addEventListener("submit", async (ev) => {
   $("msg").textContent = form.file.files[0] ? "Saving and uploading…" : "Saving…";
   $("msg").className = "msg";
   const data = new FormData(form);
-  data.append("key", key);
   data.set("submitted_by", $("who").value);
   // Who/when/how only mean something when money changed hands.
   if (stage() !== "paid" && !data.get("payment_amount")) for (const k of ["paid_on", "payer", "method"]) data.delete(k);
@@ -311,7 +311,8 @@ form.addEventListener("submit", async (ev) => {
     data.set("subcategory", subcategory);
   }
   try {
-    const r = await fetch("/api/public/expense", { method: "POST", body: data });
+    const r = await fetch("/api/public/expense", { method: "POST", body: data, headers: { "x-wedding": "1" } });
+    if (r.status === 401) return toSignIn();
     const body = await r.json();
     if (!r.ok) throw new Error(body.error || "Couldn't save.");
     remember("expense-form-who", $("who").value);
@@ -333,8 +334,7 @@ $("another").addEventListener("click", async () => {
   $("paidOn").value = today();
 });
 
-if (!key) $("fatal").textContent = "This link is missing its key. Copy the expense form link from the control panel's Settings page.";
-else load().then(() => { $("paidOn").value = today(); }).catch(() => { $("fatal").textContent = "Couldn't load the form. Check your connection and try again."; });
+load().then(() => { $("paidOn").value = today(); }).catch(() => { $("fatal").textContent = "Couldn't load the form. Check your connection and try again."; });
 </script>
 </body>
 </html>

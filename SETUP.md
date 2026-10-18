@@ -89,7 +89,9 @@ reports whether each secret is set, never its value.
    (or create one). The first sync runs right away. After that it runs every five
    minutes whenever something changed, and **Sync now** forces one.
 4. **Settings → Wedding details**: names, date, venue and RSVP deadline for the public page.
-5. **Settings → Expense form link**: copy it and save it on both of your phones.
+5. **The expense form** is `https://www.patrickandkaitlyn.com/submit`: save it on both of your
+   phones. It asks for the same Google sign-in as the control panel the first time, and
+   picks whichever of you is signed in.
 6. **The website.** Zola refuses requests from Cloudflare's servers, so GitHub copies your
    Zola site instead (the **Refresh website from Zola** workflow, daily). Make the first
    copy: repo → **Actions → Refresh website from Zola → Run workflow**. The home page
@@ -126,15 +128,17 @@ Cloudflare account.
 
 For Google sign-in on the domain, add each address's callback to the OAuth client's
 **Authorized redirect URIs** (section 3): `https://patrickandkaitlyn.com/api/auth/callback`
-and `https://www.patrickandkaitlyn.com/api/auth/callback`. The expense form link takes the
-address Settings is opened on.
+and `https://www.patrickandkaitlyn.com/api/auth/callback`. The bare domain redirects to the www address (`PUBLIC_URL` in `wrangler.jsonc`), so the
+www callback is the one sign-in uses.
 
 ## Running it locally
 
 ```sh
 npm install
 printf 'GOOGLE_CLIENT_ID=...\nGOOGLE_CLIENT_SECRET=...\nADMIN_EMAILS=you@gmail.com\n' > .dev.vars
-npx wrangler dev        # http://localhost:8787, with a local D1 database
+npx wrangler dev --local-upstream localhost:8787   # http://localhost:8787, local D1
+# (--local-upstream keeps requests on localhost; without it they carry the custom
+# domain's host and get redirected to the live www address)
 npm test                # the test suite (Node 22.5+)
 ```
 

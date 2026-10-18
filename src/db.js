@@ -7,7 +7,7 @@
  * edit an entry that has already shipped, because live databases have already run it.
  *
  * Settings live in one key/value table. Keys starting with "_" are internal (Google
- * tokens, the session signing key, the expense-form key) and are never returned by
+ * tokens, the session signing key) and are never returned by
  * the settings API; see PUBLIC_SETTING_KEYS in src/calc.js.
  */
 

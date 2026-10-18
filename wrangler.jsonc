@@ -20,7 +20,10 @@
   // the repo whose "Refresh website from Zola" workflow the Settings button starts.
   "vars": {
     "ZOLA_URL": "https://www.zola.com/wedding/patrickandkaitlyn2027",
-    "GITHUB_REPO": "patrickoneill75/wedding"
+    "GITHUB_REPO": "patrickoneill75/wedding",
+    // The site's address: the expense form is always PUBLIC_URL/submit, and
+    // patrickandkaitlyn.com redirects here.
+    "PUBLIC_URL": "https://www.patrickandkaitlyn.com"
   },
 
   // Everything lives in one D1 database: guests, expenses, payments, price history,

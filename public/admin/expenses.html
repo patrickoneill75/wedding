@@ -177,7 +177,7 @@ document.getElementById("formLinkBtn").addEventListener("click", async () => {
   try {
     const { url } = await api("/api/admin/form-link");
     await navigator.clipboard.writeText(url).catch(() => {});
-    setMsg(msg, `Copied: ${url} — anyone with this link can add expenses, so only share it with each other. Rotate it in Settings.`, "ok");
+    setMsg(msg, `Copied: ${url} (it asks for your Google sign-in).`, "ok");
   } catch (error) {
     setMsg(msg, error.message, "err");
   }

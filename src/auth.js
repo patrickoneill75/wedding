@@ -133,6 +133,12 @@ export async function requireAdmin(request, env) {
   return [user, null];
 }
 
+/** A page on this site to return to after signing in ("/submit"), or "" for anything else. */
+export function safeNext(next) {
+  const path = String(next || "");
+  return /^\/(?!\/)[A-Za-z0-9/_.#-]*$/.test(path) && !path.includes("\\") ? path : "";
+}
+
 function redirectUri(request) {
   return `${new URL(request.url).origin}/api/auth/callback`;
 }
@@ -143,7 +149,7 @@ export async function startOAuth(request, env, purpose, extra = {}) {
     return json({ error: "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are not set on this Worker. See SETUP.md." }, 500);
   }
   const nonce = randomToken(16);
-  const state = await sign(env, { kind: "oauth", purpose, nonce }, STATE_TTL);
+  const state = await sign(env, { kind: "oauth", purpose, nonce, next: safeNext(extra.next) }, STATE_TTL);
   const scopes = ["openid", "email", "profile"];
   const params = {
     client_id: env.GOOGLE_CLIENT_ID,
@@ -245,7 +251,7 @@ export async function handleOAuthCallback(request, env, onDriveTokens) {
     return fail("/admin/login.html", `${email || "That account"} isn't on the control panel's list of admins.`);
   }
   const session = await sign(env, { kind: "session", email, name: info.name || email }, SESSION_TTL);
-  return redirect("/admin/index.html", [clearState, cookie(SESSION_COOKIE, session, SESSION_TTL)]);
+  return redirect(safeNext(state.next) || "/admin/index.html", [clearState, cookie(SESSION_COOKIE, session, SESSION_TTL)]);
 }
 
 export function logoutResponse() {

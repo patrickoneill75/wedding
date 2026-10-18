@@ -20,7 +20,7 @@
  *                                       value: true | false }
  *   GET    settings / PUT settings
  *   POST   basis                       { basis: "confirmed" | "weighted" }
- *   GET    form-link / POST form-link  the unlisted expense form's URL; POST rotates it
+ *   GET    form-link                   the expense form's address (PUBLIC_URL/submit)
  *   POST   import                      the original spreadsheet (multipart)
  *   GET    site/status                 the Zola copy: address, last check, pages, warnings
  *   POST   site/refresh                fetch the Zola site now ("Refresh from Zola")
@@ -28,7 +28,7 @@
  *   POST   drive/folder, POST drive/folder/create, POST drive/sync, POST drive/disconnect
  */
 
-import { json, randomToken, requireAdmin, startOAuth } from "./auth.js";
+import { json, requireAdmin, startOAuth } from "./auth.js";
 import { all, first, run, getSetting, setSetting, markDirty, updateClause } from "./db.js";
 import {
   DEFAULT_SETTINGS,
@@ -199,15 +199,6 @@ function cleanSettings(input) {
     }
   }
   return patch;
-}
-
-async function formKey(env) {
-  let key = await getSetting(env, "_form_key");
-  if (!key) {
-    key = randomToken(18);
-    await setSetting(env, "_form_key", key);
-  }
-  return key;
 }
 
 /* ------------------------------------------------------------------- router ---- */
@@ -486,10 +477,8 @@ export async function handleAdminApi(route, request, env) {
       return json({ basis: ctx.basis, basis_count: ctx.basisCount });
     }
 
-    if (route === "form-link") {
-      if (method === "POST") await setSetting(env, "_form_key", randomToken(18));
-      const key = await formKey(env);
-      return json({ url: `${new URL(request.url).origin}/submit/?k=${key}` });
+    if (route === "form-link" && method === "GET") {
+      return json({ url: `${env.PUBLIC_URL || new URL(request.url).origin}/submit` });
     }
 
     // ---- spreadsheet import ------------------------------------------------------

@@ -10,10 +10,11 @@ A Cloudflare Worker with two sides:
     a GitHub Action (`.github/workflows/zola-refresh.yml`) does the copying.
   - The RSVP page at `/rsvp/`, where guests find their name and answer for their
     household.
-  - An unlisted expense form at `/submit/?k=…` for the two of us to log expenses,
-    payments and receipts from a phone: a conversation with Claude, who reads receipt
-    photos, works out which item an expense belongs to, asks what it can't tell, and
-    shows the entry to save. The plain form is at `/submit/form.html`.
+  - The expense form at `/submit` (behind the same Google sign-in, so only the two of
+    us can use it; it knows which of us is signed in) for logging expenses, payments
+    and receipts from a phone: a conversation with Claude, who reads receipt photos,
+    works out which item an expense belongs to, asks what it can't tell, and shows the
+    entry to save. The plain form is at `/submit/form.html`.
 - **Control panel** (`/admin/`, Google sign-in, admins only):
   - **Dashboard**: guest counts, projected / paid / owed / overdue, upcoming payments,
     a pie of projected cost by category or subcategory, and an estimated vs. actual cost

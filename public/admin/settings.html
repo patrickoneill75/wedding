@@ -91,13 +91,12 @@
 
   <div class="card">
     <h2>Expense form link</h2>
-    <p class="desc">An unlisted page for adding expenses and payments from your phone without signing in. Anyone with the link can
-      add expenses, so keep it between the two of you. Making a new link stops the old one working.</p>
+    <p class="desc">Add expenses, payments and receipts from your phone. It uses the same Google sign-in as the control panel,
+      so only the two of you can use it, and it knows which of you is filling it in.</p>
     <code class="url" id="formUrl">…</code>
     <div class="row">
       <button id="copyLink">Copy</button>
       <a class="btn" id="openLink" target="_blank" rel="noopener">Open</a>
-      <button class="danger" id="rotateLink">Make a new link</button>
     </div>
     <p class="msg" id="linkMsg"></p>
   </div>
@@ -279,19 +278,14 @@ document.getElementById("calcForm").addEventListener("submit", (ev) => {
 });
 
 /* ------------------------------------------------------------ form link -- */
-async function showLink(method = "GET") {
-  const { url } = await api("/api/admin/form-link", { method });
+async function showLink() {
+  const { url } = await api("/api/admin/form-link");
   document.getElementById("formUrl").textContent = url;
   document.getElementById("openLink").href = url;
 }
 document.getElementById("copyLink").addEventListener("click", async () => {
   await navigator.clipboard.writeText(document.getElementById("formUrl").textContent).catch(() => {});
   setMsg(document.getElementById("linkMsg"), "Copied.", "ok");
-});
-document.getElementById("rotateLink").addEventListener("click", async () => {
-  if (!confirm("Make a new link? The current one stops working right away.")) return;
-  await showLink("POST");
-  setMsg(document.getElementById("linkMsg"), "New link made. Share it with your partner again.", "ok");
 });
 
 /* ---------------------------------------------------------------- Drive -- */
