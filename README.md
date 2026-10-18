@@ -11,18 +11,19 @@ A Cloudflare Worker with two sides:
   - The RSVP page at `/rsvp/`, where guests find their name and answer for their
     household.
   - An unlisted expense form at `/submit/?k=…` for the two of us to log expenses,
-    payments and receipts from a phone. Start typing what it's for and pick the item
-    (or make a new one); categories and vendors suggest as you type too.
+    payments and receipts from a phone: a conversation with Claude, who reads receipt
+    photos, works out which item an expense belongs to, asks what it can't tell, and
+    shows the entry to save. The plain form is at `/submit/form.html`.
 - **Control panel** (`/admin/`, Google sign-in, admins only):
   - **Dashboard**: guest counts, projected / paid / owed / overdue, upcoming payments,
     a pie of projected cost by category or subcategory, and an estimated vs. actual cost
     table by category, subcategory and item.
-  - **Expenses**: every budget line moving through
+  - **Expenses**: every expense moving through
     Estimate → Quote → Booked → Partially paid → Paid (stages can be skipped, or an item
     cancelled), with price history, payments, who paid, due dates, and contracts and
     receipts in Drive. Anything with a deposit paid and more to pay is Partially paid.
-    An item bought in pieces gets line items: the item keeps its price as the budget,
-    and each line item has its own vendor, stage and payments. The item reads In
+    An item bought in pieces gets line items, each with its own price, vendor, stage
+    and payments; the item adds them up. The item reads In
     progress while everything bought so far is paid and more is to come, and Paid once
     it's marked done buying.
   - **Guests**: households and guests like a small CRM. Address, side, priority, separate
@@ -50,8 +51,9 @@ yes count.
 
 On the Expenses page every item's cost sits in one of two columns: **Estimated** (an
 estimate or a quote, not committed to yet) or **Incurred** (booked or paid). An item
-being bought in pieces splits across both: what's bought is incurred, and the rest of
-its budget is still estimated. **Owed** there is what's incurred and not yet paid.
+with line items splits across both: its booked and paid line items are incurred, its
+estimates and quotes are still estimated. **Owed** there is what's incurred and not
+yet paid.
 
 An item's **original estimate** is frozen the moment it leaves the Estimate stage, so the
 dashboard can show how far each category drifted.
@@ -63,6 +65,7 @@ src/worker.js      entry point and routing
 src/auth.js        Google sign-in, signed session cookies, CSRF header check
 src/admin_api.js   control panel API (/api/admin/*)
 src/public_api.js  RSVP and expense form API (/api/public/*)
+src/intake.js      the expense form's conversation with Claude
 src/store.js       expense/payment writes with history and status moves
 src/calc.js        the budget math (pure; most tests live here)
 src/google.js      Google Drive: tokens, folder picker, uploads

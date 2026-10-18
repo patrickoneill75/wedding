@@ -68,6 +68,7 @@ needed.
    | `ADMIN_EMAILS` | both of your Google addresses, comma-separated, e.g. `you@gmail.com, partner@gmail.com` |
    | `ZOLA_INGEST_SECRET` | a long random string you make up (a password manager's generator is fine) |
    | `PANEL_GITHUB_TOKEN` | optional, for the **Refresh from Zola** button: see below |
+   | `ANTHROPIC_API_KEY` | optional, for the expense form's conversation with Claude: see below |
 
 4. **Run the workflow:** repo → **Actions → Set Cloudflare secrets → Run workflow**. Each
    secret is sent to the `wedding` Worker and deployed straight away. Run it again any
@@ -101,6 +102,15 @@ reports whether each secret is set, never its value.
    wedding**. Permissions: **Actions: Read and write**. Save it as the repository secret
    `PANEL_GITHUB_TOKEN` and run **Set Cloudflare secrets** again. Without it, the daily
    copy still runs; only the button can't start it.
+
+7. **The expense form's conversation.** The expense form link opens a chat: describe an
+   expense or add a receipt photo, and Claude works out where it goes ("there's already
+   Place Settings, put the glassware there?"), asks what it can't tell, and shows the
+   entry with a Save button. It needs a Claude API key: go to
+   <https://console.anthropic.com/>, add a little credit under **Billing** (a few dollars
+   lasts a long time at a few cents an entry), create a key under **API keys**, save it as
+   the repository secret `ANTHROPIC_API_KEY` and run **Set Cloudflare secrets** again.
+   Without it, the link says so and offers the plain form (`/submit/form.html`).
 
 The website is `YOUR_URL/` and the RSVP page is `YOUR_URL/rsvp/`. Until the first copy
 is made, `YOUR_URL/` sends visitors to the RSVP page.

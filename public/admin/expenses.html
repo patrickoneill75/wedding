@@ -13,12 +13,11 @@
   td .muted { font-size: 12px; }
   tfoot td { font-weight: 650; background: var(--surface-2); }
   td .sub { font-size: 12px; color: var(--text-muted); font-weight: 400; }
-  td .sub.over { color: var(--bad); }
   button.toggle { border: 0; background: none; padding: 0 6px 0 0; color: var(--text-muted); font-size: 11px; }
   tr.child td { background: var(--wash); }
   tr.child td.child-name { padding-left: 34px; }
   tr.add-line td { background: var(--wash); padding-left: 34px; }
-  .budget-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin: 4px 0 12px; }
+  .done-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin: 4px 0 12px; }
 </style>
 </head>
 <body>
@@ -96,14 +95,6 @@ function pricingLine(e) {
   return `${money(e.unit_cost)}${qty}${extras.map((x) => ` + ${x}`).join("")}`;
 }
 
-/** The line under an item's projected cost: its budget against what's been spent. */
-function budgetLine(e) {
-  if (e.done) return h("div", { class: "sub" }, `Done buying · budget ${money(e.budget)}`);
-  if (!e.budget) return h("div", { class: "sub" }, `${money(e.spent)} spent · no budget set`);
-  const over = e.spent > e.budget + 0.004;
-  return h("div", { class: over ? "sub over" : "sub" }, over ? `${money(e.spent - e.budget)} over the ${money(e.budget)} budget` : `${money(e.spent)} of ${money(e.budget)} budget`);
-}
-
 // Items whose line items are showing. Filtering opens any item with a matching line item.
 const expanded = new Set();
 
@@ -123,7 +114,7 @@ function renderRows() {
   // Owed here is what's committed and not yet paid; an estimate or quote isn't owed.
   const owedNow = (e) => Math.max(Math.round((e.incurred - e.paid) * 100) / 100, 0);
   // Every dollar of an item's cost is in Estimated or Incurred; the price breakdown (or
-  // the budget) sits under whichever has most of it.
+  // nothing, for an item with line items) sits under whichever has most of it.
   const amount = (n, sub) => (n ? [money(n), sub] : sub ? ["—", sub] : "—");
   const moneyCells = (e, sub) => [
     ...(!e.priced && !e.paid
@@ -152,7 +143,7 @@ function renderRows() {
         kids.length ? h("a", { href: `#${e.id}`, onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); openEditor(e.id); } }, e.item) : e.item,
         kids.length || e.vendor ? h("div", { class: "sub" }, kids.length ? `${kids.length} line item${kids.length === 1 ? "" : "s"}` : e.vendor) : null),
       h("td", {}, statusPill(e.status, data.status_labels)),
-      ...moneyCells(e, kids.length ? budgetLine(e) : priceSub(e)),
+      ...moneyCells(e, kids.length ? null : priceSub(e)),
       dueCell(e),
     ));
     if (!open) continue;
@@ -256,7 +247,7 @@ function vendorField(value) {
 /**
  * Edit an expense, or make a new one. There are three kinds:
  *   an item on its own        vendor, stage, price and payments, like one booking
- *   an item with line items   a container: name, category and a budget; the line items
+ *   an item with line items   a container: name and category; it adds up the line items
  *                             under it have the vendors, stages and payments
  *   a line item               a booking under an item (`parentId` for a new one)
  * `returnTo` reopens that item's editor afterwards.
@@ -306,8 +297,8 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
     const stageBlock = isContainer
       ? h("div", { class: "field", style: "margin-bottom:12px; font-size:12.5px; color:var(--text-secondary)" },
           h("div", {}, "Stage: ", statusPill(e.status, data.status_labels), " — set by its line items"),
-          h("div", { class: "budget-row" },
-            h("label", { class: "check" }, doneBox, "Done buying (the cost becomes what the line items add up to)"),
+          h("div", { class: "done-row" },
+            h("label", { class: "check" }, doneBox, "Done buying (no more line items to come)"),
             cancelBtn))
       // A div, not a label: a label forwards every click inside it to its first button.
       : h("div", { class: "field", style: "margin-bottom:12px; font-size:12.5px; color:var(--text-secondary)" }, "Stage — click to move it along; skipping stages is fine", stepper, paidNote);
@@ -331,8 +322,8 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
         // A line item files under its item's category.
         ...(isLine ? [] : categoryFields(e)),
       ),
-      isContainer ? h("h3", { style: "margin:4px 0 6px; font-size:13.5px" }, "Budget for the whole item") : null,
-      h("div", { class: "row", style: "margin-bottom:10px" },
+      // An item with line items has no price of its own: it adds up its line items.
+      isContainer ? null : h("div", {}, h("div", { class: "row", style: "margin-bottom:10px" },
         h("label", { class: "check" }, h("input", { type: "radio", name: "pricing", value: "fixed", checked: e.pricing !== "variable", onchange: update }), "Fixed price"),
         h("label", { class: "check" }, h("input", { type: "radio", name: "pricing", value: "variable", checked: e.pricing === "variable", onchange: update }), "Variable (scales with guests or drinks)"),
       ),
@@ -343,7 +334,7 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
       ),
       fixedFields,
       variableFields,
-      preview,
+      preview),
       isContainer ? null : h("div", { class: "fields" },
         field("Next payment due", "due_date", { type: "date", value: e.due_date || "" }),
         field("Amount due ($)", "due_amount", { type: "number", step: "0.01", value: e.due_amount ?? "", placeholder: "Defaults to what's owed" }),
@@ -367,9 +358,8 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
       fixedFields.hidden = variable;
       const t = previewTotals(v);
       preview.replaceChildren(
-        h("div", {}, isContainer ? "Budget: " : "", `${money(Number(v.unit_cost) || 0)} × ${t.qty} = `, h("b", {}, money(t.subtotal)),
+        h("div", {}, `${money(Number(v.unit_cost) || 0)} × ${t.qty} = `, h("b", {}, money(t.subtotal)),
           t.tax ? ` + tax ${money(t.tax)}` : "", t.grat ? ` + gratuity ${money(t.grat)}` : "", " = ", h("b", {}, money(t.total))),
-        isContainer ? h("div", { class: "muted" }, `The line items add up to ${money(e.spent)}. Until it's done buying, its cost is whichever is larger: what's bought so far is incurred, and the rest of the budget is still estimated.`) : "",
         variable && v.quantity_source === "guests"
           ? h("div", { class: "muted" }, `Guest count is ${data.basis_count} (${data.basis}). It updates on its own as the guest list and RSVPs change.`) : "",
       );
@@ -429,14 +419,14 @@ function lineItemsSection(id, detail, closeDialog) {
   if (!list.length) {
     return h("section", {}, h("h3", {}, "Line items"),
       h("p", { class: "desc", style: "margin:0" }, "Buying this in pieces, or from more than one vendor? Add line items. "
-        + "This item's price becomes the budget for them, and what's already booked or paid here (vendor, stage, payments) moves into the first line item."),
+        + "What's already on this item (its price, vendor, stage and payments) becomes the first line item, and the item adds up its line items from then on."),
       add);
   }
   return h("section", { style: "margin-bottom:16px" },
-    h("h3", {}, `Line items · ${money(e.spent)} spent${e.budget ? ` of a ${money(e.budget)} budget` : ", no budget set"} · ${money(e.paid)} paid`),
+    h("h3", {}, `Line items · ${money(e.estimated)} estimated · ${money(e.incurred)} incurred · ${money(e.paid)} paid`),
     h("div", { class: "list" }, list.map((k) => h("div", { class: "item", style: "cursor:pointer", onclick: () => open(k.id) },
       h("b", {}, k.item), k.vendor ? h("span", { class: "muted" }, k.vendor) : null, statusPill(k.status, data.status_labels),
-      h("span", { class: "spacer" }), h("span", {}, money(k.projected)), k.owed ? h("span", { class: "muted" }, `${money(k.owed)} owed`) : null))),
+      h("span", { class: "spacer" }), h("span", {}, money(k.projected)), k.incurred - k.paid > 0.004 ? h("span", { class: "muted" }, `${money(k.incurred - k.paid)} owed`) : null))),
     add);
 }
 

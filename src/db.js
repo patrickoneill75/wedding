@@ -196,6 +196,21 @@ const MIGRATIONS = [
          AND EXISTS (SELECT 1 FROM payments p WHERE p.expense_id = expenses.id)
          AND NOT EXISTS (SELECT 1 FROM expenses c WHERE c.parent_id = expenses.id)`,
   ],
+  // 8: no more budgets on items with line items -- they only add up their line items.
+  // A price an open item still had (its old budget) becomes an estimate line item, so
+  // nothing that was entered disappears; then the item's own price is cleared.
+  [
+    `INSERT INTO expenses (parent_id, category, subcategory, item, status, pricing, unit_cost, units, quantity_source,
+       quantity_factor, round_up, taxable, gratuity_rate, notes, source)
+     SELECT id, category, subcategory, item, 'estimate', pricing, unit_cost, units, quantity_source,
+       quantity_factor, round_up, taxable, gratuity_rate, 'Was the budget for this item', 'split'
+     FROM expenses p
+     WHERE p.parent_id IS NULL AND p.unit_cost IS NOT NULL AND p.unit_cost <> 0 AND p.status NOT IN ('paid', 'cancelled')
+       AND EXISTS (SELECT 1 FROM expenses c WHERE c.parent_id = p.id)`,
+    `UPDATE expenses SET unit_cost = NULL, units = 1, pricing = 'fixed', taxable = 0, gratuity_rate = 0, baseline_total = NULL,
+       status = CASE WHEN status IN ('paid', 'cancelled') THEN status ELSE 'estimate' END
+     WHERE parent_id IS NULL AND EXISTS (SELECT 1 FROM expenses c WHERE c.parent_id = expenses.id)`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

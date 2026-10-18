@@ -216,17 +216,18 @@ export async function createExpense(env, input, ctx, by, source = "control-panel
 }
 
 /**
- * Before an item gets its first line item, move what it already has as a booking --
+ * Before an item gets its first line item, move what it already has -- its price,
  * vendor, stage, due date, payments, receipts -- into a line item of its own (named
- * after the item), so the item is left as a container whose price is the budget.
- * An item still at Estimate with no vendor and nothing paid has nothing to move.
+ * after the item), so the item is left as a container that only adds up its line
+ * items. An item with no price, no vendor and nothing paid has nothing to move.
  */
 async function splitIntoLineItems(env, id, by) {
   const item = await first(env, "SELECT * FROM expenses WHERE id = ?", id);
   if (await first(env, "SELECT id FROM expenses WHERE parent_id = ? LIMIT 1", id)) return;
   const paid = await first(env, "SELECT COUNT(*) AS n FROM payments WHERE expense_id = ?", id);
   const booked = !["estimate", "cancelled"].includes(item.status);
-  if (!booked && !paid.n && !item.vendor && !item.due_date) return;
+  const priced = item.unit_cost != null && Number(item.unit_cost) !== 0;
+  if (!booked && !priced && !paid.n && !item.vendor && !item.due_date) return;
   const copy = [
     "category", "subcategory", "item", "vendor", "status", "pricing", "unit_cost", "units", "quantity_source",
     "quantity_factor", "round_up", "taxable", "gratuity_rate", "due_date", "due_amount", "payer", "baseline_total",
@@ -241,9 +242,8 @@ async function splitIntoLineItems(env, id, by) {
   await run(env, "UPDATE attachments SET expense_id = ? WHERE expense_id = ?", lineId, id);
   await run(
     env,
-    // Stays past Estimate when its estimate was frozen, so the original estimate holds.
-    `UPDATE expenses SET status = CASE WHEN baseline_total IS NULL THEN 'estimate' ELSE 'booked' END, vendor = NULL, due_date = NULL, due_amount = NULL, payer = NULL,
-       updated_at = datetime('now') WHERE id = ?`,
+    `UPDATE expenses SET status = 'estimate', baseline_total = NULL, unit_cost = NULL, units = 1, pricing = 'fixed', taxable = 0,
+       gratuity_rate = 0, vendor = NULL, due_date = NULL, due_amount = NULL, payer = NULL, updated_at = datetime('now') WHERE id = ?`,
     id
   );
   await run(

@@ -39,13 +39,14 @@ import { loadSettings } from "./store.js";
  *   ZOLA_INGEST_SECRET    (secret)  shared with the GitHub Action that copies the site.
  *   GH_DISPATCH_TOKEN     (secret)  lets "Refresh from Zola" start that Action; with
  *   GITHUB_REPO           (var)     the repo it lives in.
+ *   ANTHROPIC_API_KEY     (secret)  Claude, for the expense form's conversation.
  *
  * The cron (every five minutes) pushes CSV exports to Google Drive when something
  * changed since the last sync. The Zola copy is refreshed by the GitHub Action, daily.
  */
 
 const SECRETS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "ADMIN_EMAILS"];
-const OPTIONAL_SECRETS = ["ZOLA_INGEST_SECRET", "GH_DISPATCH_TOKEN"];
+const OPTIONAL_SECRETS = ["ZOLA_INGEST_SECRET", "GH_DISPATCH_TOKEN", "ANTHROPIC_API_KEY"];
 
 /** Constant-time comparison, so a wrong secret can't be guessed a character at a time. */
 function sameSecret(given, expected) {

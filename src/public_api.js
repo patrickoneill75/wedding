@@ -22,6 +22,8 @@
  * the old link.
  *   GET  expense/options?k=   categories, items (top level, not line items), vendors,
  *                             payers, methods
+ *   POST expense/chat         { key, messages, who, today }: one turn of the conversational
+ *                             form (src/intake.js). Proposes an entry; never saves one.
  *   POST expense              multipart: a new item, a line item under an existing item
  *                             (mode=purchase), or an update to an item that isn't split
  *                             into line items (mode=update); a
@@ -34,6 +36,7 @@ import { all, first, getSetting, markDirty, run } from "./db.js";
 import { STATUSES, STATUS_LABELS } from "./calc.js";
 import { addPayment, createExpense, loadContext, loadSettings, listExpenses, listVendors, updateExpense } from "./store.js";
 import { uploadReceipt } from "./google.js";
+import { intakeTurn } from "./intake.js";
 
 const RSVP_TOKEN_TTL = 60 * 60 * 2;
 const PICK_TOKEN_TTL = 60 * 30;
@@ -255,7 +258,8 @@ async function expenseOptions(env) {
         unit_cost: e.unit_cost,
         quantity: e.quantity,
         total: e.current,
-        spent: e.spent || 0,
+        estimated: e.estimated,
+        incurred: e.incurred,
         paid: e.paid,
         owed: e.owed,
       })),
@@ -415,6 +419,14 @@ export async function handlePublicApi(route, request, env) {
         return json({ error: "This form link isn't valid any more. Get the current one from the control panel." }, 403);
       }
       return json(await expenseOptions(env));
+    }
+    if (route === "expense/chat" && method === "POST") {
+      const input = await body(request);
+      if (!(await checkFormKey(env, input.key))) {
+        return json({ error: "This form link isn't valid any more. Get the current one from the control panel." }, 403);
+      }
+      const turn = await intakeTurn(env, input, await loadContext(env));
+      return json(turn.body, turn.status);
     }
     if (route === "expense" && method === "POST") {
       const form = await request.formData();
