@@ -130,26 +130,12 @@ function renderGuests() {
     cell(c.invites.reception, "invited to the reception"), cell(c.by_side.Bride, "bride's side"), cell(c.by_side.Groom, "groom's side"),
   );
 
+  // Read-only here: the switch lives in Settings.
   const confirmed = data.basis === "confirmed";
-  const button = h("button", {
-    class: confirmed ? "small" : "small primary",
-    onclick: async () => {
-      const next = confirmed ? "weighted" : "confirmed";
-      const ok = confirm(confirmed
-        ? `Switch per-guest costs back to weighted invites (${c.weighted})?`
-        : `Re-price every per-guest expense and the drinks calculator on confirmed RSVPs (${c.confirmed} right now)?`);
-      if (!ok) return;
-      button.disabled = true;
-      await api("/api/admin/basis", { method: "POST", body: { basis: next } });
-      data = await api("/api/admin/summary");
-      render();
-    },
-  }, confirmed ? "Switch back to weighted invites" : "Convert all to confirmed RSVPs");
   document.getElementById("basis").replaceChildren(
     h("div", { class: "text" }, "Per-guest costs use ",
-      h("b", {}, confirmed ? `${c.confirmed} confirmed RSVPs` : `${c.weighted} weighted invites`),
-      confirmed ? "." : ". Switch once RSVPs are mostly in."),
-    button,
+      h("b", {}, confirmed ? `${c.confirmed} confirmed RSVPs` : `${c.weighted} weighted invites`), "."),
+    h("a", { href: "/admin/settings.html#guest-count" }, "Change in Settings →"),
   );
 }
 
