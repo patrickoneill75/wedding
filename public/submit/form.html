@@ -58,8 +58,8 @@
     <div id="details" hidden>
       <!-- An item that isn't split into line items: pay or update it, or start splitting it. -->
       <div class="seg" id="modes" hidden>
-        <button type="button" data-mode="update">Pay or update it</button>
         <button type="button" data-mode="purchase">Add a line item</button>
+        <button type="button" data-mode="update">Pay or update it</button>
       </div>
       <p class="desc" id="modeNote" hidden></p>
 
@@ -230,7 +230,8 @@ function choose(next) {
   }
   // An item already split into line items only takes more line items.
   $("modes").hidden = !item || Boolean(item.purchases);
-  setMode(!item ? "new" : item.purchases ? "purchase" : "update");
+  // A new line item under the chosen item, unless they switch to updating it.
+  setMode(item ? "purchase" : "new");
 }
 
 function setMode(m) {

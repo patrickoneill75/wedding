@@ -820,6 +820,9 @@ test("Claude sees the items, line items and vendors, and its proposal saves thro
     assert.match(sys, new RegExp(`#${ps} Place Settings · Ceremony & Reception › Decor`));
     assert.match(sys, /Plates · Goodwill · Paid · \$38\.50/);
     assert.match(sys, /Filling this in: Kaitlyn\./);
+    // Asked for: a new line item under the item it fits, rather than changing that item.
+    assert.match(sys, /By default, record an expense as a new line item/);
+    assert.equal(req.tools[0].input_schema.properties.mode.enum[0], "line_item");
     return claudeReply([
       { type: "text", text: "That sounds like it goes under Place Settings." },
       proposeCall({ mode: "line_item", expense_id: ps, item: "Glassware", vendor: "Target", price: 45, paid_on: "2026-10-18", payer: "Kaitlyn", method: "Credit card" }),
