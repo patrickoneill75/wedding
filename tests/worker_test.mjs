@@ -1282,7 +1282,7 @@ test("copied pages get our footer with a Contact us link from Settings, as they'
   } });
   assert.equal((await ingest(env, JSON.parse(JSON.stringify(built)))).status, 200);
   let page = (await call(env, "/")).data;
-  assert.match(page, /<footer class="wm-footer">.*href="mailto:patricko\.indy@gmail\.com">Contact us<\/a>.*<\/footer><\/body>/s);
+  assert.match(page, /<footer class="wm-footer">.*href="mailto:patricko\.indy@gmail\.com">Contact us<\/a>.*<\/footer><script>.*<\/script><\/body>/s);
   assert.ok(!page.slice(page.indexOf("wm-footer")).includes('href="/rsvp/"'), "the footer's only link is Contact us; RSVP lives in the menu row");
   const api = await adminClient(env);
   assert.equal((await api("/api/admin/settings", { method: "PUT", body: { contact_email: "not an email" } })).status, 400);
@@ -1293,6 +1293,19 @@ test("copied pages get our footer with a Contact us link from Settings, as they'
   assert.equal((await call(env, "/api/public/info")).data.contact_email, "us@example.com");
   await api("/api/admin/settings", { method: "PUT", body: { contact_email: "" } });
   assert.ok(!(await call(env, "/")).data.includes("mailto:"), "no address, no link");
+});
+
+// Bug: on an iPad the RSVP pill stayed centered at the top, because pages copied before
+// the pill learned to sit in the menu row carried the old script with them.
+test("pages get the current page script as they're served, replacing any copy stored with them", async () => {
+  const { PAGE_SCRIPT } = await import("../src/site.js");
+  const env = siteEnv();
+  const oldScript = `${PAGE_SCRIPT.slice(0, 60)}/* an older version */})();`;
+  await ingest(env, { pages: [{ path: "/", title: "t", html: `<html><body><p>home</p><script>${oldScript}</script></body></html>`, hash: "c".repeat(64) }] });
+  const page = (await call(env, "/")).data;
+  assert.ok(!page.includes("an older version"), "the stored copy is gone");
+  assert.equal(page.split(PAGE_SCRIPT).length, 2, "the current script appears once");
+  assert.ok(PAGE_SCRIPT.includes("wm-in-nav") && PAGE_SCRIPT.includes("br.right-24-w-16<row.right"), "the pill only joins the menu row when it fits");
 });
 
 test("the ingest route only accepts pages the site would make itself", async () => {

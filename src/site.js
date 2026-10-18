@@ -217,8 +217,11 @@ export function contrastingColor(themeText) {
   return `hsl(${hue} ${sat}% 30%)`;
 }
 
-// Countdown ticking, our phone menu, and hiding Zola's dead menu icon.
-const PAGE_SCRIPT = `(function(){var L=[["day","d"],["hour","h"],["minute","min"],["second","s"]];
+// Countdown ticking, our phone menu, the RSVP pill's place, and hiding Zola's dead menu
+// icon. Added as each page is served (see servePage), so a fix here reaches pages
+// copied before it. The pill sits at the right end of the site's menu row when the
+// whole menu fits on one line with room for it, and in our bar at the top otherwise.
+export const PAGE_SCRIPT = `(function(){var L=[["day","d"],["hour","h"],["minute","min"],["second","s"]];
 function tick(){document.querySelectorAll("[data-wm-target]").forEach(function(box){
 var left=Math.max(0,Math.floor((Number(box.getAttribute("data-wm-target"))-Date.now())/1000));
 var v=[Math.floor(left/86400),Math.floor(left%86400/3600),Math.floor(left%3600/60),left%60];
@@ -228,15 +231,24 @@ if(document.querySelector("[data-wm-target]")){tick();setInterval(tick,1000)}
 var bar=document.querySelector(".wm-rsvp-bar"),btn=document.querySelector(".wm-menu-btn"),menu=document.getElementById("wm-menu");
 function navShown(){return [].some.call(document.querySelectorAll("a[data-wm-nav]"),function(a){var r=a.getBoundingClientRect();return r.width>0&&r.height>0})}
 var pill=document.querySelector(".wm-rsvp");
-function menuRow(){var links=[].filter.call(document.querySelectorAll('a[data-wm-nav="menu"]'),function(a){var r=a.getBoundingClientRect();return r.width>0&&r.height>0});if(!links.length)return null;
+function shown(a){var r=a.getBoundingClientRect();return r.width>0&&r.height>0}
+function menuRow(){var all=[].filter.call(document.querySelectorAll("a[data-wm-nav]"),shown);
+var marked=all.filter(function(a){return a.getAttribute("data-wm-nav")==="menu"});
+var rows={};(marked.length?marked:all).forEach(function(a){var t=Math.round(a.getBoundingClientRect().top/10);(rows[t]=rows[t]||[]).push(a)});
+var keys=Object.keys(rows);if(!keys.length)return null;
+if(marked.length&&keys.length>1)return null;
+var links=keys.map(function(k){return rows[k]}).sort(function(x,y){return y.length-x.length})[0];if(links.length<2)return null;
 var box=links[0].parentElement;while(box&&!links.every(function(a){return box.contains(a)}))box=box.parentElement;
 while(box&&box.parentElement&&box.parentElement!==document.body&&box.getBoundingClientRect().width<document.documentElement.clientWidth*0.8)box=box.parentElement;
-return box?{box:box,link:links[0]}:null}
+var right=Math.max.apply(null,links.map(function(a){return a.getBoundingClientRect().right}));
+return box?{box:box,link:links[0],right:right}:null}
+function toBar(){pill.classList.remove("wm-in-nav");pill.style.top="";bar.insertBefore(pill,menu);bar.style.display=""}
 function layout(){var phone=!navShown();bar.classList.toggle("wm-phone",phone);if(!phone)close();
-var row=phone?null:menuRow();
-if(row){if(getComputedStyle(row.box).position==="static")row.box.style.position="relative";
-var lr=row.link.getBoundingClientRect(),br=row.box.getBoundingClientRect();pill.classList.add("wm-in-nav");pill.style.top=(lr.top+lr.height/2-br.top)+"px";row.box.appendChild(pill);bar.style.display="none"}
-else{pill.classList.remove("wm-in-nav");pill.style.top="";bar.insertBefore(pill,menu);bar.style.display=""}}
+toBar();if(phone)return;var row=menuRow();if(!row)return;
+var w=pill.getBoundingClientRect().width,br=row.box.getBoundingClientRect();
+if(br.right-24-w-16<row.right)return;
+if(getComputedStyle(row.box).position==="static")row.box.style.position="relative";
+var lr=row.link.getBoundingClientRect();pill.classList.add("wm-in-nav");pill.style.top=(lr.top+lr.height/2-br.top)+"px";row.box.appendChild(pill);bar.style.display="none"}
 function close(){menu.hidden=true;btn.setAttribute("aria-expanded","false")}
 btn.addEventListener("click",function(){var open=menu.hidden;menu.hidden=!open;btn.setAttribute("aria-expanded",String(open))});
 document.addEventListener("keydown",function(e){if(e.key==="Escape")close()});
@@ -376,7 +388,6 @@ export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpCol
     el("nav", { id: "wm-menu", "aria-label": "Site", hidden: null }, nav.map((item) =>
       el("a", { href: item.href, ...(item.href === currentPath ? { "aria-current": "page" } : {}) }, [item.label]))),
   ]), true);
-  append(body, el("script", {}, [PAGE_SCRIPT]));
 
   if (html) setAttr(html, "lang", attr(html, "lang") || "en");
   const leftover = (decode(textOf(body)).match(/zola/gi) || []).length;
@@ -692,8 +703,13 @@ export async function servePage(env, pathname) {
     coupleNames: await getSetting(env, "couple_names", ""),
     contactEmail: await getSetting(env, "contact_email", DEFAULT_SETTINGS.contact_email),
   });
-  const at = page.html.lastIndexOf("</body>");
-  const html = at === -1 ? page.html + footer : page.html.slice(0, at) + footer + page.html.slice(at);
+  // Pages copied before the script moved here carry an old copy of it: swap it out.
+  let stored = page.html;
+  const old = stored.indexOf(`<script>${PAGE_SCRIPT.slice(0, 40)}`);
+  if (old !== -1) stored = stored.slice(0, old) + stored.slice(stored.indexOf("</script>", old) + "</script>".length);
+  const tail = `${footer}<script>${PAGE_SCRIPT}</script>`;
+  const at = stored.lastIndexOf("</body>");
+  const html = at === -1 ? stored + tail : stored.slice(0, at) + tail + stored.slice(at);
   return new Response(html, {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300", "x-robots-tag": "noindex" },
   });
