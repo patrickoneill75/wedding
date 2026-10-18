@@ -20,7 +20,7 @@
 import { STATUSES, STATUS_LABELS } from "./calc.js";
 import { listExpenses, listVendors } from "./store.js";
 
-const MODEL = "claude-opus-5-5";
+const MODEL = "claude-sonnet-5-5";
 const API_URL = "https://api.anthropic.com/v1/messages";
 const MAX_MESSAGES = 60;
 const MAX_BODY_CHARS = 12_000_000; // a few downsized receipt photos
@@ -34,7 +34,8 @@ How the expenses are organized: each item (Florist, DJ, Place Settings) sits in 
 How to work:
 - First work out what the expense is for. Match it to the existing items by meaning, not just by name: glassware, plates, chargers and napkins belong with Place Settings; a bouquet or centerpieces with flowers; a deposit to the band with the band.
 - By default, record an expense as a new line item (mode line_item) under the item it fits, and say which item you put it under so they can ask for a separate item instead. What the item already has becomes its first line item automatically. When no item fits, make a new item (mode new) in the category that fits best, using an existing category whenever one is logical.
-- Only change an existing entry (mode update) when they clearly ask to: "the florist's quote went up to $2,400", "mark the DJ paid". An item that already has line items can't be updated; add a line item to it.
+- Only change an existing entry (mode update) when they clearly ask to: "the florist's quote went up to $2,400", "mark the DJ paid", "make the books $25 each". Update an item on its own or a single line item, by its id; an item that has line items can't be updated itself. Fields you leave null keep what's there.
+- A receipt for things that belong under different items: propose one entry at a time, and the next once they've saved it. Things that belong together can be one entry.
 - A receipt: read the vendor, the date, what was bought and the total actually paid. Take a receipt as paid in full unless they say otherwise. The total already includes tax and any tip, so set quantity 1, taxable false and gratuity_percent 0, and put the total in price.
 - Stages: estimate (their own guess), quote (a vendor's price), booked (committed to), paid (paid in full). Partially paid comes on its own when a payment is less than the price, so a deposit on a booking (price is the full amount) is stage booked with payment_amount set. At stage paid, the price is recorded as paid; leave payment_amount null.
 - Ask only for what you can't work out, one or two short questions at a time. The person filling this in is usually who paid. Don't ask about optional details such as due dates or notes unless they come up.
@@ -59,9 +60,9 @@ const PROPOSE_TOOL = {
       mode: {
         type: "string",
         enum: ["line_item", "new", "update"],
-        description: "line_item (the default): a new line item under the item expense_id. new: a new item, when no existing item fits. update: change expense_id itself, only when they ask to (and only an item with no line items).",
+        description: "line_item (the default): a new line item under the item expense_id. new: a new item, when no existing item fits. update: change the item or line item expense_id itself, only when they ask to.",
       },
-      expense_id: { type: ["integer", "null"], description: "The existing item's id (the # number in the list) for line_item and update; null for new." },
+      expense_id: { type: ["integer", "null"], description: "The # number from the list: the item to add a line item under (line_item), or the item or line item to change (update); null for new." },
       item: { type: ["string", "null"], description: "Name of the new item or line item. null for update." },
       category: { type: ["string", "null"], description: "For new: an existing category if one fits, else a new one. null otherwise." },
       subcategory: { type: ["string", "null"], description: "For new: the subcategory, or null." },
@@ -124,8 +125,9 @@ export function checkProposal(p, expenses, settings) {
   const target = p.expense_id == null ? null : byId.get(Number(p.expense_id));
   if (!STATUSES.includes(p.stage) || p.stage === "cancelled") return { error: `Unknown stage "${p.stage}".` };
   if (p.mode !== "new") {
-    if (!target || target.parent_id || target.status === "cancelled") return { error: `#${p.expense_id} isn't an open item in the list. Use an item's id, not a line item's.` };
-    if (p.mode === "update" && target.purchases) return { error: `${target.item} has line items, so it can't be updated directly. Use mode line_item.` };
+    if (!target || target.status === "cancelled") return { error: `#${p.expense_id} isn't an open item or line item in the list.` };
+    if (p.mode === "line_item" && target.parent_id) return { error: `#${target.id} is a line item. Add the line item under its item, #${target.parent_id}.` };
+    if (p.mode === "update" && target.purchases) return { error: `${target.item} has line items, so it can't be updated directly. Update one of its line items, or add one.` };
   }
   if (p.mode !== "update" && !text(p.item)) return { error: "Give the item or line item a name." };
   if (p.mode === "new" && !text(p.category)) return { error: "A new item needs a category." };
@@ -158,7 +160,7 @@ export function checkProposal(p, expenses, settings) {
   const summary = [];
   if (p.mode === "new") summary.push(["New item", `${form.item} · ${[form.category, form.subcategory].filter(Boolean).join(" › ")}`]);
   else if (p.mode === "line_item") summary.push(["Line item", `${form.item}, under ${target.item}`]);
-  else summary.push(["Update", target.item]);
+  else summary.push(["Update", target.parent_id && byId.get(target.parent_id) ? `${target.item}, under ${byId.get(target.parent_id).item}` : target.item]);
   if (form.vendor) summary.push(["Vendor", form.vendor]);
   summary.push(["Stage", STATUS_LABELS[p.stage]]);
   if (form.price !== "") {
@@ -182,10 +184,37 @@ function cleanMessages(messages) {
     if (typeof m.content !== "string" && !Array.isArray(m.content)) return null;
   }
   if (messages[0].role !== "user" || messages[messages.length - 1].role !== "user") return null;
-  return messages.map((m) => ({ role: m.role, content: m.content }));
+  return answerOpenCalls(messages.map((m) => ({ role: m.role, content: m.content })));
 }
 
-async function askClaude(env, system, messages) {
+const toolCalls = (m) => (m.role === "assistant" && Array.isArray(m.content) ? m.content.filter((b) => b?.type === "tool_use") : []);
+
+/**
+ * The API needs every tool call answered at the start of the next message. A proposal
+ * that was replied to instead of saved, or a second proposal in the same reply, gets a
+ * "not saved" answer here, so the conversation always goes on.
+ */
+export function answerOpenCalls(messages) {
+  return messages.map((m, i) => {
+    const before = i > 0 ? toolCalls(messages[i - 1]) : [];
+    if (m.role !== "user" || !before.length) return m;
+    const content = typeof m.content === "string" ? [{ type: "text", text: m.content }] : [...m.content];
+    const answered = new Set(content.filter((b) => b?.type === "tool_result").map((b) => b.tool_use_id));
+    const missing = before.filter((c) => !answered.has(c.id))
+      .map((c) => ({ type: "tool_result", tool_use_id: c.id, content: "Not saved. They replied instead." }));
+    if (!missing.length) return m;
+    // Tool results come first in the message.
+    const results = content.filter((b) => b?.type === "tool_result");
+    const rest = content.filter((b) => b?.type !== "tool_result");
+    return { role: "user", content: [...results, ...missing, ...rest] };
+  });
+}
+
+/**
+ * Ask Claude, streaming: each piece of reply text goes to onText as it arrives, and the
+ * whole reply comes back at the end, assembled from the stream's events.
+ */
+async function streamClaude(env, system, messages, onText) {
   const response = await fetch(API_URL, {
     method: "POST",
     headers: {
@@ -198,26 +227,93 @@ async function askClaude(env, system, messages) {
     body: JSON.stringify({
       model: MODEL,
       max_tokens: 16000,
+      stream: true,
       fallbacks: "default",
+      // No thinking: placing an expense doesn't need it, and the reply starts sooner.
+      thinking: { type: "between_tools" },
       output_config: { effort: "low" },
       cache_control: { type: "ephemeral" },
       system,
       tools: [PROPOSE_TOOL],
+      // One proposal per reply: the page shows one entry to save at a time.
+      tool_choice: { type: "auto", disable_parallel_tool_use: true },
       messages,
     }),
   });
-  const body = await response.json().catch(() => null);
   if (!response.ok) {
-    const why = body?.error?.message || `status ${response.status}`;
-    throw Object.assign(new Error(`Claude couldn't answer (${why}).`), { status: response.status });
+    const body = await response.json().catch(() => null);
+    throw new Error(`Claude couldn't answer (${body?.error?.message || `status ${response.status}`}).`);
   }
-  return body;
+  const content = [];
+  const json = [];
+  let stopReason = null;
+  for await (const event of serverSentEvents(response.body)) {
+    if (event.type === "content_block_start") {
+      content[event.index] = { ...event.content_block };
+      if (event.content_block.type === "tool_use") {
+        json[event.index] = "";
+        content[event.index].input = {};
+      }
+    } else if (event.type === "content_block_delta") {
+      const block = content[event.index];
+      const d = event.delta;
+      if (d.type === "text_delta") {
+        block.text += d.text;
+        onText(d.text);
+      } else if (d.type === "input_json_delta") json[event.index] += d.partial_json;
+      else if (d.type === "thinking_delta") block.thinking += d.thinking;
+      else if (d.type === "signature_delta") block.signature = d.signature;
+    } else if (event.type === "content_block_stop") {
+      if (json[event.index] !== undefined) {
+        try {
+          content[event.index].input = json[event.index] ? JSON.parse(json[event.index]) : {};
+        } catch {
+          content[event.index].input = {};
+        }
+      }
+    } else if (event.type === "message_delta") {
+      stopReason = event.delta?.stop_reason ?? stopReason;
+    } else if (event.type === "error") {
+      throw new Error(`Claude couldn't answer (${event.error?.message || "stream error"}).`);
+    }
+  }
+  return { content: content.filter(Boolean), stop_reason: stopReason };
+}
+
+/** The `data:` of each server-sent event, parsed. */
+async function* serverSentEvents(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const chunks = buffer.split(/\r?\n\r?\n/);
+    // The last piece may be an event still arriving.
+    buffer = done ? "" : chunks.pop();
+    for (const chunk of chunks) {
+      const data = chunk.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart()).join("\n");
+      if (!data) continue;
+      try {
+        yield JSON.parse(data);
+      } catch {
+        /* not JSON: skip */
+      }
+    }
+    if (done) return;
+  }
 }
 
 /**
- * One turn: send the conversation, check any proposal (telling Claude what's wrong and
- * asking again, a couple of times at most), and return the updated conversation with
- * Claude's reply and, when it made one that checks out, the proposal.
+ * One turn. Errors found before Claude is asked come back as { status, body }; otherwise
+ * { stream }: newline-delimited JSON events for the page --
+ *   { type: "text", text }     a piece of Claude's reply, as it's written
+ *   { type: "break" }          Claude is starting over (a proposal didn't check out)
+ *   { type: "done", messages, reply, proposal }   the conversation to send next time,
+ *                              and the checked proposal (form fields + summary), if any
+ *   { type: "error", error }
+ * A proposal that doesn't check out goes back to Claude with what's wrong, a couple of
+ * times at most.
  */
 export async function intakeTurn(env, input, ctx) {
   if (!env.ANTHROPIC_API_KEY) {
@@ -235,22 +331,49 @@ export async function intakeTurn(env, input, ctx) {
     { type: "text", text: catalog(expenses, vendors, ctx.settings, { who, today: input.today && isDate(input.today) ? input.today : new Date().toISOString().slice(0, 10) }) },
   ];
 
-  for (let attempt = 0; ; attempt++) {
-    const reply = await askClaude(env, system, messages);
-    messages.push({ role: "assistant", content: reply.content });
-    const said = (reply.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n\n").trim();
-    if (reply.stop_reason === "refusal") {
-      return { status: 200, body: { messages, reply: said || "Sorry, I can't help with that one. Try the plain form.", proposal: null, ended: true } };
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+  const send = (event) => writer.write(encoder.encode(`${JSON.stringify(event)}\n`));
+  (async () => {
+    try {
+      for (let attempt = 0; ; attempt++) {
+        if (attempt) await send({ type: "break" });
+        const reply = await streamClaude(env, system, messages, (text) => send({ type: "text", text }));
+        messages.push({ role: "assistant", content: reply.content });
+        const said = reply.content.filter((b) => b.type === "text").map((b) => b.text).join("\n\n").trim();
+        if (reply.stop_reason === "refusal") {
+          const sorry = "Sorry, I can't help with that one. Try the plain form.";
+          if (!said) await send({ type: "text", text: sorry });
+          await send({ type: "done", messages, reply: said || sorry, proposal: null, ended: true });
+          break;
+        }
+        const call = reply.content.find((b) => b.type === "tool_use" && b.name === "propose_expense");
+        if (!call) {
+          await send({ type: "done", messages, reply: said, proposal: null });
+          break;
+        }
+        const checked = checkProposal(call.input || {}, expenses, ctx.settings);
+        if (!checked.error) {
+          await send({ type: "done", messages, reply: said, proposal: { tool_use_id: call.id, form: checked.form, summary: checked.summary } });
+          break;
+        }
+        if (attempt >= MAX_RETRIES) {
+          const giveUp = "I couldn't put that entry together. Could you say it another way?";
+          await send({ type: "break" });
+          await send({ type: "text", text: giveUp });
+          await send({ type: "done", messages: messages.slice(0, -1), reply: giveUp, proposal: null });
+          break;
+        }
+        messages.push({ role: "user", content: reply.content.filter((b) => b.type === "tool_use").map((b) => (b.id === call.id
+          ? { type: "tool_result", tool_use_id: b.id, is_error: true, content: checked.error }
+          : { type: "tool_result", tool_use_id: b.id, is_error: true, content: "One entry at a time." })) });
+      }
+    } catch (error) {
+      await send({ type: "error", error: error.message || String(error) });
+    } finally {
+      await writer.close();
     }
-    const call = (reply.content || []).find((b) => b.type === "tool_use" && b.name === "propose_expense");
-    if (!call) return { status: 200, body: { messages, reply: said, proposal: null } };
-    const checked = checkProposal(call.input || {}, expenses, ctx.settings);
-    if (!checked.error) {
-      return { status: 200, body: { messages, reply: said, proposal: { tool_use_id: call.id, form: checked.form, summary: checked.summary } } };
-    }
-    if (attempt >= MAX_RETRIES) {
-      return { status: 200, body: { messages: messages.slice(0, -1), reply: "I couldn't put that entry together. Could you say it another way?", proposal: null } };
-    }
-    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: call.id, is_error: true, content: checked.error }] });
-  }
+  })();
+  return { stream: readable };
 }

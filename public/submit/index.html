@@ -61,7 +61,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
       </button>
       <input type="file" id="file" accept="image/*,application/pdf" hidden>
-      <textarea id="text" rows="1" placeholder="What did you spend on?" autocomplete="off"></textarea>
+      <textarea id="text" rows="1" placeholder="What did you spend on?" autocomplete="off" enterkeyhint="send"></textarea>
       <button type="submit" class="primary" id="send">Send</button>
     </div>
     <div class="foot">Rather fill in a form? <a id="formLink" href="form.html">Use the plain form</a>.</div>
@@ -95,6 +95,7 @@ let messages = [];
 let receipt = null;      // { file, block, preview }
 let pending = null;      // the receipt picked but not sent yet
 let proposal = null;
+let savedCall = null;    // the proposal just saved, answered with the next message
 let busy = false;
 
 function say(role, text, image) {
@@ -106,7 +107,7 @@ function say(role, text, image) {
 
 function start() {
   messages = [];
-  receipt = pending = proposal = null;
+  receipt = pending = proposal = savedCall = null;
   thread.replaceChildren();
   say("them", "What did you spend on? Tell me in a sentence, like “paid the florist a $500 deposit”, or add a photo of the receipt with the camera button.");
   const row = el("div", { class: "msg-row them" }, el("div", { class: "starters" },
@@ -181,6 +182,10 @@ async function send(text) {
   $("send").disabled = true;
   const content = [];
   // A reply to a proposal instead of saving it answers that proposal first.
+  if (savedCall) {
+    content.push({ type: "tool_result", tool_use_id: savedCall.id, content: `Saved as #${savedCall.expense_id}.` });
+    savedCall = null;
+  }
   if (proposal) {
     content.push({ type: "tool_result", tool_use_id: proposal.tool_use_id, content: "Not saved. They replied instead:" });
     proposal.card.remove();
@@ -196,28 +201,57 @@ async function send(text) {
   pending = null;
   showAttached();
   messages.push({ role: "user", content });
-  const thinking = say("them", "Thinking…");
-  thinking.firstChild.classList.add("thinking");
+  // The reply streams in: "Thinking…" until the first words, then the words as they come.
+  let bubble = say("them", "Thinking…");
+  bubble.firstChild.classList.add("thinking");
+  let written = "";
+  const write = (text) => {
+    if (!written) bubble.firstChild.classList.remove("thinking");
+    written += text;
+    bubble.firstChild.textContent = written.trimStart();
+    bubble.scrollIntoView({ block: "end" });
+  };
+  let done = null;
   try {
     const r = await fetch("/api/public/expense/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ key, who: $("who").value, today: localToday(), messages }),
     });
-    const body = await r.json().catch(() => ({}));
-    thinking.remove();
-    if (!r.ok) {
-      messages.pop();
-      say("them", body.error || "Something went wrong. Try again.");
-      return;
+    if (!r.ok || !(r.headers.get("content-type") || "").includes("ndjson")) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.error || "Something went wrong. Try again.");
     }
-    messages = body.messages;
-    if (body.reply) say("them", body.reply);
-    if (body.proposal) showProposal(body.proposal);
-  } catch {
-    thinking.remove();
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done: end } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !end });
+      const lines = buffer.split("\n");
+      buffer = end ? "" : lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === "text") write(event.text);
+        else if (event.type === "break" && written) {
+          bubble = say("them", "");
+          written = "";
+        } else if (event.type === "done") done = event;
+        else if (event.type === "error") throw new Error(event.error);
+      }
+      if (end) break;
+    }
+    if (!done) throw new Error("The answer was cut off. Send it again.");
+    messages = done.messages;
+    // Claude may have said nothing (just the proposal), or its text was replaced.
+    if (!written && done.reply) write(done.reply);
+    if (!bubble.firstChild.textContent) bubble.remove();
+    if (done.proposal) showProposal(done.proposal);
+  } catch (error) {
+    if (!written) bubble.remove();
     messages.pop();
-    say("them", "Couldn't reach the server. Check your connection and send it again.");
+    say("them", error instanceof TypeError ? "Couldn't reach the server. Check your connection and send it again." : error.message);
   } finally {
     busy = false;
     $("send").disabled = false;
@@ -258,13 +292,16 @@ async function saveProposal(p, button, msg) {
     if (!r.ok) throw new Error(body.error || "Couldn't save.");
     remember("expense-form-who", $("who").value);
     proposal = null;
+    savedCall = { id: p.tool_use_id, expense_id: body.expense_id };
     const card = button.closest(".card");
     card.classList.add("saved");
     card.replaceChildren(
       el("h3", {}, "Saved"),
       el("dl", {}, p.summary.flatMap(([label, value]) => [el("dt", {}, label), el("dd", {}, value)])),
-      body.receipt_error ? el("p", { class: "msg err" }, body.receipt_error) : body.receipt ? el("p", { class: "desc" }, `Receipt saved to Drive as ${body.receipt}.`) : null,
-      el("div", { class: "row" }, el("button", { type: "button", class: "primary", onclick: start }, "Add another")),
+      // Spread and filtered: replaceChildren() prints a null as the text "null".
+      ...[body.receipt_error ? el("p", { class: "msg err" }, body.receipt_error) : body.receipt ? el("p", { class: "desc" }, `Receipt saved to Drive as ${body.receipt}.`) : null].filter(Boolean),
+      el("p", { class: "desc", style: "margin:0 0 10px" }, "Something else, or a change to this one? Just say so."),
+      el("div", { class: "row" }, el("button", { type: "button", class: "primary", onclick: start }, "Start a new one")),
     );
   } catch (error) {
     button.disabled = false;
@@ -281,7 +318,8 @@ $("composer").addEventListener("submit", (ev) => {
   send(text);
 });
 $("text").addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing && window.matchMedia("(pointer: fine)").matches) {
+  // Enter sends, on phones too; Shift+Enter starts a new line.
+  if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
     ev.preventDefault();
     $("composer").requestSubmit();
   }

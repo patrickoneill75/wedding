@@ -283,7 +283,9 @@ async function submitExpense(env, form) {
   const payment = { paid_on: field("paid_on"), payer: field("payer"), method: field("method") };
   if (expenseId) {
     const existing = await first(env, "SELECT id, pricing, parent_id FROM expenses WHERE id = ?", expenseId);
-    if (!existing || existing.parent_id) return json({ error: "That item no longer exists. Reload the form." }, 400);
+    if (!existing) return json({ error: "That item no longer exists. Reload the form." }, 400);
+    // A line item can be updated (its quote went up), but takes no line items of its own.
+    if (existing.parent_id && field("mode") === "purchase") return json({ error: "A line item can't have line items of its own." }, 400);
     const split = await first(env, "SELECT id FROM expenses WHERE parent_id = ? LIMIT 1", existing.id);
     if (field("mode") !== "purchase" && split) {
       return json({ error: "That item is split into line items. Add a line item to it instead." }, 400);
@@ -314,6 +316,7 @@ async function submitExpense(env, form) {
     } else {
       const patch = { status, history_note: note ? `Form: ${note}` : "Updated from the expense form", ...payment };
       if (price !== "") patch.unit_cost = price;
+      if (field("units")) patch.units = field("units");
       if (field("vendor")) patch.vendor = field("vendor");
       if (field("due_date")) patch.due_date = field("due_date");
       if (!payment.payer) delete patch.payer;
@@ -426,6 +429,7 @@ export async function handlePublicApi(route, request, env) {
         return json({ error: "This form link isn't valid any more. Get the current one from the control panel." }, 403);
       }
       const turn = await intakeTurn(env, input, await loadContext(env));
+      if (turn.stream) return new Response(turn.stream, { headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" } });
       return json(turn.body, turn.status);
     }
     if (route === "expense" && method === "POST") {
