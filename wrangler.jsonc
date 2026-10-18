@@ -38,6 +38,27 @@
     }
   ],
 
+  // Pull request previews (`wrangler preview`, run by Cloudflare's build for every
+  // branch but main). They get their own empty database, so a branch's schema changes
+  // (src/db.js migrations) never run on the real guest list before it merges. PUBLIC_URL
+  // is blank so a preview stays on its own address instead of redirecting to the site.
+  // Previews have none of the production secrets, so nobody can sign in to one: they
+  // show that a branch builds and starts.
+  "previews": {
+    "vars": {
+      "ZOLA_URL": "https://www.zola.com/wedding/patrickandkaitlyn2027",
+      "GITHUB_REPO": "patrickoneill75/wedding",
+      "PUBLIC_URL": ""
+    },
+    "d1_databases": [
+      {
+        "binding": "DB",
+        "database_name": "wedding-preview",
+        "database_id": "5933bafb-4b05-4ce4-9ce9-fbce6762b860"
+      }
+    ]
+  },
+
   // The site's own domain (registered at Hover, DNS on Cloudflare). Cloudflare creates
   // the DNS records and certificates for these on deploy; the domain must already be
   // active in this Cloudflare account. The workers.dev address keeps working too: the
