@@ -139,3 +139,23 @@ details.table-view summary { cursor: pointer; color: var(--text-secondary); }
 }
 a { color: var(--accent); }
 .filters input[type="checkbox"] { min-width: 0; }
+/* type-ahead (combobox.js) */
+.combo { position: relative; }
+.suggest { position: absolute; left: 0; right: 0; min-width: 260px; top: 100%; margin: 4px 0 0; padding: 5px; list-style: none; z-index: 60;
+           background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+           box-shadow: 0 8px 24px rgba(0, 0, 0, .14); max-height: 320px; overflow-y: auto; }
+.suggest li { padding: 8px 10px; border-radius: 7px; cursor: pointer; color: var(--text-primary); font-size: 14px; }
+.suggest li b { font-weight: 700; }
+.suggest li .detail { display: block; font-size: 12px; color: var(--text-muted); margin-top: 1px; }
+.suggest li[aria-selected="true"], .suggest li:hover { background: var(--wash); }
+.suggest li.create { color: var(--accent); font-weight: 600; }
+.suggest li.note { color: var(--text-muted); cursor: default; }
+.suggest li.note:hover { background: none; }
+/* pill-shaped choices from radio buttons (stage on the expense form) */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips label { cursor: pointer; }
+.chips input { position: absolute; opacity: 0; pointer-events: none; }
+.chips span { display: inline-block; border: 1px solid var(--border); border-radius: 999px; padding: 6px 13px; font-size: 13px;
+              color: var(--text-secondary); background: var(--surface-1); }
+.chips input:checked + span { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.chips input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }

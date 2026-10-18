@@ -30,18 +30,29 @@
  *   actual     the real cost once there is one: null while the item is still an
  *              estimate, otherwise projected
  *
- * Purchases: an expense can have purchases under it (parent_id), one level deep --
- * "Place Settings" bought a bit at a time from several vendors. Each purchase is a
- * full expense of its own (stage, price, payments). rollupPurchases() then makes the
- * parent speak for the group:
- *   estimate   the parent's own estimate, as for any item
- *   paid       everything paid, on the purchases and the parent itself
- *   actual     the purchases' actual costs added up (null until one has one)
- *   projected  the larger of the parent's own price and what the purchases add up to,
- *              since more purchases may come -- until the parent is marked Paid ("done
- *              buying"), when it's exactly what the purchases add up to
- * Totals, the category table and the pie use top-level rows only, so purchases are
- * never counted twice; payments due and stages come from the purchases themselves.
+ * Line items: an item can have line items under it (parent_id), one level deep --
+ * "Place Settings" bought a bit at a time from several vendors. (The code calls them
+ * purchases.) Each line item is a full expense of its own: vendor, stage, price,
+ * payments. The item above them becomes a container: its own price is the budget for
+ * the group, and it holds no vendor, stage or payments of its own (adding the first
+ * line item moves those down into one; see splitIntoLineItems in src/store.js).
+ * rollupPurchases() then makes the item speak for the group:
+ *   budget     the item's own price
+ *   spent      what the line items add up to
+ *   estimate   the item's own estimate, as for any item (the budget, frozen once it's
+ *              marked done)
+ *   paid       everything paid, on the line items (and on the item itself, for data
+ *              from before items became containers)
+ *   actual     the line items' actual costs added up (null until one has one)
+ *   projected  the larger of the budget and what's spent, since more may be bought --
+ *              until the item is marked done buying (stored as Paid), when it's exactly
+ *              what was spent
+ *   status     worked out from the line items: Partially paid once anything is paid,
+ *              Paid once it's done buying and nothing is owed, otherwise the furthest
+ *              stage a line item reached (Booked at most). `done` says whether it's
+ *              marked done buying.
+ * Totals, the category table and the pie use top-level rows only, so line items are
+ * never counted twice; payments due and stages come from the line items themselves.
  */
 
 export const STATUSES = ["estimate", "quote", "booked", "partially_paid", "paid", "cancelled"];
@@ -277,7 +288,7 @@ export function enrichExpense(expense, paid, ctx) {
   };
 }
 
-/** Roll each parent's purchases up into it (see the module docstring). */
+/** Roll each item's line items up into it (see the module docstring). */
 export function rollupPurchases(expenses) {
   const kids = new Map();
   for (const e of expenses) {
@@ -292,17 +303,31 @@ export function rollupPurchases(expenses) {
     const spent = cents(list.reduce((s, k) => s + k.projected, 0));
     const paid = cents(e.paid + list.reduce((s, k) => s + k.paid, 0));
     const known = list.filter((k) => k.actual != null);
+    const done = e.status === "paid";
     let projected;
     if (e.status === "cancelled") projected = paid;
-    else if (e.status === "paid") projected = spent;
+    else if (done) projected = spent;
     else projected = Math.max(e.current, spent);
+    const owed = cents(Math.max(projected - paid, 0));
+    let status;
+    if (e.status === "cancelled") status = "cancelled";
+    else if (done && owed === 0) status = "paid";
+    else if (paid > 0) status = "partially_paid";
+    else {
+      const furthest = Math.max(0, ...list.filter((k) => k.status !== "cancelled").map((k) => STATUSES.indexOf(k.status)));
+      status = STATUSES[Math.min(furthest, STATUSES.indexOf("booked"))];
+    }
     return {
       ...e,
+      status,
+      own_status: e.status,
+      done,
       purchases: list.length,
+      budget: e.current,
       spent,
       paid,
       projected: cents(projected),
-      owed: cents(Math.max(projected - paid, 0)),
+      owed,
       actual: known.length ? cents(known.reduce((s, k) => s + k.actual, 0)) : null,
       priced: e.priced || spent > 0,
     };

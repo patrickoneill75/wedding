@@ -9,77 +9,104 @@
 <title>Add an expense</title>
 <link rel="stylesheet" href="/admin/admin.css">
 <style>
-  .wrap { max-width: 620px; }
-  .summary { background: var(--wash); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
-  h3.part { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 18px 0 8px; }
+  .wrap { max-width: 560px; }
+  .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .head h1 { margin: 0; }
+  .who { margin-left: auto; font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; }
+  .who select { width: auto; padding: 4px 8px; }
+  .big input { font-size: 17px; padding: 11px 13px; }
+  .chosen { display: flex; gap: 10px; align-items: center; background: var(--wash); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; }
+  .chosen b { font-size: 15px; }
+  .chosen .muted { font-size: 12.5px; margin-top: 2px; }
+  .chosen button { margin-left: auto; }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 14px; }
+  .seg button { border: 0; border-radius: 0; padding: 9px 8px; background: var(--surface-1); color: var(--text-secondary); }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
+  .block { margin-bottom: 14px; }
+  .block > .label { font-size: 12.5px; color: var(--text-secondary); margin-bottom: 6px; display: block; }
+  .paybox { background: var(--wash); border-radius: 10px; padding: 12px; margin-bottom: 14px; }
+  .paybox .fields { margin-bottom: 0; }
+  .paybox p { margin: 0 0 10px; font-size: 13px; color: var(--text-secondary); }
+  details.more { margin-bottom: 14px; font-size: 13px; }
+  details.more summary { cursor: pointer; color: var(--text-secondary); margin-bottom: 10px; }
   .done { text-align: center; padding: 30px 18px; }
-  .modes { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
-  .modes label.check { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
-  .modes label.check:has(input:checked) { border-color: var(--accent); background: var(--wash); }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Add an expense</h1>
-  <p class="sub">New items, purchases, updated prices, payments and receipts. Everything shows up in the control panel.</p>
+  <div class="head">
+    <h1>Add an expense</h1>
+    <label class="who" id="whoWrap" hidden>I'm <select name="submitted_by" id="who" form="form"></select></label>
+  </div>
 
   <p class="msg err" id="fatal"></p>
 
   <form class="card" id="form" hidden>
-    <div class="fields">
-      <label class="field">Who's filling this in?<select name="submitted_by" id="who"></select></label>
-      <label class="field">Which expense?<select name="expense_id" id="expense"></select></label>
-    </div>
-    <div class="summary" id="summary" hidden></div>
+    <input type="hidden" name="expense_id" id="expenseId">
+    <input type="hidden" name="mode" id="mode">
 
-    <!-- Only for an existing item: a new purchase under it, or a change to the item itself. -->
-    <div class="modes" id="modes" hidden>
-      <label class="check"><input type="radio" name="mode" value="purchase"> Add a purchase to this item (something you bought for it)</label>
-      <label class="check"><input type="radio" name="mode" value="update"> Update this item's price or stage</label>
+    <label class="field big block" id="searchLabel">What's it for?
+      <input id="itemSearch" placeholder="Start typing: flowers, venue, DJ…" autocapitalize="sentences">
+    </label>
+    <div class="chosen" id="chosen" hidden>
+      <div><b id="chosenName"></b><div class="muted" id="chosenInfo"></div></div>
+      <button type="button" class="small" id="change">Change</button>
     </div>
 
-    <div class="fields">
-      <label class="field" id="itemLabel"><span>What is it?</span><input name="item" placeholder="e.g. Florist deposit"></label>
-    </div>
-    <div id="newFields">
-      <div class="fields">
-        <label class="field">Category<input name="category" list="cats" placeholder="e.g. Ceremony & Reception"></label>
-        <label class="field">Subcategory<input name="subcategory" list="subs" placeholder="e.g. Decor"></label>
+    <div id="details" hidden>
+      <!-- An item that isn't split into line items: pay or update it, or start splitting it. -->
+      <div class="seg" id="modes" hidden>
+        <button type="button" data-mode="update">Pay or update it</button>
+        <button type="button" data-mode="purchase">Add a line item</button>
       </div>
-    </div>
+      <p class="desc" id="modeNote" hidden></p>
 
-    <div class="fields">
-      <label class="field">Vendor
-        <select id="vendorPick"></select>
-        <input id="vendorNew" placeholder="New vendor's name" hidden style="margin-top:6px">
+      <div class="fields">
+        <label class="field" id="itemLabel"><span>Name</span><input name="item"></label>
+        <label class="field" id="catLabel">Category<input id="catSearch" placeholder="Type to find one, or a new one"></label>
+      </div>
+      <div class="fields">
+        <label class="field">Vendor<input name="vendor" id="vendor" placeholder="Type to find one, or a new one"></label>
+      </div>
+
+      <div class="block">
+        <span class="label">Stage</span>
+        <div class="chips" id="stages"></div>
+      </div>
+
+      <div class="fields">
+        <label class="field" id="priceLabel"><span>Price ($)</span><input name="price" type="number" step="0.01" inputmode="decimal"></label>
+        <label class="field" id="dueLabel">Next payment due<input name="due_date" type="date"></label>
+      </div>
+
+      <div class="paybox">
+        <p id="payNote"></p>
+        <div class="fields">
+          <label class="field" id="amountLabel">Amount paid ($)<input name="payment_amount" type="number" step="0.01" inputmode="decimal" placeholder="Nothing yet"></label>
+          <label class="field paid-only">Date paid<input name="paid_on" type="date" id="paidOn"></label>
+          <label class="field paid-only">Paid by<select name="payer" id="payer"></select></label>
+          <label class="field paid-only">Method<select name="method" id="method"></select></label>
+        </div>
+      </div>
+
+      <label class="field block">Receipt, quote or contract (optional)
+        <input type="file" name="file" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx">
       </label>
-      <label class="field">Stage<select name="status" id="status"></select></label>
-    </div>
-    <div class="fields">
-      <label class="field" id="priceLabel"><span>Price ($)</span><input name="price" type="number" step="0.01" inputmode="decimal"></label>
-      <label class="field" id="unitsLabel">Quantity<input name="units" type="number" step="any" value="1"></label>
-      <label class="field" id="gratLabel">Gratuity %<input name="gratuity_percent" type="number" step="any" value="0"></label>
-    </div>
-    <label class="check" id="taxLabel" style="margin-bottom:12px"><input type="checkbox" name="taxable"> Add sales tax</label>
-    <div class="fields" id="dueRow">
-      <label class="field">Next payment due<input name="due_date" type="date"></label>
-    </div>
 
-    <h3 class="part" id="paymentTitle">Payment (leave blank if you didn't pay anything)</h3>
-    <p class="desc" id="paidNote" hidden>Marked Paid, so the full price is recorded as paid. Just say who paid, when and how.</p>
-    <div class="fields">
-      <label class="field" id="amountLabel">Amount paid ($)<input name="payment_amount" type="number" step="0.01" inputmode="decimal"></label>
-      <label class="field">Date paid<input name="paid_on" type="date" id="paidOn"></label>
-      <label class="field">Paid by<select name="payer" id="payer"></select></label>
-      <label class="field">Method<select name="method" id="method"></select></label>
+      <details class="more" id="more">
+        <summary>More: quantity, tax, gratuity, notes</summary>
+        <div class="fields" id="mathFields">
+          <label class="field">Quantity<input name="units" type="number" step="any" value="1"></label>
+          <label class="field">Gratuity %<input name="gratuity_percent" type="number" step="any" value="0"></label>
+          <label class="check" style="align-self:end; padding-bottom:8px"><input type="checkbox" name="taxable"> Add sales tax</label>
+        </div>
+        <label class="field">Notes<textarea name="notes"></textarea></label>
+      </details>
+
+      <button class="primary" type="submit" style="width:100%; justify-content:center">Save</button>
+      <p class="msg" id="msg"></p>
     </div>
-
-    <h3 class="part">Receipt, quote or contract (optional)</h3>
-    <input type="file" name="file" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx" style="margin-bottom:12px">
-    <label class="field" style="margin-bottom:14px">Notes<textarea name="notes"></textarea></label>
-
-    <button class="primary" type="submit" style="width:100%; justify-content:center">Save</button>
-    <p class="msg" id="msg"></p>
   </form>
 
   <div class="card done" id="done" hidden>
@@ -88,20 +115,61 @@
     <button class="primary" id="another">Add another</button>
   </div>
 </div>
-<datalist id="cats"></datalist>
-<datalist id="subs"></datalist>
 
-<script>
+<script type="module">
+import { combobox, splitCategory } from "/admin/combobox.js";
+
 const key = new URLSearchParams(location.search).get("k") || "";
 const $ = (id) => document.getElementById(id);
 const form = $("form");
 const money = (n) => (n == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n));
 const opt = (value, text, selected) => { const o = document.createElement("option"); o.value = value; o.textContent = text; o.selected = Boolean(selected); return o; };
 const today = () => new Date().toISOString().slice(0, 10);
-const NEW_VENDOR = "__new__";
-let options;
 const remember = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 const recall = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+let options;
+let chosen = null; // { item } for an existing item, or { name } for a new one
+
+const label = (status) => options.statuses.find((s) => s.value === status)?.label || status;
+const where = (o) => [o.category, o.subcategory].filter(Boolean).join(" › ");
+
+/* ---------------------------------------------------------------- type-aheads -- */
+
+combobox($("itemSearch"), {
+  options: () => options.items.map((i) => ({
+    label: i.item,
+    detail: [where(i), i.purchases ? `${i.purchases} line item${i.purchases === 1 ? "" : "s"}` : label(i.status)].filter(Boolean).join(" · "),
+    search: [i.item, i.category, i.subcategory, i.vendor].join(" "),
+    item: i,
+  })),
+  create: (typed) => ({ label: `＋ New item “${typed}”`, name: typed }),
+  onPick: (o) => choose(o.item ? { item: o.item } : { name: o.name }),
+  empty: "Nothing yet.",
+});
+
+// Each category with each of its subcategories, so one pick fills in both.
+function categoryOptions() {
+  const pairs = new Map();
+  for (const c of options.categories) pairs.set(c, [c, ""]);
+  for (const i of options.items) if (i.category && i.subcategory) pairs.set(where(i), [i.category, i.subcategory]);
+  return [...pairs.values()].sort((a, b) => where({ category: a[0], subcategory: a[1] }).localeCompare(where({ category: b[0], subcategory: b[1] })))
+    .map(([category, subcategory]) => ({ label: where({ category, subcategory }), category, subcategory }));
+}
+combobox($("catSearch"), {
+  options: categoryOptions,
+  showAll: true,
+  create: (typed) => (categoryOptions().some((o) => o.label.toLowerCase() === typed.toLowerCase()) ? null : { label: `＋ New category “${typed}”`, text: typed }),
+  onPick: (o) => { $("catSearch").value = o.text ?? o.label; },
+});
+
+combobox($("vendor"), {
+  options: () => options.vendors.map((v) => ({ label: v })),
+  showAll: true,
+  create: (typed) => (options.vendors.some((v) => v.toLowerCase() === typed.toLowerCase()) ? null : { label: `＋ New vendor “${typed}”`, text: typed }),
+  onPick: (o) => { $("vendor").value = o.text ?? o.label; },
+});
+
+/* ----------------------------------------------------------------------- flow -- */
 
 async function load() {
   const r = await fetch(`/api/public/expense/options?k=${encodeURIComponent(key)}`);
@@ -114,109 +182,110 @@ async function load() {
   $("who").replaceChildren(...options.payers.map((p) => opt(p, p, p === lastWho)));
   $("payer").replaceChildren(opt("", "—"), ...options.payers.map((p) => opt(p, p)));
   $("method").replaceChildren(opt("", "—"), ...options.payment_methods.map((m) => opt(m, m)));
-  $("status").replaceChildren(...options.statuses.map((s) => opt(s.value, s.label)));
-  $("cats").replaceChildren(...options.categories.map((c) => opt(c, c)));
-  $("subs").replaceChildren(...options.subcategories.map((c) => opt(c, c)));
-  $("vendorPick").replaceChildren(opt("", "—"), ...options.vendors.map((v) => opt(v, v)), opt(NEW_VENDOR, "＋ New vendor…"));
-  const select = $("expense");
-  select.replaceChildren(opt("", "＋ Something new"));
-  const groups = new Map();
-  for (const item of options.items) {
-    if (!groups.has(item.category)) groups.set(item.category, []);
-    groups.get(item.category).push(item);
-  }
-  for (const [category, items] of groups) {
-    const group = document.createElement("optgroup");
-    group.label = category || "Other";
-    for (const item of items) group.append(opt(item.id, item.item));
-    select.append(group);
-  }
-  $("paidOn").value = today();
+  $("stages").replaceChildren(...options.statuses.map((s) => {
+    const l = document.createElement("label");
+    const input = Object.assign(document.createElement("input"), { type: "radio", name: "status", value: s.value });
+    input.addEventListener("change", onStage);
+    const span = document.createElement("span");
+    span.textContent = s.label;
+    l.append(input, span);
+    return l;
+  }));
   $("payer").value = $("who").value;
+  $("whoWrap").hidden = false;
   form.hidden = false;
-  onPick();
+  choose(null);
 }
 
-const picked = () => options.items.find((i) => String(i.id) === $("expense").value) || null;
-const mode = () => (picked() ? form.querySelector("input[name=mode]:checked")?.value || "update" : "new");
+const mode = () => $("mode").value;
+const setStage = (s) => { form.querySelector(`input[name=status][value="${s}"]`).checked = true; onStage(); };
+const stage = () => form.querySelector("input[name=status]:checked")?.value || "estimate";
 
-function setVendor(name) {
-  const known = options.vendors.some((v) => v === name);
-  $("vendorPick").value = name ? (known ? name : NEW_VENDOR) : "";
-  $("vendorNew").value = name && !known ? name : "";
-  onVendor();
-}
-function onVendor() {
-  const isNew = $("vendorPick").value === NEW_VENDOR;
-  $("vendorNew").hidden = !isNew;
-  if (isNew) $("vendorNew").focus();
-}
-
-function onPick() {
-  const item = picked();
-  $("modes").hidden = !item;
-  if (item) {
-    // An item that's already been bought in pieces most likely gets another piece.
-    form.querySelector(`input[name=mode][value=${item.purchases ? "purchase" : "update"}]`).checked = true;
+function choose(next) {
+  chosen = next;
+  $("searchLabel").hidden = Boolean(chosen);
+  $("chosen").hidden = !chosen;
+  $("details").hidden = !chosen;
+  $("msg").textContent = "";
+  if (!chosen) {
+    $("itemSearch").value = "";
+    $("expenseId").value = "";
+    return;
   }
-  applyMode();
+  const item = chosen.item;
+  $("expenseId").value = item ? item.id : "";
+  if (item) {
+    $("chosenName").textContent = item.item;
+    $("chosenInfo").textContent = [
+      where(item),
+      item.purchases
+        ? `${item.purchases} line item${item.purchases === 1 ? "" : "s"} · ${money(item.spent)} spent${item.total ? ` of a ${money(item.total)} budget` : ""} · ${money(item.paid)} paid`
+        : `${label(item.status)} · ${money(item.total)} · ${money(item.paid)} paid`,
+    ].filter(Boolean).join(" · ");
+  } else {
+    $("chosenName").textContent = `New item: ${chosen.name}`;
+    $("chosenInfo").textContent = "Pick its category below.";
+  }
+  // An item already split into line items only takes more line items.
+  $("modes").hidden = !item || Boolean(item.purchases);
+  setMode(!item ? "new" : item.purchases ? "purchase" : "update");
 }
 
-function applyMode() {
-  const item = picked();
-  const m = mode();
-  $("newFields").hidden = m !== "new";
+function setMode(m) {
+  $("mode").value = m;
+  const item = chosen.item;
+  for (const b of $("modes").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.mode === m));
+  $("modeNote").hidden = m !== "purchase";
+  $("modeNote").textContent = item?.purchases
+    ? `Adds a line item under ${item.item}.`
+    : `Bought in pieces, or from more than one vendor? Line items go under ${item?.item}. Its price becomes the budget, and what's already booked or paid becomes the first line item.`;
   $("itemLabel").hidden = m === "update";
-  $("itemLabel").firstElementChild.textContent = m === "purchase" ? "What did you buy?" : "What is it?";
-  form.item.placeholder = m === "purchase" ? "e.g. 40 dinner plates" : "e.g. Florist deposit";
+  $("itemLabel").firstElementChild.textContent = m === "purchase" ? "What did you buy?" : "Name";
   form.item.required = m !== "update";
-  $("unitsLabel").hidden = $("gratLabel").hidden = $("taxLabel").hidden = m !== "new";
-  const summary = $("summary");
-  summary.hidden = !item;
-  if (item) {
-    const label = options.statuses.find((s) => s.value === item.status)?.label || item.status;
-    summary.textContent = item.purchases
-      ? `${item.purchases} purchase${item.purchases === 1 ? "" : "s"} so far · paid ${money(item.paid)} · budget ${money(item.total)}`
-      : `${label} · total ${money(item.total)} · paid ${money(item.paid)} · owed ${money(item.owed)}`;
-  }
+  form.item.placeholder = m === "purchase" ? "e.g. 40 dinner plates" : "";
+  form.item.value = m === "new" ? chosen.name : "";
+  $("catLabel").hidden = m !== "new";
+  $("catSearch").value = "";
+  $("mathFields").hidden = m === "update";
   if (m === "update") {
-    $("priceLabel").firstElementChild.textContent = item.pricing === "variable" ? "Price per guest/unit ($)" : "Price per unit ($)";
+    $("priceLabel").firstElementChild.textContent = item.pricing === "variable" ? "Price per guest or unit ($)" : "Price ($)";
     form.price.value = item.unit_cost ?? "";
-    setVendor(item.vendor);
-    $("status").value = item.status;
-    form.payment_amount.placeholder = item.owed ? `Owed: ${item.owed}` : "";
+    $("vendor").value = item.vendor || "";
+    setStage(item.status);
   } else {
     $("priceLabel").firstElementChild.textContent = "Price ($)";
     form.price.value = "";
-    form.item.value = "";
-    setVendor("");
-    // A purchase is usually paid for on the spot.
-    $("status").value = m === "purchase" ? "paid" : "estimate";
-    form.payment_amount.placeholder = "";
+    $("vendor").value = "";
+    // Something just bought for an item is usually paid for on the spot.
+    setStage(m === "purchase" ? "paid" : "estimate");
   }
-  onStatus();
+  form.payment_amount.value = "";
+  form.payment_amount.placeholder = m === "update" && item.owed ? `Owed: ${money(item.owed)}` : "Nothing yet";
 }
 
 // At the Paid stage the price is what's paid: no amount to type, just who/when/how.
-function onStatus() {
-  const paid = $("status").value === "paid";
+function onStage() {
+  const paid = stage() === "paid";
   $("amountLabel").hidden = paid;
-  $("paidNote").hidden = !paid;
-  $("dueRow").hidden = paid;
-  $("paymentTitle").textContent = paid ? "Payment" : "Payment (leave blank if you didn't pay anything)";
+  $("dueLabel").hidden = paid;
   if (paid) form.payment_amount.value = "";
+  $("payNote").textContent = paid ? "Paid in full: the price is recorded as paid." : "Paid anything yet? Leave it blank if not.";
+  onAmount();
+}
+function onAmount() {
+  const show = stage() === "paid" || form.payment_amount.value !== "";
+  for (const el of form.querySelectorAll(".paid-only")) el.hidden = !show;
 }
 
-$("expense").addEventListener("change", onPick);
-for (const r of form.querySelectorAll("input[name=mode]")) r.addEventListener("change", applyMode);
-$("vendorPick").addEventListener("change", onVendor);
-$("status").addEventListener("change", onStatus);
+for (const b of $("modes").querySelectorAll("button")) b.addEventListener("click", () => setMode(b.dataset.mode));
+$("change").addEventListener("click", () => { choose(null); $("itemSearch").focus(); });
+form.payment_amount.addEventListener("input", onAmount);
 $("who").addEventListener("change", () => { $("payer").value = $("who").value; });
 
 form.addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  if ($("vendorPick").value === NEW_VENDOR && !$("vendorNew").value.trim()) {
-    $("msg").textContent = "Type the new vendor's name, or pick one from the list.";
+  if (mode() === "new" && !$("catSearch").value.trim()) {
+    $("msg").textContent = "Pick a category (or type a new one).";
     $("msg").className = "msg err";
     return;
   }
@@ -226,8 +295,18 @@ form.addEventListener("submit", async (ev) => {
   $("msg").className = "msg";
   const data = new FormData(form);
   data.append("key", key);
-  data.set("vendor", $("vendorPick").value === NEW_VENDOR ? $("vendorNew").value.trim() : $("vendorPick").value);
-  if (mode() === "update") data.delete("item");
+  data.set("submitted_by", $("who").value);
+  // Who/when/how only mean something when money changed hands.
+  if (stage() !== "paid" && !data.get("payment_amount")) for (const k of ["paid_on", "payer", "method"]) data.delete(k);
+  if (mode() === "update") {
+    data.delete("item");
+    for (const k of ["units", "gratuity_percent", "taxable"]) data.delete(k);
+  }
+  if (mode() === "new") {
+    const [category, subcategory] = splitCategory($("catSearch").value);
+    data.set("category", category);
+    data.set("subcategory", subcategory);
+  }
   try {
     const r = await fetch("/api/public/expense", { method: "POST", body: data });
     const body = await r.json();
@@ -247,12 +326,12 @@ form.addEventListener("submit", async (ev) => {
 $("another").addEventListener("click", async () => {
   form.reset();
   $("done").hidden = true;
-  $("msg").textContent = "";
   await load();
+  $("paidOn").value = today();
 });
 
 if (!key) $("fatal").textContent = "This link is missing its key. Copy the expense form link from the control panel's Settings page.";
-else load().catch(() => { $("fatal").textContent = "Couldn't load the form. Check your connection and try again."; });
+else load().then(() => { $("paidOn").value = today(); }).catch(() => { $("fatal").textContent = "Couldn't load the form. Check your connection and try again."; });
 </script>
 </body>
 </html>

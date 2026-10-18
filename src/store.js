@@ -191,9 +191,10 @@ export async function createExpense(env, input, ctx, by, source = "control-panel
   const parentId = input.parent_id == null || input.parent_id === "" ? null : Number(input.parent_id);
   if (parentId !== null) {
     const parent = await first(env, "SELECT id, parent_id, category, subcategory FROM expenses WHERE id = ?", parentId);
-    if (!parent) throw new Error("The item this purchase belongs to no longer exists.");
-    if (parent.parent_id) throw new Error("A purchase can't have purchases of its own.");
-    // A purchase files under its item.
+    if (!parent) throw new Error("The item this line item belongs to no longer exists.");
+    if (parent.parent_id) throw new Error("A line item can't have line items of its own.");
+    await splitIntoLineItems(env, parent.id, by);
+    // A line item files under its item.
     patch.parent_id = parent.id;
     patch.category = parent.category;
     patch.subcategory = parent.subcategory;
@@ -212,6 +213,47 @@ export async function createExpense(env, input, ctx, by, source = "control-panel
   await settleIfPaid(env, id, ctx, by, input);
   await markDirty(env);
   return id;
+}
+
+/**
+ * Before an item gets its first line item, move what it already has as a booking --
+ * vendor, stage, due date, payments, receipts -- into a line item of its own (named
+ * after the item), so the item is left as a container whose price is the budget.
+ * An item still at Estimate with no vendor and nothing paid has nothing to move.
+ */
+async function splitIntoLineItems(env, id, by) {
+  const item = await first(env, "SELECT * FROM expenses WHERE id = ?", id);
+  if (await first(env, "SELECT id FROM expenses WHERE parent_id = ? LIMIT 1", id)) return;
+  const paid = await first(env, "SELECT COUNT(*) AS n FROM payments WHERE expense_id = ?", id);
+  const booked = !["estimate", "cancelled"].includes(item.status);
+  if (!booked && !paid.n && !item.vendor && !item.due_date) return;
+  const copy = [
+    "category", "subcategory", "item", "vendor", "status", "pricing", "unit_cost", "units", "quantity_source",
+    "quantity_factor", "round_up", "taxable", "gratuity_rate", "due_date", "due_amount", "payer", "baseline_total",
+  ];
+  const result = await run(
+    env,
+    `INSERT INTO expenses (parent_id, ${copy.join(", ")}, source) SELECT id, ${copy.join(", ")}, 'split' FROM expenses WHERE id = ?`,
+    id
+  );
+  const lineId = result.meta.last_row_id;
+  await run(env, "UPDATE payments SET expense_id = ? WHERE expense_id = ?", lineId, id);
+  await run(env, "UPDATE attachments SET expense_id = ? WHERE expense_id = ?", lineId, id);
+  await run(
+    env,
+    // Stays past Estimate when its estimate was frozen, so the original estimate holds.
+    `UPDATE expenses SET status = CASE WHEN baseline_total IS NULL THEN 'estimate' ELSE 'booked' END, vendor = NULL, due_date = NULL, due_amount = NULL, payer = NULL,
+       updated_at = datetime('now') WHERE id = ?`,
+    id
+  );
+  await run(
+    env,
+    "INSERT INTO expense_history (expense_id, status, total, note, changed_by) VALUES (?, ?, NULL, ?, ?)",
+    lineId,
+    item.status,
+    "Moved here from the item when it was split into line items",
+    by || null
+  );
 }
 
 /**
@@ -253,6 +295,9 @@ export async function updateExpense(env, id, input, ctx, by) {
 export async function addPayment(env, expenseId, input, ctx, by) {
   const expense = await first(env, "SELECT * FROM expenses WHERE id = ?", expenseId);
   if (!expense) throw new Error("That expense no longer exists.");
+  if (await first(env, "SELECT id FROM expenses WHERE parent_id = ? LIMIT 1", expenseId)) {
+    throw new Error("This item is split into line items. Record the payment on the line item it was for.");
+  }
   const amount = toNumberOrNull(input.amount);
   if (amount == null || amount <= 0) throw new Error("Payment amount must be more than zero.");
   const paidOn = toText(input.paid_on) || new Date().toISOString().slice(0, 10);

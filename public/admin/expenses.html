@@ -12,10 +12,13 @@
   .preview b { font-variant-numeric: tabular-nums; }
   td .muted { font-size: 12px; }
   tfoot td { font-weight: 650; background: var(--surface-2); }
-  .pricing { font-size: 12px; color: var(--text-secondary); }
+  td .sub { font-size: 12px; color: var(--text-muted); font-weight: 400; }
+  td .sub.over { color: var(--bad); }
   button.toggle { border: 0; background: none; padding: 0 6px 0 0; color: var(--text-muted); font-size: 11px; }
   tr.child td { background: var(--wash); }
   tr.child td.child-name { padding-left: 34px; }
+  tr.add-line td { background: var(--wash); padding-left: 34px; }
+  .budget-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin: 4px 0 12px; }
 </style>
 </head>
 <body>
@@ -42,7 +45,7 @@
   <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>Item</th><th>Stage</th><th>Pricing</th><th class="num">Estimate</th><th class="num">Projected</th>
+        <th>Item</th><th>Stage</th><th class="num">Estimate</th><th class="num">Projected</th>
         <th class="num">Paid</th><th class="num">Owed</th><th>Due</th>
       </tr></thead>
       <tbody id="rows"></tbody>
@@ -51,12 +54,9 @@
   </div>
 </div>
 
-<datalist id="categories"></datalist>
-<datalist id="subcategories"></datalist>
-<datalist id="vendors"></datalist>
-
 <script type="module">
 import { api, initPage, h, money, fmtDate, today, statusPill, openDialog, field, check, formValues, setMsg } from "/admin/admin.js";
+import { combobox } from "/admin/combobox.js";
 
 await initPage("expenses.html");
 let data;
@@ -65,10 +65,6 @@ const STAGES = ["estimate", "quote", "booked", "partially_paid", "paid"];
 async function load() {
   data = await api("/api/admin/expenses");
   const cats = [...new Set(data.expenses.map((e) => e.category).filter(Boolean))].sort();
-  const subs = [...new Set(data.expenses.map((e) => e.subcategory).filter(Boolean))].sort();
-  document.getElementById("categories").replaceChildren(...cats.map((c) => h("option", { value: c })));
-  document.getElementById("subcategories").replaceChildren(...subs.map((c) => h("option", { value: c })));
-  document.getElementById("vendors").replaceChildren(...data.vendors.map((v) => h("option", { value: v })));
   const catFilter = document.getElementById("catFilter");
   const keep = catFilter.value;
   catFilter.replaceChildren(h("option", { value: "" }, "All categories"), ...cats.map((c) => h("option", { value: c, selected: c === keep }, c)));
@@ -82,14 +78,30 @@ async function load() {
   renderRows();
 }
 
-function quantityLabel(e) {
-  if (e.pricing !== "variable") return `× ${e.units}`;
-  const src = data.quantity_sources[e.quantity_source] || e.quantity_source;
-  const factor = Number(e.quantity_factor) !== 1 ? ` × ${e.quantity_factor}` : "";
-  return `× ${e.quantity} (${src.replace(/^Drinks: /, "")}${factor})`;
+const SHORT_SOURCES = { guests: "guests", invited: "invited", households: "households" };
+
+/** How a price is made up ("$85 × 124 guests + tax"), or null when it's just the price. */
+function pricingLine(e) {
+  if (!e.priced) return null;
+  let qty = "";
+  if (e.pricing === "variable") {
+    const src = SHORT_SOURCES[e.quantity_source] || (data.quantity_sources[e.quantity_source] || e.quantity_source).replace(/^Drinks: /, "");
+    qty = ` × ${e.quantity} ${src}`;
+  } else if (Number(e.units) !== 1) qty = ` × ${e.units}`;
+  const extras = [e.taxable ? "tax" : "", e.gratuity_rate ? `${Math.round(e.gratuity_rate * 100)}% gratuity` : ""].filter(Boolean);
+  if (!qty && !extras.length) return null;
+  return `${money(e.unit_cost)}${qty}${extras.map((x) => ` + ${x}`).join("")}`;
 }
 
-// Items whose purchases are showing. Filtering opens any item with a matching purchase.
+/** The line under an item's projected cost: its budget against what's been spent. */
+function budgetLine(e) {
+  if (e.done) return h("div", { class: "sub" }, `Done buying · budget ${money(e.budget)}`);
+  if (!e.budget) return h("div", { class: "sub" }, `${money(e.spent)} spent · no budget set`);
+  const over = e.spent > e.budget + 0.004;
+  return h("div", { class: over ? "sub over" : "sub" }, over ? `${money(e.spent - e.budget)} over the ${money(e.budget)} budget` : `${money(e.spent)} of ${money(e.budget)} budget`);
+}
+
+// Items whose line items are showing. Filtering opens any item with a matching line item.
 const expanded = new Set();
 
 function renderRows() {
@@ -105,53 +117,53 @@ function renderRows() {
   for (const e of data.expenses) if (e.parent_id) (kidsOf.get(e.parent_id) || kidsOf.set(e.parent_id, []).get(e.parent_id)).push(e);
   const shown = data.expenses.filter((e) => !e.parent_id && (matches(e) || (kidsOf.get(e.id) || []).some(matches)));
   const dueCell = (e) => h("td", {}, e.due_date ? (e.due_date < today() && e.owed > 0 ? h("span", { class: "pill overdue" }, fmtDate(e.due_date)) : fmtDate(e.due_date)) : "");
+  const moneyCells = (e, sub) => [
+    h("td", { class: "num" }, e.priced || e.paid ? [money(e.projected), sub] : h("span", { class: "sub" }, "No price yet")),
+    h("td", { class: "num" }, e.paid ? money(e.paid) : "—"),
+    h("td", { class: "num" }, e.owed ? money(e.owed) : "—"),
+  ];
+  const priceSub = (e) => (pricingLine(e) ? h("div", { class: "sub" }, pricingLine(e)) : null);
   const rows = [];
   let group = null;
   for (const e of shown) {
     const key = `${e.category} · ${e.subcategory}`;
     if (key !== group) {
       group = key;
-      rows.push(h("tr", { class: "group" }, h("td", { colspan: 8 }, e.subcategory ? `${e.category} — ${e.subcategory}` : e.category || "Uncategorized")));
+      rows.push(h("tr", { class: "group" }, h("td", { colspan: 7 }, e.subcategory ? `${e.category} — ${e.subcategory}` : e.category || "Uncategorized")));
     }
     const kids = kidsOf.get(e.id) || [];
     const open = kids.length && (expanded.has(e.id) || (filtering && kids.some(matches)));
-    rows.push(h("tr", { class: "clickable", onclick: () => openEditor(e.id) },
+    const toggle = () => { expanded.has(e.id) ? expanded.delete(e.id) : expanded.add(e.id); renderRows(); };
+    rows.push(h("tr", { class: "clickable", onclick: () => (kids.length ? toggle() : openEditor(e.id)) },
       h("td", {},
-        kids.length ? h("button", { class: "toggle", "aria-label": open ? "Hide purchases" : "Show purchases",
-          onclick: (ev) => { ev.stopPropagation(); expanded.has(e.id) ? expanded.delete(e.id) : expanded.add(e.id); renderRows(); } }, open ? "▼" : "▶") : null,
-        e.item,
-        kids.length ? h("div", { class: "muted" }, `${kids.length} purchase${kids.length === 1 ? "" : "s"} · ${money(e.spent)} so far`)
-          : e.vendor ? h("div", { class: "muted" }, e.vendor) : null),
+        kids.length ? h("button", { class: "toggle", "aria-label": open ? "Hide line items" : "Show line items",
+          onclick: (ev) => { ev.stopPropagation(); toggle(); } }, open ? "▼" : "▶") : null,
+        kids.length ? h("a", { href: `#${e.id}`, onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); openEditor(e.id); } }, e.item) : e.item,
+        kids.length || e.vendor ? h("div", { class: "sub" }, kids.length ? `${kids.length} line item${kids.length === 1 ? "" : "s"}` : e.vendor) : null),
       h("td", {}, statusPill(e.status, data.status_labels)),
-      h("td", { class: "pricing" }, kids.length ? `Budget ${e.priced && e.current ? money(e.current) : "not set"}`
-        : e.priced ? `${money(e.unit_cost)} ${quantityLabel(e)}` : h("span", { class: "muted" }, "No price yet"),
-        !kids.length && (e.taxable || e.gratuity_rate) ? h("div", {}, [e.taxable ? "+ tax" : "", e.gratuity_rate ? `+ ${Math.round(e.gratuity_rate * 100)}% gratuity` : ""].filter(Boolean).join(" ")) : null),
       h("td", { class: "num" }, money(e.estimate)),
-      h("td", { class: "num" }, money(e.projected)),
-      h("td", { class: "num" }, e.paid ? money(e.paid) : "—"),
-      h("td", { class: "num" }, e.owed ? money(e.owed) : "—"),
+      ...moneyCells(e, kids.length ? budgetLine(e) : priceSub(e)),
       dueCell(e),
     ));
     if (!open) continue;
     for (const k of kids) {
       rows.push(h("tr", { class: "clickable child", onclick: () => openEditor(k.id) },
-        h("td", { class: "child-name" }, k.item, k.vendor ? h("div", { class: "muted" }, k.vendor) : null),
+        h("td", { class: "child-name" }, k.item, k.vendor ? h("div", { class: "sub" }, k.vendor) : null),
         h("td", {}, statusPill(k.status, data.status_labels)),
-        h("td", { class: "pricing" }, k.priced ? `${money(k.unit_cost)} ${quantityLabel(k)}` : h("span", { class: "muted" }, "No price yet")),
-        h("td", { class: "num muted" }, "—"),
-        h("td", { class: "num" }, money(k.projected)),
-        h("td", { class: "num" }, k.paid ? money(k.paid) : "—"),
-        h("td", { class: "num" }, k.owed ? money(k.owed) : "—"),
+        h("td", {}),
+        ...moneyCells(k, priceSub(k)),
         dueCell(k),
       ));
     }
+    rows.push(h("tr", { class: "add-line" }, h("td", { colspan: 7 },
+      h("button", { class: "small", onclick: () => openEditor(null, { parentId: e.id }) }, `+ Add a line item to ${e.item}`))));
   }
-  if (!shown.length) rows.push(h("tr", {}, h("td", { colspan: 8, class: "muted" }, data.expenses.length ? "Nothing matches those filters." : "No expenses yet. Add one, or import the spreadsheet in Settings.")));
+  if (!shown.length) rows.push(h("tr", {}, h("td", { colspan: 7, class: "muted" }, data.expenses.length ? "Nothing matches those filters." : "No expenses yet. Add one, or import the spreadsheet in Settings.")));
   document.getElementById("rows").replaceChildren(...rows);
-  // Totals over items only: an item already includes its purchases.
+  // Totals over items only: an item already includes its line items.
   const sum = (k) => shown.reduce((s, e) => s + (e[k] || 0), 0);
   document.getElementById("foot").replaceChildren(h("tr", {},
-    h("td", { colspan: 3 }, `${shown.length} items`),
+    h("td", { colspan: 2 }, `${shown.length} items`),
     h("td", { class: "num" }, money(sum("estimate"))), h("td", { class: "num" }, money(sum("projected"))),
     h("td", { class: "num" }, money(sum("paid"))), h("td", { class: "num" }, money(sum("owed"))), h("td", {})));
 }
@@ -195,9 +207,50 @@ function previewTotals(v) {
 
 /* ----------------------------------------------------------------- editor -- */
 
+/** Category and subcategory inputs that suggest as you type; picking a pair fills both. */
+function categoryFields(e) {
+  const cat = h("input", { name: "category", value: e.category || "", placeholder: "Type to find one, or a new one" });
+  const sub = h("input", { name: "subcategory", value: e.subcategory || "" });
+  cat.value = e.category || "";
+  sub.value = e.subcategory || "";
+  const pairs = () => {
+    const seen = new Map();
+    for (const x of data.expenses) {
+      if (x.parent_id || !x.category) continue;
+      seen.set(`${x.category}\u0000`, [x.category, ""]);
+      if (x.subcategory) seen.set(`${x.category}\u0000${x.subcategory}`, [x.category, x.subcategory]);
+    }
+    return [...seen.values()].sort((a, b) => `${a[0]} ${a[1]}`.localeCompare(`${b[0]} ${b[1]}`))
+      .map(([c, sc]) => ({ label: sc ? `${c} › ${sc}` : c, search: `${c} ${sc}`, c, sc }));
+  };
+  const catBox = combobox(cat, { options: pairs, showAll: true, onPick: (o) => { cat.value = o.c; sub.value = o.sc; } });
+  const subBox = combobox(sub, {
+    showAll: true,
+    options: () => [...new Set(data.expenses.filter((x) => x.category === cat.value && x.subcategory).map((x) => x.subcategory))].sort().map((x) => ({ label: x })),
+    onPick: (o) => { sub.value = o.label; },
+  });
+  return [h("label", { class: "field" }, "Category", catBox), h("label", { class: "field" }, "Subcategory", subBox)];
+}
+
+function vendorField(value) {
+  const input = h("input", { name: "vendor", placeholder: "Type to find one, or a new one" });
+  input.value = value || "";
+  const box = combobox(input, {
+    showAll: true,
+    options: () => data.vendors.map((v) => ({ label: v })),
+    create: (typed) => (data.vendors.some((v) => v.toLowerCase() === typed.toLowerCase()) ? null : { label: `＋ New vendor “${typed}”`, text: typed }),
+    onPick: (o) => { input.value = o.text ?? o.label; },
+  });
+  return h("label", { class: "field" }, "Vendor", box);
+}
+
 /**
- * Edit an expense, or make a new one. `parentId` makes the new one a purchase under
- * that item; `returnTo` reopens that item's editor afterwards.
+ * Edit an expense, or make a new one. There are three kinds:
+ *   an item on its own        vendor, stage, price and payments, like one booking
+ *   an item with line items   a container: name, category and a budget; the line items
+ *                             under it have the vendors, stages and payments
+ *   a line item               a booking under an item (`parentId` for a new one)
+ * `returnTo` reopens that item's editor afterwards.
  */
 async function openEditor(id, { parentId = null, returnTo = null } = {}) {
   let detail = null;
@@ -207,13 +260,14 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
     quantity_source: "guests", quantity_factor: 1, round_up: 0, taxable: 0, gratuity_rate: 0, due_date: "", due_amount: null, payer: "", notes: "",
   };
   const parent = data.expenses.find((x) => x.id === (e.parent_id || parentId)) || null;
-  const isPurchase = Boolean(parent);
-  const hasPurchases = Boolean(e.purchases);
+  const isLine = Boolean(parent);
+  const isContainer = Boolean(e.purchases);
   history.replaceState(null, "", id ? `#${id}` : location.pathname);
 
-  const title = id ? (isPurchase ? `${parent.item} › ${e.item}` : e.item) : isPurchase ? `New purchase for ${parent.item}` : "New expense";
+  const title = id ? (isLine ? `${parent.item} › ${e.item}` : e.item) : isLine ? `New line item for ${parent.item}` : "New expense";
   await openDialog(title, (close) => {
-    let status = e.status;
+    // A container's stage comes from its line items; it's only open, done buying, or cancelled.
+    let status = isContainer ? (e.own_status === "cancelled" ? "cancelled" : e.done ? "paid" : "open") : e.status;
     const paidNote = h("p", { class: "desc", style: "margin:6px 0 0" });
     const form = h("form", { onsubmit: (ev) => ev.preventDefault() });
     const msg = h("p", { class: "msg" });
@@ -229,10 +283,26 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
       h("button", { type: "button", class: status === "cancelled" ? "current" : "danger", onclick: () => { status = status === "cancelled" ? "estimate" : "cancelled"; drawStepper(); } },
         status === "cancelled" ? "Cancelled" : "Cancel item"));
       paidNote.textContent = status !== "paid" ? ""
-        : hasPurchases ? "Paid here means you're done buying: the projected cost becomes what the purchases add up to."
         : "Saving as Paid records a payment for whatever is still owed (dated today, paid by whoever is under Who's paying).";
     };
-    drawStepper();
+
+    const doneBox = h("input", { type: "checkbox", checked: status === "paid", onchange: () => { status = doneBox.checked ? "paid" : "open"; drawDone(); } });
+    const cancelBtn = h("button", { type: "button", onclick: () => { status = status === "cancelled" ? "open" : "cancelled"; doneBox.checked = false; drawDone(); } });
+    const drawDone = () => {
+      cancelBtn.className = status === "cancelled" ? "small current" : "small danger";
+      cancelBtn.textContent = status === "cancelled" ? "Cancelled (undo)" : "Cancel item";
+      doneBox.disabled = status === "cancelled";
+    };
+
+    const stageBlock = isContainer
+      ? h("div", { class: "field", style: "margin-bottom:12px; font-size:12.5px; color:var(--text-secondary)" },
+          h("div", {}, "Stage: ", statusPill(e.status, data.status_labels), " — set by its line items"),
+          h("div", { class: "budget-row" },
+            h("label", { class: "check" }, doneBox, "Done buying (the cost becomes what the line items add up to)"),
+            cancelBtn))
+      // A div, not a label: a label forwards every click inside it to its first button.
+      : h("div", { class: "field", style: "margin-bottom:12px; font-size:12.5px; color:var(--text-secondary)" }, "Stage — click to move it along; skipping stages is fine", stepper, paidNote);
+    if (isContainer) drawDone(); else drawStepper();
 
     const payerOptions = [["", "—"], ...data.settings.payers.map((p) => [p, p])];
     const sourceOptions = Object.entries(data.quantity_sources);
@@ -243,17 +313,16 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
     );
     const fixedFields = h("div", { class: "fields" }, field("Units", "units", { type: "number", step: "any", value: e.units, oninput: update }));
 
-    form.append(
-      // A div, not a label: a label forwards every click inside it to its first button.
-      h("div", { class: "field", style: "margin-bottom:12px; font-size:12.5px; color:var(--text-secondary)" }, "Stage — click to move it along; skipping stages is fine", stepper, paidNote),
+    // Filtered: append() turns a null into the text "null".
+    form.append(...[
+      stageBlock,
       h("div", { class: "fields" },
-        field(isPurchase ? "What was bought" : "Item", "item", { value: e.item, required: true, placeholder: isPurchase ? "e.g. 40 dinner plates" : "" }),
-        field("Vendor (pick or type a new one)", "vendor", { value: e.vendor || "", list: "vendors" }),
-        // A purchase files under its item's category.
-        isPurchase ? null : field("Category", "category", { value: e.category, list: "categories" }),
-        isPurchase ? null : field("Subcategory", "subcategory", { value: e.subcategory, list: "subcategories" }),
+        field(isLine ? "What was bought" : "Item", "item", { value: e.item, required: true, placeholder: isLine ? "e.g. 40 dinner plates" : "" }),
+        isContainer ? null : vendorField(e.vendor),
+        // A line item files under its item's category.
+        ...(isLine ? [] : categoryFields(e)),
       ),
-      hasPurchases ? h("p", { class: "desc" }, `This item's price is your budget for it. ${e.purchases} purchase${e.purchases === 1 ? "" : "s"} so far add up to ${money(e.spent)}.`) : null,
+      isContainer ? h("h3", { style: "margin:4px 0 6px; font-size:13.5px" }, "Budget for the whole item") : null,
       h("div", { class: "row", style: "margin-bottom:10px" },
         h("label", { class: "check" }, h("input", { type: "radio", name: "pricing", value: "fixed", checked: e.pricing !== "variable", onchange: update }), "Fixed price"),
         h("label", { class: "check" }, h("input", { type: "radio", name: "pricing", value: "variable", checked: e.pricing === "variable", onchange: update }), "Variable (scales with guests or drinks)"),
@@ -266,7 +335,7 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
       fixedFields,
       variableFields,
       preview,
-      h("div", { class: "fields" },
+      isContainer ? null : h("div", { class: "fields" },
         field("Next payment due", "due_date", { type: "date", value: e.due_date || "" }),
         field("Amount due ($)", "due_amount", { type: "number", step: "0.01", value: e.due_amount ?? "", placeholder: "Defaults to what's owed" }),
         field("Who's paying", "payer", { options: payerOptions, value: e.payer || "" }),
@@ -276,11 +345,11 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
         id ? field("What changed? (saved to the price history)", "history_note", { placeholder: "e.g. Got the final quote from the venue", wide: true }) : null,
       ),
       h("div", { class: "row" },
-        h("button", { type: "button", class: "primary", onclick: save }, id ? "Save changes" : "Add expense"),
+        h("button", { type: "button", class: "primary", onclick: save }, id ? "Save changes" : isLine ? "Add line item" : "Add expense"),
         id ? h("button", { type: "button", class: "danger", onclick: remove }, "Delete") : null,
       ),
       msg,
-    );
+    ].filter(Boolean));
 
     function update() {
       const v = formValues(form);
@@ -289,8 +358,9 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
       fixedFields.hidden = variable;
       const t = previewTotals(v);
       preview.replaceChildren(
-        h("div", {}, `${money(Number(v.unit_cost) || 0)} × ${t.qty} = `, h("b", {}, money(t.subtotal)),
+        h("div", {}, isContainer ? "Budget: " : "", `${money(Number(v.unit_cost) || 0)} × ${t.qty} = `, h("b", {}, money(t.subtotal)),
           t.tax ? ` + tax ${money(t.tax)}` : "", t.grat ? ` + gratuity ${money(t.grat)}` : "", " = ", h("b", {}, money(t.total))),
+        isContainer ? h("div", { class: "muted" }, `The line items add up to ${money(e.spent)}. Until it's done buying, the projected cost is whichever is larger.`) : "",
         variable && v.quantity_source === "guests"
           ? h("div", { class: "muted" }, `Guest count is ${data.basis_count} (${data.basis}). It updates on its own as the guest list and RSVPs change.`) : "",
       );
@@ -299,15 +369,18 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
 
     async function save() {
       const v = formValues(form);
+      let saveStatus = status;
+      // Re-opening a done item keeps its frozen estimate (Estimate would re-open that too).
+      if (isContainer && status === "open") saveStatus = ["paid", "cancelled"].includes(e.own_status) ? (e.baseline_total == null ? "estimate" : "booked") : e.own_status;
       const payload = {
         ...v,
-        status,
+        status: saveStatus,
         gratuity_rate: (Number(v.gratuity_percent) || 0) / 100,
         unit_cost: v.unit_cost === "" ? null : v.unit_cost,
-        due_amount: v.due_amount === "" ? null : v.due_amount,
       };
+      if ("due_amount" in v) payload.due_amount = v.due_amount === "" ? null : v.due_amount;
       delete payload.gratuity_percent;
-      if (!id && isPurchase) payload.parent_id = parent.id;
+      if (!id && isLine) payload.parent_id = parent.id;
       try {
         if (id) await api(`/api/admin/expenses/${id}`, { method: "PUT", body: payload });
         else await api("/api/admin/expenses", { method: "POST", body: payload });
@@ -317,15 +390,18 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
       }
     }
     async function remove() {
-      const extra = hasPurchases ? `, its ${e.purchases} purchase${e.purchases === 1 ? "" : "s"},` : "";
+      const extra = isContainer ? `, its ${e.purchases} line item${e.purchases === 1 ? "" : "s"},` : "";
       if (!confirm(`Delete "${e.item}"${extra} and its payments and history?`)) return;
       await api(`/api/admin/expenses/${id}`, { method: "DELETE" });
       close(true);
     }
 
-    const sections = [form];
-    if (id && !isPurchase) sections.push(purchasesSection(id, detail, close));
-    if (id) sections.push(paymentsSection(id, detail, close), attachmentsSection(id, detail), historySection(detail));
+    // Line items lead for a container; for an item on its own they're an offer, after the form.
+    const lines = id && !isLine ? lineItemsSection(id, detail, close) : null;
+    const sections = isContainer ? [lines, form] : [form, lines];
+    // An item that got line items before they took over its payments may still have some.
+    if (id && (!isContainer || detail.payments.length)) sections.push(paymentsSection(id, detail, close));
+    if (id) sections.push(attachmentsSection(id, detail), historySection(detail));
     return h("div", {}, ...sections);
   });
   history.replaceState(null, "", location.pathname);
@@ -333,21 +409,26 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
   if (returnTo) await openEditor(returnTo);
 }
 
-function purchasesSection(id, detail, closeDialog) {
-  const list = detail.expense.purchase_list || [];
+function lineItemsSection(id, detail, closeDialog) {
+  const e = detail.expense;
+  const list = e.purchase_list || [];
   const open = (kidId, opts = {}) => {
     closeDialog(true);
     openEditor(kidId, { ...opts, returnTo: id });
   };
-  return h("section", {},
-    h("h3", {}, list.length ? `Purchases · ${money(detail.expense.spent)} spent, ${money(detail.expense.paid)} paid` : "Purchases"),
-    list.length
-      ? h("div", { class: "list" }, list.map((k) => h("div", { class: "item", style: "cursor:pointer", onclick: () => open(k.id) },
-          h("b", {}, k.item), k.vendor ? h("span", { class: "muted" }, k.vendor) : null, statusPill(k.status, data.status_labels),
-          h("span", { class: "spacer" }), h("span", {}, money(k.projected)), k.owed ? h("span", { class: "muted" }, `${money(k.owed)} owed`) : null)))
-      : h("p", { class: "desc", style: "margin:0 0 8px" }, "Buying this a bit at a time, maybe from several vendors? Add each purchase here. "
-          + "The item's price stays your budget for it; mark the item Paid when you're done buying."),
-    h("button", { type: "button", class: "small", style: "margin-top:10px", onclick: () => open(null, { parentId: id }) }, "+ Add a purchase"));
+  const add = h("button", { type: "button", class: list.length ? "small primary" : "small", style: "margin-top:10px", onclick: () => open(null, { parentId: id }) }, "+ Add a line item");
+  if (!list.length) {
+    return h("section", {}, h("h3", {}, "Line items"),
+      h("p", { class: "desc", style: "margin:0" }, "Buying this in pieces, or from more than one vendor? Add line items. "
+        + "This item's price becomes the budget for them, and what's already booked or paid here (vendor, stage, payments) moves into the first line item."),
+      add);
+  }
+  return h("section", { style: "margin-bottom:16px" },
+    h("h3", {}, `Line items · ${money(e.spent)} spent${e.budget ? ` of a ${money(e.budget)} budget` : ", no budget set"} · ${money(e.paid)} paid`),
+    h("div", { class: "list" }, list.map((k) => h("div", { class: "item", style: "cursor:pointer", onclick: () => open(k.id) },
+      h("b", {}, k.item), k.vendor ? h("span", { class: "muted" }, k.vendor) : null, statusPill(k.status, data.status_labels),
+      h("span", { class: "spacer" }), h("span", {}, money(k.projected)), k.owed ? h("span", { class: "muted" }, `${money(k.owed)} owed`) : null))),
+    add);
 }
 
 function paymentsSection(id, detail, closeDialog) {

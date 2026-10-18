@@ -614,8 +614,65 @@ test("the expense form adds a purchase under an existing item, and lists items w
     "at the Paid stage the price is what's paid; a typed-in amount is ignored");
   const options = (await call(env, `/api/public/expense/options?k=${key}`)).data;
   assert.deepEqual(options.items.map((i) => i.item), ["Place Settings"], "purchases aren't offered as items");
-  assert.equal(options.items[0].purchases, 1);
+  assert.equal(options.items[0].purchases, 2, "the item's own Goodwill booking became its first line item");
   assert.deepEqual(options.vendors, ["Goodwill", "Target"]);
+});
+
+// Bug: an item with purchases kept its own vendor, stage and payments next to theirs, so
+// its Pricing column and stage said one thing and its purchases another.
+test("the first line item moves the item's own booking into a line item, leaving the price as the budget", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const id = (await api("/api/admin/expenses", { method: "POST", body: {
+    category: "Ceremony & Reception", item: "Florals", vendor: "Petal Co", unit_cost: 2000, status: "booked", due_date: "2027-01-05", payer: "Patrick" } })).data.expense.id;
+  await api(`/api/admin/expenses/${id}/payments`, { method: "POST", body: { amount: 500, paid_on: "2026-05-01" } });
+  await api("/api/admin/expenses", { method: "POST", body: { parent_id: id, item: "Bud vases", vendor: "Etsy", unit_cost: 90, status: "paid" } });
+
+  const d = (await api(`/api/admin/expenses/${id}`)).data;
+  assert.equal(d.payments.length, 0, "the deposit moved off the item");
+  assert.equal(d.expense.vendor, null);
+  assert.equal(d.expense.due_date, null);
+  assert.equal(d.expense.budget, 2000);
+  assert.equal(d.expense.estimate, 2000, "the frozen estimate holds");
+  assert.equal(d.expense.spent, 2090);
+  assert.equal(d.expense.paid, 590);
+  assert.equal(d.expense.status, "partially_paid", "the item's stage comes from its line items");
+  const first = d.expense.purchase_list.find((k) => k.vendor === "Petal Co");
+  assert.equal(first.item, "Florals");
+  assert.equal(first.status, "partially_paid");
+  assert.equal(first.due_date, "2027-01-05");
+  assert.equal(first.paid, 500);
+  assert.equal(first.estimate, 2000);
+
+  const pay = await api(`/api/admin/expenses/${id}/payments`, { method: "POST", body: { amount: 10 } });
+  assert.equal(pay.status, 400, "payments go on a line item, not the item");
+  const key = await formKeyFor(api);
+  const r = await call(env, "/api/public/expense", { method: "POST", form: formOf({ key, expense_id: String(id), mode: "update", price: "1", status: "quote" }) });
+  assert.equal(r.status, 400, "the form can't update a split item's price as if it were one booking");
+});
+
+test("an item with line items is Booked, Partially paid or Paid by what its line items are", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const id = (await api("/api/admin/expenses", { method: "POST", body: { item: "Favors", unit_cost: 100 } })).data.expense.id;
+  const a = (await api("/api/admin/expenses", { method: "POST", body: { parent_id: id, item: "Bags", unit_cost: 40, status: "quote" } })).data.expense.id;
+  assert.equal((await api("/api/admin/expenses", { method: "POST", body: { parent_id: id, item: "Tags", unit_cost: 20 } })).status, 201);
+  const stage = async () => (await api(`/api/admin/expenses/${id}`)).data.expense;
+  assert.equal((await stage()).status, "quote", "nothing moves when an estimate-stage item gets a line item");
+  await api(`/api/admin/expenses/${a}`, { method: "PUT", body: { status: "booked" } });
+  assert.equal((await stage()).status, "booked");
+  await api(`/api/admin/expenses/${a}`, { method: "PUT", body: { status: "paid" } });
+  assert.equal((await stage()).status, "partially_paid", "more may be bought until it's marked done");
+  await api(`/api/admin/expenses/${id}`, { method: "PUT", body: { status: "paid" } });
+  let e = await stage();
+  assert.equal(e.done, true);
+  assert.equal(e.status, "partially_paid", "done, but Tags is still owed");
+  assert.equal(e.projected, 60);
+  const tags = e.purchase_list.find((k) => k.item === "Tags").id;
+  await api(`/api/admin/expenses/${tags}`, { method: "PUT", body: { status: "paid" } });
+  e = await stage();
+  assert.equal(e.status, "paid");
+  assert.equal(e.owed, 0);
 });
 
 test("the expense form still updates an item itself in update mode", async () => {
