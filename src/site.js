@@ -227,7 +227,16 @@ units.slice(0,4).forEach(function(u,i){u.children[0].textContent=v[i]+" "+L[i][0
 if(document.querySelector("[data-wm-target]")){tick();setInterval(tick,1000)}
 var bar=document.querySelector(".wm-rsvp-bar"),btn=document.querySelector(".wm-menu-btn"),menu=document.getElementById("wm-menu");
 function navShown(){return [].some.call(document.querySelectorAll("a[data-wm-nav]"),function(a){var r=a.getBoundingClientRect();return r.width>0&&r.height>0})}
-function layout(){var phone=!navShown();bar.classList.toggle("wm-phone",phone);if(!phone)close()}
+var pill=document.querySelector(".wm-rsvp");
+function menuRow(){var links=[].filter.call(document.querySelectorAll('a[data-wm-nav="menu"]'),function(a){var r=a.getBoundingClientRect();return r.width>0&&r.height>0});if(!links.length)return null;
+var box=links[0].parentElement;while(box&&!links.every(function(a){return box.contains(a)}))box=box.parentElement;
+while(box&&box.parentElement&&box.parentElement!==document.body&&box.getBoundingClientRect().width<document.documentElement.clientWidth*0.8)box=box.parentElement;
+return box?{box:box,link:links[0]}:null}
+function layout(){var phone=!navShown();bar.classList.toggle("wm-phone",phone);if(!phone)close();
+var row=phone?null:menuRow();
+if(row){if(getComputedStyle(row.box).position==="static")row.box.style.position="relative";
+var lr=row.link.getBoundingClientRect(),br=row.box.getBoundingClientRect();pill.classList.add("wm-in-nav");pill.style.top=(lr.top+lr.height/2-br.top)+"px";row.box.appendChild(pill);bar.style.display="none"}
+else{pill.classList.remove("wm-in-nav");pill.style.top="";bar.insertBefore(pill,menu);bar.style.display=""}}
 function close(){menu.hidden=true;btn.setAttribute("aria-expanded","false")}
 btn.addEventListener("click",function(){var open=menu.hidden;menu.hidden=!open;btn.setAttribute("aria-expanded",String(open))});
 document.addEventListener("keydown",function(e){if(e.key==="Escape")close()});
@@ -296,8 +305,9 @@ export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpCol
     const href = attr(n, "href") || "";
     const label = decode(textOf(n)).replace(/\s+/g, " ").trim();
     if (!label || !(href === "/" || /^\/[a-z0-9-]+$/.test(href))) continue;
-    setAttr(n, "data-wm-nav", "");
     const listed = inList(n);
+    // "menu" marks the links in the site's menu row, where the RSVP pill goes.
+    setAttr(n, "data-wm-nav", listed ? "menu" : "");
     const seen = nav.find((x) => x.href === href);
     if (!seen) nav.push({ href, label, listed });
     else if (listed && !seen.listed) Object.assign(seen, { label, listed });
@@ -351,7 +361,10 @@ export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpCol
     + `font:600 15px/1 system-ui,-apple-system,"Segoe UI",sans-serif;letter-spacing:.12em;text-transform:uppercase;text-decoration:none;`
     + `box-shadow:0 2px 10px rgba(0,0,0,.15);transition:transform .15s ease,box-shadow .15s ease}`
     + `.wm-rsvp:hover,.wm-rsvp:focus-visible{transform:translateY(-1px);box-shadow:0 4px 16px rgba(0,0,0,.2);color:#fff}`
-    + `.wm-rsvp:focus-visible{outline:3px solid ${pill};outline-offset:3px}`,
+    + `.wm-rsvp:focus-visible{outline:3px solid ${pill};outline-offset:3px}`
+    // On a wide screen the pill sits at the right end of the site's menu row.
+    + `.wm-rsvp.wm-in-nav{position:absolute;right:24px;transform:translateY(-50%);z-index:5}`
+    + `.wm-rsvp.wm-in-nav:hover,.wm-rsvp.wm-in-nav:focus-visible{transform:translateY(calc(-50% - 1px))}`,
   ]));
 
   // 7. The top bar, first thing on the page: our phone menu and the RSVP pill.
@@ -655,17 +668,16 @@ const escapeHtml = (text) => String(text).replace(/[&<>"']/g, (c) => `&#${c.char
 
 /**
  * Our footer, in place of Zola's: some room at the bottom of the page, and a Contact
- * us link. Added as the page is served, so a new address in Settings shows at once.
+ * us link, centered. Added as the page is served, so a new address in Settings shows at once.
  */
 export function siteFooter({ coupleNames = "", contactEmail = "" }) {
-  const links = [`<a href="/rsvp/">RSVP</a>`];
-  if (contactEmail) links.push(`<a href="mailto:${escapeHtml(contactEmail)}">Contact us</a>`);
+  const links = contactEmail ? [`<a href="mailto:${escapeHtml(contactEmail)}">Contact us</a>`] : [];
   return `<footer class="wm-footer"><style>`
     + `.wm-footer{margin:56px 0 0;padding:40px 16px 64px;border-top:1px solid rgba(127,127,127,.25);text-align:center;color:var(--wm-text,inherit);font-family:var(--wm-font,inherit)}`
     + `.wm-footer p{margin:0 0 12px;font-size:18px;letter-spacing:.04em}`
     + `.wm-footer nav{display:flex;justify-content:center;gap:28px;flex-wrap:wrap;font-size:15px;letter-spacing:.08em;text-transform:uppercase}`
     + `.wm-footer a{color:inherit;text-decoration:underline;text-underline-offset:4px}`
-    + `</style>${coupleNames ? `<p>${escapeHtml(coupleNames)}</p>` : ""}<nav aria-label="Footer">${links.join("")}</nav></footer>`;
+    + `</style>${coupleNames ? `<p>${escapeHtml(coupleNames)}</p>` : ""}${links.length ? `<nav aria-label="Footer">${links.join("")}</nav>` : ""}</footer>`;
 }
 
 /** The stored copy of a page, or null. Only plain page paths are looked up. */

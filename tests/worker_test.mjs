@@ -1082,8 +1082,8 @@ test("cleaning a Zola page strips Zola's app, branding and footer, and adds the 
 
 test("the copy's links point at its own pages, our RSVP page, and Zola for anything else", () => {
   const html = cleanPage(zolaPage(), { slug: SLUG, pages: new Set(["travel"]), currentPath: "/" }).html;
-  assert.ok(html.includes('<a href="/" data-wm-nav="">Home</a>'));
-  assert.ok(html.includes('<a href="/travel" data-wm-nav="">Travel</a>'));
+  assert.ok(html.includes('<a href="/" data-wm-nav="menu">Home</a>'));
+  assert.ok(html.includes('<a href="/travel" data-wm-nav="menu">Travel</a>'));
   assert.ok(html.includes(`href="https://www.zola.com/wedding/${SLUG}/registry"`), "the registry stays on Zola, where gifts work");
   assert.ok(html.includes('<a href="/rsvp/">RSVP</a>'), "Zola's RSVP page becomes ours");
   assert.ok(html.includes('href="https://www.zola.com/terms"'), "other relative links go to Zola, not to us");
@@ -1247,6 +1247,7 @@ test("copied pages get our footer with a Contact us link from Settings, as they'
   assert.equal((await ingest(env, JSON.parse(JSON.stringify(built)))).status, 200);
   let page = (await call(env, "/")).data;
   assert.match(page, /<footer class="wm-footer">.*href="mailto:patricko\.indy@gmail\.com">Contact us<\/a>.*<\/footer><\/body>/s);
+  assert.ok(!page.slice(page.indexOf("wm-footer")).includes('href="/rsvp/"'), "the footer's only link is Contact us; RSVP lives in the menu row");
   const api = await adminClient(env);
   assert.equal((await api("/api/admin/settings", { method: "PUT", body: { contact_email: "not an email" } })).status, 400);
   await api("/api/admin/settings", { method: "PUT", body: { contact_email: "us@example.com", couple_names: "A & <B>" } });
