@@ -35,6 +35,7 @@ How to work:
 - First work out what the expense is for. Match it to the existing items by meaning, not just by name: glassware, plates, chargers and napkins belong with Place Settings; a bouquet or centerpieces with flowers; a deposit to the band with the band.
 - By default, record an expense as a new line item (mode line_item) under the item it fits, and say which item you put it under so they can ask for a separate item instead. What the item already has becomes its first line item automatically. When no item fits, make a new item (mode new) in the category that fits best, using an existing category whenever one is logical.
 - Only change an existing entry (mode update) when they clearly ask to: "the florist's quote went up to $2,400", "mark the DJ paid". An item that already has line items can't be updated; add a line item to it.
+- A receipt for things that belong under different items: propose one entry at a time, and the next once they've saved it. Things that belong together can be one entry.
 - A receipt: read the vendor, the date, what was bought and the total actually paid. Take a receipt as paid in full unless they say otherwise. The total already includes tax and any tip, so set quantity 1, taxable false and gratuity_percent 0, and put the total in price.
 - Stages: estimate (their own guess), quote (a vendor's price), booked (committed to), paid (paid in full). Partially paid comes on its own when a payment is less than the price, so a deposit on a booking (price is the full amount) is stage booked with payment_amount set. At stage paid, the price is recorded as paid; leave payment_amount null.
 - Ask only for what you can't work out, one or two short questions at a time. The person filling this in is usually who paid. Don't ask about optional details such as due dates or notes unless they come up.
@@ -182,7 +183,30 @@ function cleanMessages(messages) {
     if (typeof m.content !== "string" && !Array.isArray(m.content)) return null;
   }
   if (messages[0].role !== "user" || messages[messages.length - 1].role !== "user") return null;
-  return messages.map((m) => ({ role: m.role, content: m.content }));
+  return answerOpenCalls(messages.map((m) => ({ role: m.role, content: m.content })));
+}
+
+const toolCalls = (m) => (m.role === "assistant" && Array.isArray(m.content) ? m.content.filter((b) => b?.type === "tool_use") : []);
+
+/**
+ * The API needs every tool call answered at the start of the next message. A proposal
+ * that was replied to instead of saved, or a second proposal in the same reply, gets a
+ * "not saved" answer here, so the conversation always goes on.
+ */
+export function answerOpenCalls(messages) {
+  return messages.map((m, i) => {
+    const before = i > 0 ? toolCalls(messages[i - 1]) : [];
+    if (m.role !== "user" || !before.length) return m;
+    const content = typeof m.content === "string" ? [{ type: "text", text: m.content }] : [...m.content];
+    const answered = new Set(content.filter((b) => b?.type === "tool_result").map((b) => b.tool_use_id));
+    const missing = before.filter((c) => !answered.has(c.id))
+      .map((c) => ({ type: "tool_result", tool_use_id: c.id, content: "Not saved. They replied instead." }));
+    if (!missing.length) return m;
+    // Tool results come first in the message.
+    const results = content.filter((b) => b?.type === "tool_result");
+    const rest = content.filter((b) => b?.type !== "tool_result");
+    return { role: "user", content: [...results, ...missing, ...rest] };
+  });
 }
 
 async function askClaude(env, system, messages) {
@@ -203,6 +227,8 @@ async function askClaude(env, system, messages) {
       cache_control: { type: "ephemeral" },
       system,
       tools: [PROPOSE_TOOL],
+      // One proposal per reply: the page shows one entry to save at a time.
+      tool_choice: { type: "auto", disable_parallel_tool_use: true },
       messages,
     }),
   });
@@ -251,6 +277,8 @@ export async function intakeTurn(env, input, ctx) {
     if (attempt >= MAX_RETRIES) {
       return { status: 200, body: { messages: messages.slice(0, -1), reply: "I couldn't put that entry together. Could you say it another way?", proposal: null } };
     }
-    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: call.id, is_error: true, content: checked.error }] });
+    messages.push({ role: "user", content: (reply.content || []).filter((b) => b.type === "tool_use").map((b) => (b.id === call.id
+      ? { type: "tool_result", tool_use_id: b.id, is_error: true, content: checked.error }
+      : { type: "tool_result", tool_use_id: b.id, is_error: true, content: "One entry at a time." })) });
   }
 }

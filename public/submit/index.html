@@ -95,6 +95,7 @@ let messages = [];
 let receipt = null;      // { file, block, preview }
 let pending = null;      // the receipt picked but not sent yet
 let proposal = null;
+let savedCall = null;    // the proposal just saved, answered with the next message
 let busy = false;
 
 function say(role, text, image) {
@@ -106,7 +107,7 @@ function say(role, text, image) {
 
 function start() {
   messages = [];
-  receipt = pending = proposal = null;
+  receipt = pending = proposal = savedCall = null;
   thread.replaceChildren();
   say("them", "What did you spend on? Tell me in a sentence, like “paid the florist a $500 deposit”, or add a photo of the receipt with the camera button.");
   const row = el("div", { class: "msg-row them" }, el("div", { class: "starters" },
@@ -181,6 +182,10 @@ async function send(text) {
   $("send").disabled = true;
   const content = [];
   // A reply to a proposal instead of saving it answers that proposal first.
+  if (savedCall) {
+    content.push({ type: "tool_result", tool_use_id: savedCall, content: "Saved." });
+    savedCall = null;
+  }
   if (proposal) {
     content.push({ type: "tool_result", tool_use_id: proposal.tool_use_id, content: "Not saved. They replied instead:" });
     proposal.card.remove();
@@ -258,13 +263,15 @@ async function saveProposal(p, button, msg) {
     if (!r.ok) throw new Error(body.error || "Couldn't save.");
     remember("expense-form-who", $("who").value);
     proposal = null;
+    savedCall = p.tool_use_id;
     const card = button.closest(".card");
     card.classList.add("saved");
     card.replaceChildren(
       el("h3", {}, "Saved"),
       el("dl", {}, p.summary.flatMap(([label, value]) => [el("dt", {}, label), el("dd", {}, value)])),
       body.receipt_error ? el("p", { class: "msg err" }, body.receipt_error) : body.receipt ? el("p", { class: "desc" }, `Receipt saved to Drive as ${body.receipt}.`) : null,
-      el("div", { class: "row" }, el("button", { type: "button", class: "primary", onclick: start }, "Add another")),
+      el("p", { class: "desc", style: "margin:0 0 10px" }, "More on the same receipt? Just say what's next."),
+      el("div", { class: "row" }, el("button", { type: "button", class: "primary", onclick: start }, "Start a new one")),
     );
   } catch (error) {
     button.disabled = false;

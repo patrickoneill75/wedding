@@ -861,6 +861,35 @@ test("a proposal that doesn't check out goes back to Claude to fix before anyone
   assert.deepEqual([r.data.proposal.form.mode, r.data.proposal.form.payment_amount], ["update", "300"]);
 });
 
+// Bug: "messages.2: tool_use ids were found without tool_result blocks immediately
+// after" -- a reply that held two proposals, or one replied to without the page
+// answering it, broke the next turn.
+test("every proposal in the conversation is answered before it goes back to Claude, and Claude proposes one at a time", async () => {
+  const env = makeEnv({ ANTHROPIC_API_KEY: "sk-test" });
+  const api = await adminClient(env);
+  const key = await formKeyFor(api);
+  const messages = [
+    { role: "user", content: "receipt from target: glasses $45, napkins $20" },
+    { role: "assistant", content: [{ type: "text", text: "Two things:" }, proposeCall({ item: "Glasses", category: "Decor", price: 45 }, "t1"), proposeCall({ item: "Napkins", category: "Decor", price: 20 }, "t2")] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "Not saved. They replied instead:" }, { type: "text", text: "put both under Place Settings" }] },
+  ];
+  let sent;
+  const r = await withFetch(async (url, init) => {
+    sent = JSON.parse(init.body);
+    return claudeReply([{ type: "text", text: "Which first?" }]);
+  }, () => call(env, "/api/public/expense/chat", { method: "POST", body: { key, messages } }));
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.deepEqual(sent.tool_choice, { type: "auto", disable_parallel_tool_use: true });
+  const answer = sent.messages[2].content;
+  assert.deepEqual(answer.map((b) => b.type), ["tool_result", "tool_result", "text"], "results first, then the reply");
+  assert.deepEqual(answer.filter((b) => b.type === "tool_result").map((b) => b.tool_use_id).sort(), ["t1", "t2"]);
+  // A plain-text reply to a proposal gets its answer too.
+  const plain = await withFetch(async (url, init) => { sent = JSON.parse(init.body); return claudeReply([{ type: "text", text: "ok" }]); },
+    () => call(env, "/api/public/expense/chat", { method: "POST", body: { key, messages: [messages[0], messages[1], { role: "user", content: "never mind" }] } }));
+  assert.equal(plain.status, 200);
+  assert.deepEqual(sent.messages[2].content.map((b) => b.type), ["tool_result", "tool_result", "text"]);
+});
+
 test("a proposal is checked: paid in full ignores a payment amount, and payers and items must exist", async () => {
   const { checkProposal } = await import("../src/intake.js");
   const settings = { payers: ["Patrick", "Kaitlyn"], payment_methods: ["Cash"] };
