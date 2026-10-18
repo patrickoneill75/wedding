@@ -183,7 +183,7 @@ async function send(text) {
   const content = [];
   // A reply to a proposal instead of saving it answers that proposal first.
   if (savedCall) {
-    content.push({ type: "tool_result", tool_use_id: savedCall, content: "Saved." });
+    content.push({ type: "tool_result", tool_use_id: savedCall.id, content: `Saved as #${savedCall.expense_id}.` });
     savedCall = null;
   }
   if (proposal) {
@@ -263,14 +263,15 @@ async function saveProposal(p, button, msg) {
     if (!r.ok) throw new Error(body.error || "Couldn't save.");
     remember("expense-form-who", $("who").value);
     proposal = null;
-    savedCall = p.tool_use_id;
+    savedCall = { id: p.tool_use_id, expense_id: body.expense_id };
     const card = button.closest(".card");
     card.classList.add("saved");
     card.replaceChildren(
       el("h3", {}, "Saved"),
       el("dl", {}, p.summary.flatMap(([label, value]) => [el("dt", {}, label), el("dd", {}, value)])),
-      body.receipt_error ? el("p", { class: "msg err" }, body.receipt_error) : body.receipt ? el("p", { class: "desc" }, `Receipt saved to Drive as ${body.receipt}.`) : null,
-      el("p", { class: "desc", style: "margin:0 0 10px" }, "More on the same receipt? Just say what's next."),
+      // Spread and filtered: replaceChildren() prints a null as the text "null".
+      ...[body.receipt_error ? el("p", { class: "msg err" }, body.receipt_error) : body.receipt ? el("p", { class: "desc" }, `Receipt saved to Drive as ${body.receipt}.`) : null].filter(Boolean),
+      el("p", { class: "desc", style: "margin:0 0 10px" }, "Something else, or a change to this one? Just say so."),
       el("div", { class: "row" }, el("button", { type: "button", class: "primary", onclick: start }, "Start a new one")),
     );
   } catch (error) {

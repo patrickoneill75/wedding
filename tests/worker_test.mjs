@@ -890,6 +890,31 @@ test("every proposal in the conversation is answered before it goes back to Clau
   assert.deepEqual(sent.messages[2].content.map((b) => b.type), ["tool_result", "tool_result", "text"]);
 });
 
+// Asked for after saving books as a quote: "update the quote for the book to $25 a piece"
+// -- a line item couldn't be updated, by the form or by Claude.
+test("a line item can be updated through the expense form, and Claude may propose that", async () => {
+  const { checkProposal } = await import("../src/intake.js");
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const key = await formKeyFor(api);
+  const gifts = (await api("/api/admin/expenses", { method: "POST", body: { category: "Wedding Party", item: "Groom Party Gifts" } })).data.expense.id;
+  const books = (await api("/api/admin/expenses", { method: "POST", body: { parent_id: gifts, item: "Books", unit_cost: 22.5, units: 4, status: "quote" } })).data.expense.id;
+  const expenses = (await api("/api/admin/expenses")).data.expenses;
+  const settings = { payers: ["Patrick"], payment_methods: [] };
+  const base = { mode: "update", expense_id: books, item: null, category: null, subcategory: null, vendor: null, stage: "quote", price: 25, quantity: 4,
+    taxable: false, gratuity_percent: 0, due_date: null, payment_amount: null, paid_on: null, payer: null, method: null, notes: null };
+  const checked = checkProposal(base, expenses, settings);
+  assert.equal(checked.error, undefined);
+  assert.deepEqual(checked.summary[0], ["Update", "Books, under Groom Party Gifts"]);
+  assert.match(checkProposal({ ...base, mode: "line_item", item: "Bookmarks" }, expenses, settings).error, /is a line item/);
+  const r = await call(env, "/api/public/expense", { method: "POST", form: formOf({ key, ...Object.fromEntries(Object.entries(checked.form).filter(([, v]) => v !== "")) }) });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const e = (await api(`/api/admin/expenses/${books}`)).data.expense;
+  assert.deepEqual([e.unit_cost, e.units, e.current, e.parent_id], [25, 4, 100, gifts]);
+  const nested = await call(env, "/api/public/expense", { method: "POST", form: formOf({ key, expense_id: String(books), mode: "purchase", item: "Bookmarks", status: "quote" }) });
+  assert.equal(nested.status, 400, "a line item still takes no line items");
+});
+
 test("a proposal is checked: paid in full ignores a payment amount, and payers and items must exist", async () => {
   const { checkProposal } = await import("../src/intake.js");
   const settings = { payers: ["Patrick", "Kaitlyn"], payment_methods: ["Cash"] };
@@ -901,7 +926,7 @@ test("a proposal is checked: paid in full ignores a payment amount, and payers a
   assert.equal(ok.form.due_date, "");
   assert.match(checkProposal({ ...base, payer: "Grandma" }, expenses, settings).error, /Payer must be one of/);
   assert.match(checkProposal({ ...base, mode: "update", expense_id: 1 }, expenses, settings).error, /has line items/);
-  assert.match(checkProposal({ ...base, mode: "line_item", expense_id: 2 }, expenses, settings).error, /not a line item's|isn't an open item/);
+  assert.match(checkProposal({ ...base, mode: "line_item", expense_id: 2 }, expenses, settings).error, /is a line item\. Add the line item under its item, #1/);
   assert.match(checkProposal({ ...base, category: "" }, expenses, settings).error, /needs a category/);
 });
 

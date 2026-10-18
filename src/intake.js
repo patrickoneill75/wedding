@@ -34,7 +34,7 @@ How the expenses are organized: each item (Florist, DJ, Place Settings) sits in 
 How to work:
 - First work out what the expense is for. Match it to the existing items by meaning, not just by name: glassware, plates, chargers and napkins belong with Place Settings; a bouquet or centerpieces with flowers; a deposit to the band with the band.
 - By default, record an expense as a new line item (mode line_item) under the item it fits, and say which item you put it under so they can ask for a separate item instead. What the item already has becomes its first line item automatically. When no item fits, make a new item (mode new) in the category that fits best, using an existing category whenever one is logical.
-- Only change an existing entry (mode update) when they clearly ask to: "the florist's quote went up to $2,400", "mark the DJ paid". An item that already has line items can't be updated; add a line item to it.
+- Only change an existing entry (mode update) when they clearly ask to: "the florist's quote went up to $2,400", "mark the DJ paid", "make the books $25 each". Update an item on its own or a single line item, by its id; an item that has line items can't be updated itself. Fields you leave null keep what's there.
 - A receipt for things that belong under different items: propose one entry at a time, and the next once they've saved it. Things that belong together can be one entry.
 - A receipt: read the vendor, the date, what was bought and the total actually paid. Take a receipt as paid in full unless they say otherwise. The total already includes tax and any tip, so set quantity 1, taxable false and gratuity_percent 0, and put the total in price.
 - Stages: estimate (their own guess), quote (a vendor's price), booked (committed to), paid (paid in full). Partially paid comes on its own when a payment is less than the price, so a deposit on a booking (price is the full amount) is stage booked with payment_amount set. At stage paid, the price is recorded as paid; leave payment_amount null.
@@ -60,9 +60,9 @@ const PROPOSE_TOOL = {
       mode: {
         type: "string",
         enum: ["line_item", "new", "update"],
-        description: "line_item (the default): a new line item under the item expense_id. new: a new item, when no existing item fits. update: change expense_id itself, only when they ask to (and only an item with no line items).",
+        description: "line_item (the default): a new line item under the item expense_id. new: a new item, when no existing item fits. update: change the item or line item expense_id itself, only when they ask to.",
       },
-      expense_id: { type: ["integer", "null"], description: "The existing item's id (the # number in the list) for line_item and update; null for new." },
+      expense_id: { type: ["integer", "null"], description: "The # number from the list: the item to add a line item under (line_item), or the item or line item to change (update); null for new." },
       item: { type: ["string", "null"], description: "Name of the new item or line item. null for update." },
       category: { type: ["string", "null"], description: "For new: an existing category if one fits, else a new one. null otherwise." },
       subcategory: { type: ["string", "null"], description: "For new: the subcategory, or null." },
@@ -125,8 +125,9 @@ export function checkProposal(p, expenses, settings) {
   const target = p.expense_id == null ? null : byId.get(Number(p.expense_id));
   if (!STATUSES.includes(p.stage) || p.stage === "cancelled") return { error: `Unknown stage "${p.stage}".` };
   if (p.mode !== "new") {
-    if (!target || target.parent_id || target.status === "cancelled") return { error: `#${p.expense_id} isn't an open item in the list. Use an item's id, not a line item's.` };
-    if (p.mode === "update" && target.purchases) return { error: `${target.item} has line items, so it can't be updated directly. Use mode line_item.` };
+    if (!target || target.status === "cancelled") return { error: `#${p.expense_id} isn't an open item or line item in the list.` };
+    if (p.mode === "line_item" && target.parent_id) return { error: `#${target.id} is a line item. Add the line item under its item, #${target.parent_id}.` };
+    if (p.mode === "update" && target.purchases) return { error: `${target.item} has line items, so it can't be updated directly. Update one of its line items, or add one.` };
   }
   if (p.mode !== "update" && !text(p.item)) return { error: "Give the item or line item a name." };
   if (p.mode === "new" && !text(p.category)) return { error: "A new item needs a category." };
@@ -159,7 +160,7 @@ export function checkProposal(p, expenses, settings) {
   const summary = [];
   if (p.mode === "new") summary.push(["New item", `${form.item} · ${[form.category, form.subcategory].filter(Boolean).join(" › ")}`]);
   else if (p.mode === "line_item") summary.push(["Line item", `${form.item}, under ${target.item}`]);
-  else summary.push(["Update", target.item]);
+  else summary.push(["Update", target.parent_id && byId.get(target.parent_id) ? `${target.item}, under ${byId.get(target.parent_id).item}` : target.item]);
   if (form.vendor) summary.push(["Vendor", form.vendor]);
   summary.push(["Stage", STATUS_LABELS[p.stage]]);
   if (form.price !== "") {
