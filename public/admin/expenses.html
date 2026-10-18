@@ -45,7 +45,7 @@
   <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>Item</th><th>Stage</th><th class="num">Estimate</th><th class="num">Projected</th>
+        <th>Item</th><th>Stage</th><th class="num">Price</th>
         <th class="num">Paid</th><th class="num">Owed</th><th>Due</th>
       </tr></thead>
       <tbody id="rows"></tbody>
@@ -132,7 +132,7 @@ function renderRows() {
     const key = `${e.category} · ${e.subcategory}`;
     if (key !== group) {
       group = key;
-      rows.push(h("tr", { class: "group" }, h("td", { colspan: 7 }, e.subcategory ? `${e.category} — ${e.subcategory}` : e.category || "Uncategorized")));
+      rows.push(h("tr", { class: "group" }, h("td", { colspan: 6 }, e.subcategory ? `${e.category} — ${e.subcategory}` : e.category || "Uncategorized")));
     }
     const kids = kidsOf.get(e.id) || [];
     const open = kids.length && (expanded.has(e.id) || (filtering && kids.some(matches)));
@@ -144,7 +144,6 @@ function renderRows() {
         kids.length ? h("a", { href: `#${e.id}`, onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); openEditor(e.id); } }, e.item) : e.item,
         kids.length || e.vendor ? h("div", { class: "sub" }, kids.length ? `${kids.length} line item${kids.length === 1 ? "" : "s"}` : e.vendor) : null),
       h("td", {}, statusPill(e.status, data.status_labels)),
-      h("td", { class: "num" }, money(e.estimate)),
       ...moneyCells(e, kids.length ? budgetLine(e) : priceSub(e)),
       dueCell(e),
     ));
@@ -153,21 +152,20 @@ function renderRows() {
       rows.push(h("tr", { class: "clickable child", onclick: () => openEditor(k.id) },
         h("td", { class: "child-name" }, k.item, k.vendor ? h("div", { class: "sub" }, k.vendor) : null),
         h("td", {}, statusPill(k.status, data.status_labels)),
-        h("td", {}),
         ...moneyCells(k, priceSub(k)),
         dueCell(k),
       ));
     }
-    rows.push(h("tr", { class: "add-line" }, h("td", { colspan: 7 },
+    rows.push(h("tr", { class: "add-line" }, h("td", { colspan: 6 },
       h("button", { class: "small", onclick: () => openEditor(null, { parentId: e.id }) }, `+ Add a line item to ${e.item}`))));
   }
-  if (!shown.length) rows.push(h("tr", {}, h("td", { colspan: 7, class: "muted" }, data.expenses.length ? "Nothing matches those filters." : "No expenses yet. Add one, or import the spreadsheet in Settings.")));
+  if (!shown.length) rows.push(h("tr", {}, h("td", { colspan: 6, class: "muted" }, data.expenses.length ? "Nothing matches those filters." : "No expenses yet. Add one, or import the spreadsheet in Settings.")));
   document.getElementById("rows").replaceChildren(...rows);
   // Totals over items only: an item already includes its line items.
   const sum = (k) => shown.reduce((s, e) => s + (e[k] || 0), 0);
   document.getElementById("foot").replaceChildren(h("tr", {},
     h("td", { colspan: 2 }, `${shown.length} items`),
-    h("td", { class: "num" }, money(sum("estimate"))), h("td", { class: "num" }, money(sum("projected"))),
+    h("td", { class: "num" }, money(sum("projected"))),
     h("td", { class: "num" }, money(sum("paid"))), h("td", { class: "num" }, money(sum("owed"))), h("td", {})));
 }
 
@@ -363,7 +361,7 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
       preview.replaceChildren(
         h("div", {}, isContainer ? "Budget: " : "", `${money(Number(v.unit_cost) || 0)} × ${t.qty} = `, h("b", {}, money(t.subtotal)),
           t.tax ? ` + tax ${money(t.tax)}` : "", t.grat ? ` + gratuity ${money(t.grat)}` : "", " = ", h("b", {}, money(t.total))),
-        isContainer ? h("div", { class: "muted" }, `The line items add up to ${money(e.spent)}. Until it's done buying, the projected cost is whichever is larger.`) : "",
+        isContainer ? h("div", { class: "muted" }, `The line items add up to ${money(e.spent)}. Until it's done buying, its price is whichever is larger.`) : "",
         variable && v.quantity_source === "guests"
           ? h("div", { class: "muted" }, `Guest count is ${data.basis_count} (${data.basis}). It updates on its own as the guest list and RSVPs change.`) : "",
       );
