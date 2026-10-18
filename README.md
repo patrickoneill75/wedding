@@ -11,8 +11,9 @@ A Cloudflare Worker with two sides:
   - The RSVP page at `/rsvp/`, where guests find their name and answer for their
     household.
   - An unlisted expense form at `/submit/?k=…` for the two of us to log expenses,
-    payments and receipts from a phone. Start typing what it's for and pick the item
-    (or make a new one); categories and vendors suggest as you type too.
+    payments and receipts from a phone: a conversation with Claude, who reads receipt
+    photos, works out which item an expense belongs to, asks what it can't tell, and
+    shows the entry to save. The plain form is at `/submit/form.html`.
 - **Control panel** (`/admin/`, Google sign-in, admins only):
   - **Dashboard**: guest counts, projected / paid / owed / overdue, upcoming payments,
     a pie of projected cost by category or subcategory, and an estimated vs. actual cost
@@ -64,6 +65,7 @@ src/worker.js      entry point and routing
 src/auth.js        Google sign-in, signed session cookies, CSRF header check
 src/admin_api.js   control panel API (/api/admin/*)
 src/public_api.js  RSVP and expense form API (/api/public/*)
+src/intake.js      the expense form's conversation with Claude
 src/store.js       expense/payment writes with history and status moves
 src/calc.js        the budget math (pure; most tests live here)
 src/google.js      Google Drive: tokens, folder picker, uploads

@@ -2,336 +2,311 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
 <link rel="icon" href="/favicon.svg">
 <title>Add an expense</title>
 <link rel="stylesheet" href="/admin/admin.css">
 <style>
-  .wrap { max-width: 560px; }
-  .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-  .head h1 { margin: 0; }
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; }
+  .shell { flex: 1; display: flex; flex-direction: column; width: 100%; max-width: 620px; margin: 0 auto; min-height: 0;
+           padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-block: 16px 10px; }
+  .head h1 { margin: 0; font-size: 20px; }
   .who { margin-left: auto; font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; }
   .who select { width: auto; padding: 4px 8px; }
-  .big input { font-size: 17px; padding: 11px 13px; }
-  .chosen { display: flex; gap: 10px; align-items: center; background: var(--wash); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; }
-  .chosen b { font-size: 15px; }
-  .chosen .muted { font-size: 12.5px; margin-top: 2px; }
-  .chosen button { margin-left: auto; }
-  .seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 14px; }
-  .seg button { border: 0; border-radius: 0; padding: 9px 8px; background: var(--surface-1); color: var(--text-secondary); }
-  .seg button + button { border-left: 1px solid var(--border); }
-  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
-  .block { margin-bottom: 14px; }
-  .block > .label { font-size: 12.5px; color: var(--text-secondary); margin-bottom: 6px; display: block; }
-  .paybox { background: var(--wash); border-radius: 10px; padding: 12px; margin-bottom: 14px; }
-  .paybox .fields { margin-bottom: 0; }
-  .paybox p { margin: 0 0 10px; font-size: 13px; color: var(--text-secondary); }
-  details.more { margin-bottom: 14px; font-size: 13px; }
-  details.more summary { cursor: pointer; color: var(--text-secondary); margin-bottom: 10px; }
-  .done { text-align: center; padding: 30px 18px; }
+  .thread { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-block: 6px 16px; min-height: 0; }
+  .msg-row { display: flex; }
+  .msg-row.me { justify-content: flex-end; }
+  .bubble { max-width: 86%; padding: 9px 13px; border-radius: 16px; font-size: 15px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .them .bubble { background: var(--surface-2); border-bottom-left-radius: 5px; }
+  .me .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 5px; }
+  .bubble img { display: block; max-width: 180px; max-height: 220px; border-radius: 10px; margin-bottom: 6px; }
+  .bubble.thinking { color: var(--text-muted); font-style: italic; }
+  .starters { display: flex; flex-wrap: wrap; gap: 8px; }
+  .starters button { border-radius: 999px; font-size: 13.5px; }
+  .card { border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; background: var(--surface-1); max-width: 92%; }
+  .card h3 { margin: 0 0 8px; font-size: 14px; }
+  .card dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0 0 12px; font-size: 14px; }
+  .card dt { color: var(--text-muted); }
+  .card dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .card .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .card.saved { border-color: var(--good); }
+  .composer { border-top: 1px solid var(--border); padding-block: 10px max(12px, env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; gap: 8px; background: var(--page); }
+  .attached { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+  .attached img { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; }
+  .bar { display: flex; gap: 8px; align-items: flex-end; }
+  .bar textarea { flex: 1; min-height: 44px; max-height: 140px; resize: none; font-size: 16px; padding: 10px 12px; border-radius: 12px; }
+  .bar button { height: 44px; }
+  .icon-btn { width: 44px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+  .icon-btn svg { width: 22px; height: 22px; }
+  .foot { font-size: 12.5px; color: var(--text-muted); text-align: center; }
+  .foot a { color: inherit; }
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="shell">
   <div class="head">
     <h1>Add an expense</h1>
-    <label class="who" id="whoWrap" hidden>I'm <select name="submitted_by" id="who" form="form"></select></label>
+    <label class="who" id="whoWrap" hidden>I'm <select id="who"></select></label>
   </div>
-
   <p class="msg err" id="fatal"></p>
-
-  <form class="card" id="form" hidden>
-    <input type="hidden" name="expense_id" id="expenseId">
-    <input type="hidden" name="mode" id="mode">
-
-    <label class="field big block" id="searchLabel">What's it for?
-      <input id="itemSearch" placeholder="Start typing: flowers, venue, DJ…" autocapitalize="sentences">
-    </label>
-    <div class="chosen" id="chosen" hidden>
-      <div><b id="chosenName"></b><div class="muted" id="chosenInfo"></div></div>
-      <button type="button" class="small" id="change">Change</button>
+  <div class="thread" id="thread" aria-live="polite"></div>
+  <form class="composer" id="composer" hidden>
+    <div class="attached" id="attached" hidden></div>
+    <div class="bar">
+      <button type="button" class="icon-btn" id="attach" aria-label="Add a receipt photo or PDF">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+      </button>
+      <input type="file" id="file" accept="image/*,application/pdf" hidden>
+      <textarea id="text" rows="1" placeholder="What did you spend on?" autocomplete="off"></textarea>
+      <button type="submit" class="primary" id="send">Send</button>
     </div>
-
-    <div id="details" hidden>
-      <!-- An item that isn't split into line items: pay or update it, or start splitting it. -->
-      <div class="seg" id="modes" hidden>
-        <button type="button" data-mode="update">Pay or update it</button>
-        <button type="button" data-mode="purchase">Add a line item</button>
-      </div>
-      <p class="desc" id="modeNote" hidden></p>
-
-      <div class="fields">
-        <label class="field" id="itemLabel"><span>Name</span><input name="item"></label>
-        <label class="field" id="catLabel">Category<input id="catSearch" placeholder="Type to find one, or a new one"></label>
-      </div>
-      <div class="fields">
-        <label class="field">Vendor<input name="vendor" id="vendor" placeholder="Type to find one, or a new one"></label>
-      </div>
-
-      <div class="block">
-        <span class="label">Stage</span>
-        <div class="chips" id="stages"></div>
-      </div>
-
-      <div class="fields">
-        <label class="field" id="priceLabel"><span>Price ($)</span><input name="price" type="number" step="0.01" inputmode="decimal"></label>
-        <label class="field" id="dueLabel">Next payment due<input name="due_date" type="date"></label>
-      </div>
-
-      <div class="paybox">
-        <p id="payNote"></p>
-        <div class="fields">
-          <label class="field" id="amountLabel">Amount paid ($)<input name="payment_amount" type="number" step="0.01" inputmode="decimal" placeholder="Nothing yet"></label>
-          <label class="field paid-only">Date paid<input name="paid_on" type="date" id="paidOn"></label>
-          <label class="field paid-only">Paid by<select name="payer" id="payer"></select></label>
-          <label class="field paid-only">Method<select name="method" id="method"></select></label>
-        </div>
-      </div>
-
-      <label class="field block">Receipt, quote or contract (optional)
-        <input type="file" name="file" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx">
-      </label>
-
-      <details class="more" id="more">
-        <summary>More: quantity, tax, gratuity, notes</summary>
-        <div class="fields" id="mathFields">
-          <label class="field">Quantity<input name="units" type="number" step="any" value="1"></label>
-          <label class="field">Gratuity %<input name="gratuity_percent" type="number" step="any" value="0"></label>
-          <label class="check" style="align-self:end; padding-bottom:8px"><input type="checkbox" name="taxable"> Add sales tax</label>
-        </div>
-        <label class="field">Notes<textarea name="notes"></textarea></label>
-      </details>
-
-      <button class="primary" type="submit" style="width:100%; justify-content:center">Save</button>
-      <p class="msg" id="msg"></p>
-    </div>
+    <div class="foot">Rather fill in a form? <a id="formLink" href="form.html">Use the plain form</a>.</div>
   </form>
-
-  <div class="card done" id="done" hidden>
-    <h2>Saved</h2>
-    <p class="desc" id="doneText"></p>
-    <button class="primary" id="another">Add another</button>
-  </div>
 </div>
 
-<script type="module">
-import { combobox, splitCategory } from "/admin/combobox.js";
-
+<script>
 const key = new URLSearchParams(location.search).get("k") || "";
 const $ = (id) => document.getElementById(id);
-const form = $("form");
-const money = (n) => (n == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n));
-const opt = (value, text, selected) => { const o = document.createElement("option"); o.value = value; o.textContent = text; o.selected = Boolean(selected); return o; };
-const today = () => new Date().toISOString().slice(0, 10);
+const thread = $("thread");
 const remember = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 const recall = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
-let options;
-let chosen = null; // { item } for an existing item, or { name } for a new one
+const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+$("formLink").href = `form.html?k=${encodeURIComponent(key)}`;
 
-const label = (status) => options.statuses.find((s) => s.value === status)?.label || status;
-const where = (o) => [o.category, o.subcategory].filter(Boolean).join(" › ");
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (k === "class") n.className = v;
+    else n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) n.append(k instanceof Node ? k : String(k));
+  return n;
+}
 
-/* ---------------------------------------------------------------- type-aheads -- */
+// The conversation as the API sees it (sent back each turn, unchanged), the receipt to
+// save with the entry, and the proposal on screen, if any.
+let messages = [];
+let receipt = null;      // { file, block, preview }
+let pending = null;      // the receipt picked but not sent yet
+let proposal = null;
+let busy = false;
 
-combobox($("itemSearch"), {
-  options: () => options.items.map((i) => ({
-    label: i.item,
-    detail: [where(i), i.purchases ? `${i.purchases} line item${i.purchases === 1 ? "" : "s"}` : label(i.status)].filter(Boolean).join(" · "),
-    search: [i.item, i.category, i.subcategory, i.vendor].join(" "),
-    item: i,
-  })),
-  create: (typed) => ({ label: `＋ New item “${typed}”`, name: typed }),
-  onPick: (o) => choose(o.item ? { item: o.item } : { name: o.name }),
-  empty: "Nothing yet.",
+function say(role, text, image) {
+  const row = el("div", { class: `msg-row ${role}` }, el("div", { class: "bubble" }, image ? el("img", { src: image, alt: "Receipt" }) : null, text || null));
+  thread.append(row);
+  row.scrollIntoView({ block: "end" });
+  return row;
+}
+
+function start() {
+  messages = [];
+  receipt = pending = proposal = null;
+  thread.replaceChildren();
+  say("them", "What did you spend on? Tell me in a sentence, like “paid the florist a $500 deposit”, or add a photo of the receipt with the camera button.");
+  const row = el("div", { class: "msg-row them" }, el("div", { class: "starters" },
+    el("button", { type: "button", onclick: () => $("file").click() }, "Add a receipt"),
+    el("button", { type: "button", onclick: () => { $("text").value = "We got a quote for "; $("text").focus(); } }, "Log a quote"),
+    el("button", { type: "button", onclick: () => { $("text").value = "We paid a deposit to "; $("text").focus(); } }, "Log a deposit"),
+  ));
+  thread.append(row);
+  showAttached();
+}
+
+/* --------------------------------------------------------------- receipts -- */
+
+// Photos are shrunk before they're sent: Claude reads a 1568px image as well as a full
+// one, and a phone photo would make every turn slow.
+async function toBlock(file) {
+  if (file.type === "application/pdf") {
+    if (file.size > 8 * 1024 * 1024) throw new Error("That PDF is over 8 MB. Try a photo of it instead.");
+    const data = await readBase64(file);
+    return { block: { type: "document", source: { type: "base64", media_type: "application/pdf", data } }, preview: null };
+  }
+  const bitmap = await createImageBitmap(file).catch(() => { throw new Error("Couldn't read that image. Try a JPEG or PNG."); });
+  const scale = Math.min(1, 1568 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  const url = canvas.toDataURL("image/jpeg", 0.85);
+  return { block: { type: "image", source: { type: "base64", media_type: "image/jpeg", data: url.split(",")[1] } }, preview: url };
+}
+function readBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1]);
+    r.onerror = () => reject(new Error("Couldn't read that file."));
+    r.readAsDataURL(file);
+  });
+}
+
+function showAttached() {
+  const box = $("attached");
+  box.hidden = !pending;
+  if (!pending) return box.replaceChildren();
+  box.replaceChildren(
+    pending.preview ? el("img", { src: pending.preview, alt: "" }) : null,
+    el("span", {}, pending.file.name || "Receipt"),
+    el("button", { type: "button", class: "small", onclick: () => { pending = null; showAttached(); } }, "Remove"),
+  );
+}
+
+$("attach").addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", async () => {
+  const file = $("file").files[0];
+  $("file").value = "";
+  if (!file) return;
+  try {
+    pending = { file, ...(await toBlock(file)) };
+    showAttached();
+    $("text").focus();
+  } catch (error) {
+    say("them", error.message);
+  }
 });
 
-// Each category with each of its subcategories, so one pick fills in both.
-function categoryOptions() {
-  const pairs = new Map();
-  for (const c of options.categories) pairs.set(c, [c, ""]);
-  for (const i of options.items) if (i.category && i.subcategory) pairs.set(where(i), [i.category, i.subcategory]);
-  return [...pairs.values()].sort((a, b) => where({ category: a[0], subcategory: a[1] }).localeCompare(where({ category: b[0], subcategory: b[1] })))
-    .map(([category, subcategory]) => ({ label: where({ category, subcategory }), category, subcategory }));
-}
-combobox($("catSearch"), {
-  options: categoryOptions,
-  showAll: true,
-  create: (typed) => (categoryOptions().some((o) => o.label.toLowerCase() === typed.toLowerCase()) ? null : { label: `＋ New category “${typed}”`, text: typed }),
-  onPick: (o) => { $("catSearch").value = o.text ?? o.label; },
-});
+/* ----------------------------------------------------------- conversation -- */
 
-combobox($("vendor"), {
-  options: () => options.vendors.map((v) => ({ label: v })),
-  showAll: true,
-  create: (typed) => (options.vendors.some((v) => v.toLowerCase() === typed.toLowerCase()) ? null : { label: `＋ New vendor “${typed}”`, text: typed }),
-  onPick: (o) => { $("vendor").value = o.text ?? o.label; },
-});
-
-/* ----------------------------------------------------------------------- flow -- */
-
-async function load() {
-  const r = await fetch(`/api/public/expense/options?k=${encodeURIComponent(key)}`);
-  options = await r.json();
-  if (!r.ok) {
-    $("fatal").textContent = options.error || "This form isn't available.";
-    return;
+async function send(text) {
+  if (busy) return;
+  text = text.trim();
+  if (!text && !pending) return;
+  busy = true;
+  $("send").disabled = true;
+  const content = [];
+  // A reply to a proposal instead of saving it answers that proposal first.
+  if (proposal) {
+    content.push({ type: "tool_result", tool_use_id: proposal.tool_use_id, content: "Not saved. They replied instead:" });
+    proposal.card.remove();
+    proposal = null;
   }
-  const lastWho = recall("expense-form-who");
-  $("who").replaceChildren(...options.payers.map((p) => opt(p, p, p === lastWho)));
-  $("payer").replaceChildren(opt("", "—"), ...options.payers.map((p) => opt(p, p)));
-  $("method").replaceChildren(opt("", "—"), ...options.payment_methods.map((m) => opt(m, m)));
-  $("stages").replaceChildren(...options.statuses.map((s) => {
-    const l = document.createElement("label");
-    const input = Object.assign(document.createElement("input"), { type: "radio", name: "status", value: s.value });
-    input.addEventListener("change", onStage);
-    const span = document.createElement("span");
-    span.textContent = s.label;
-    l.append(input, span);
-    return l;
-  }));
-  $("payer").value = $("who").value;
-  $("whoWrap").hidden = false;
-  form.hidden = false;
-  choose(null);
-}
-
-const mode = () => $("mode").value;
-const setStage = (s) => { form.querySelector(`input[name=status][value="${s}"]`).checked = true; onStage(); };
-const stage = () => form.querySelector("input[name=status]:checked")?.value || "estimate";
-
-function choose(next) {
-  chosen = next;
-  $("searchLabel").hidden = Boolean(chosen);
-  $("chosen").hidden = !chosen;
-  $("details").hidden = !chosen;
-  $("msg").textContent = "";
-  if (!chosen) {
-    $("itemSearch").value = "";
-    $("expenseId").value = "";
-    return;
+  if (pending) {
+    content.push(pending.block);
+    receipt = pending;
   }
-  const item = chosen.item;
-  $("expenseId").value = item ? item.id : "";
-  if (item) {
-    $("chosenName").textContent = item.item;
-    $("chosenInfo").textContent = [
-      where(item),
-      item.purchases
-        ? `${item.purchases} line item${item.purchases === 1 ? "" : "s"} · ${money(item.estimated)} estimated · ${money(item.incurred)} incurred · ${money(item.paid)} paid`
-        : `${label(item.status)} · ${money(item.total)} · ${money(item.paid)} paid`,
-    ].filter(Boolean).join(" · ");
-  } else {
-    $("chosenName").textContent = `New item: ${chosen.name}`;
-    $("chosenInfo").textContent = "Pick its category below.";
+  content.push({ type: "text", text: text || "Here's the receipt." });
+  const shown = pending && !pending.preview ? [text, `Receipt: ${pending.file.name}`].filter(Boolean).join("\n") : text;
+  say("me", shown, pending?.preview);
+  pending = null;
+  showAttached();
+  messages.push({ role: "user", content });
+  const thinking = say("them", "Thinking…");
+  thinking.firstChild.classList.add("thinking");
+  try {
+    const r = await fetch("/api/public/expense/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key, who: $("who").value, today: localToday(), messages }),
+    });
+    const body = await r.json().catch(() => ({}));
+    thinking.remove();
+    if (!r.ok) {
+      messages.pop();
+      say("them", body.error || "Something went wrong. Try again.");
+      return;
+    }
+    messages = body.messages;
+    if (body.reply) say("them", body.reply);
+    if (body.proposal) showProposal(body.proposal);
+  } catch {
+    thinking.remove();
+    messages.pop();
+    say("them", "Couldn't reach the server. Check your connection and send it again.");
+  } finally {
+    busy = false;
+    $("send").disabled = false;
   }
-  // An item already split into line items only takes more line items.
-  $("modes").hidden = !item || Boolean(item.purchases);
-  setMode(!item ? "new" : item.purchases ? "purchase" : "update");
 }
 
-function setMode(m) {
-  $("mode").value = m;
-  const item = chosen.item;
-  for (const b of $("modes").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.mode === m));
-  $("modeNote").hidden = m !== "purchase";
-  $("modeNote").textContent = item?.purchases
-    ? `Adds a line item under ${item.item}.`
-    : `Bought in pieces, or from more than one vendor? Line items go under ${item?.item}. What's already on it (price, vendor, stage, payments) becomes the first line item.`;
-  $("itemLabel").hidden = m === "update";
-  $("itemLabel").firstElementChild.textContent = m === "purchase" ? "What did you buy?" : "Name";
-  form.item.required = m !== "update";
-  form.item.placeholder = m === "purchase" ? "e.g. 40 dinner plates" : "";
-  form.item.value = m === "new" ? chosen.name : "";
-  $("catLabel").hidden = m !== "new";
-  $("catSearch").value = "";
-  $("mathFields").hidden = m === "update";
-  if (m === "update") {
-    $("priceLabel").firstElementChild.textContent = item.pricing === "variable" ? "Price per guest or unit ($)" : "Price ($)";
-    form.price.value = item.unit_cost ?? "";
-    $("vendor").value = item.vendor || "";
-    setStage(item.status);
-  } else {
-    $("priceLabel").firstElementChild.textContent = "Price ($)";
-    form.price.value = "";
-    $("vendor").value = "";
-    // Something just bought for an item is usually paid for on the spot.
-    setStage(m === "purchase" ? "paid" : "estimate");
-  }
-  form.payment_amount.value = "";
-  form.payment_amount.placeholder = m === "update" && item.owed ? `Owed: ${money(item.owed)}` : "Nothing yet";
+function showProposal(p) {
+  const msg = el("p", { class: "msg" });
+  const save = el("button", { type: "button", class: "primary", onclick: () => saveProposal(p, save, msg) }, "Save");
+  const card = el("div", { class: "card" },
+    el("h3", {}, "Ready to save"),
+    el("dl", {}, p.summary.flatMap(([label, value]) => [el("dt", {}, label), el("dd", {}, value)])),
+    receipt ? el("p", { class: "desc", style: "margin:0 0 10px" }, "The receipt is saved to Google Drive with it.") : null,
+    el("div", { class: "row" }, save, el("button", { type: "button", onclick: () => $("text").focus() }, "Change something")),
+    msg,
+  );
+  const row = el("div", { class: "msg-row them" }, card);
+  thread.append(row);
+  row.scrollIntoView({ block: "end" });
+  proposal = { ...p, card: row };
 }
 
-// At the Paid stage the price is what's paid: no amount to type, just who/when/how.
-function onStage() {
-  const paid = stage() === "paid";
-  $("amountLabel").hidden = paid;
-  $("dueLabel").hidden = paid;
-  if (paid) form.payment_amount.value = "";
-  $("payNote").textContent = paid ? "Paid in full: the price is recorded as paid." : "Paid anything yet? Leave it blank if not.";
-  onAmount();
-}
-function onAmount() {
-  const show = stage() === "paid" || form.payment_amount.value !== "";
-  for (const el of form.querySelectorAll(".paid-only")) el.hidden = !show;
-}
-
-for (const b of $("modes").querySelectorAll("button")) b.addEventListener("click", () => setMode(b.dataset.mode));
-$("change").addEventListener("click", () => { choose(null); $("itemSearch").focus(); });
-form.payment_amount.addEventListener("input", onAmount);
-$("who").addEventListener("change", () => { $("payer").value = $("who").value; });
-
-form.addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  if (mode() === "new" && !$("catSearch").value.trim()) {
-    $("msg").textContent = "Pick a category (or type a new one).";
-    $("msg").className = "msg err";
-    return;
-  }
-  const button = form.querySelector("button[type=submit]");
+async function saveProposal(p, button, msg) {
   button.disabled = true;
-  $("msg").textContent = form.file.files[0] ? "Saving and uploading…" : "Saving…";
-  $("msg").className = "msg";
-  const data = new FormData(form);
+  msg.className = "msg";
+  msg.textContent = receipt ? "Saving and uploading the receipt…" : "Saving…";
+  const data = new FormData();
   data.append("key", key);
-  data.set("submitted_by", $("who").value);
-  // Who/when/how only mean something when money changed hands.
-  if (stage() !== "paid" && !data.get("payment_amount")) for (const k of ["paid_on", "payer", "method"]) data.delete(k);
-  if (mode() === "update") {
-    data.delete("item");
-    for (const k of ["units", "gratuity_percent", "taxable"]) data.delete(k);
-  }
-  if (mode() === "new") {
-    const [category, subcategory] = splitCategory($("catSearch").value);
-    data.set("category", category);
-    data.set("subcategory", subcategory);
-  }
+  data.append("submitted_by", $("who").value);
+  for (const [k, v] of Object.entries(p.form)) if (v !== "") data.append(k, v);
+  // Whoever is filling this in paid, unless Claude was told otherwise.
+  if (!p.form.payer && (p.form.status === "paid" || p.form.payment_amount)) data.set("payer", $("who").value);
+  if (!p.form.paid_on && (p.form.status === "paid" || p.form.payment_amount)) data.set("paid_on", localToday());
+  if (receipt) data.append("file", receipt.file);
   try {
     const r = await fetch("/api/public/expense", { method: "POST", body: data });
     const body = await r.json();
     if (!r.ok) throw new Error(body.error || "Couldn't save.");
     remember("expense-form-who", $("who").value);
-    $("doneText").textContent = body.receipt_error ? body.receipt_error : body.receipt ? `Saved, with ${body.receipt} in Google Drive.` : "Saved.";
-    form.hidden = true;
-    $("done").hidden = false;
+    proposal = null;
+    const card = button.closest(".card");
+    card.classList.add("saved");
+    card.replaceChildren(
+      el("h3", {}, "Saved"),
+      el("dl", {}, p.summary.flatMap(([label, value]) => [el("dt", {}, label), el("dd", {}, value)])),
+      body.receipt_error ? el("p", { class: "msg err" }, body.receipt_error) : body.receipt ? el("p", { class: "desc" }, `Receipt saved to Drive as ${body.receipt}.`) : null,
+      el("div", { class: "row" }, el("button", { type: "button", class: "primary", onclick: start }, "Add another")),
+    );
   } catch (error) {
-    $("msg").textContent = error.message;
-    $("msg").className = "msg err";
-  } finally {
     button.disabled = false;
+    msg.className = "msg err";
+    msg.textContent = error.message;
+  }
+}
+
+$("composer").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const text = $("text").value;
+  $("text").value = "";
+  autosize();
+  send(text);
+});
+$("text").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing && window.matchMedia("(pointer: fine)").matches) {
+    ev.preventDefault();
+    $("composer").requestSubmit();
   }
 });
+function autosize() { const t = $("text"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, 140)}px`; }
+$("text").addEventListener("input", autosize);
 
-$("another").addEventListener("click", async () => {
-  form.reset();
-  $("done").hidden = true;
-  await load();
-  $("paidOn").value = today();
-});
-
-if (!key) $("fatal").textContent = "This link is missing its key. Copy the expense form link from the control panel's Settings page.";
-else load().then(() => { $("paidOn").value = today(); }).catch(() => { $("fatal").textContent = "Couldn't load the form. Check your connection and try again."; });
+async function load() {
+  if (!key) {
+    $("fatal").textContent = "This link is missing its key. Copy the expense form link from the control panel's Settings page.";
+    return;
+  }
+  const r = await fetch(`/api/public/expense/options?k=${encodeURIComponent(key)}`);
+  const options = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    $("fatal").textContent = options.error || "This form isn't available.";
+    return;
+  }
+  const last = recall("expense-form-who");
+  $("who").replaceChildren(...options.payers.map((p) => el("option", { value: p, selected: p === last }, p)));
+  $("whoWrap").hidden = false;
+  $("composer").hidden = false;
+  start();
+}
+load().catch(() => { $("fatal").textContent = "Couldn't load the form. Check your connection and try again."; });
 </script>
 </body>
 </html>

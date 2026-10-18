@@ -783,6 +783,96 @@ test("the expense form still updates an item itself in update mode", async () =>
   assert.equal(e.purchases, 0);
 });
 
+/* ------------------------------------------------------ conversational form -- */
+
+const claudeReply = (content, stop_reason = "end_turn") => okJson({ id: "msg_1", type: "message", role: "assistant", content, stop_reason });
+const proposeCall = (input, id = "toolu_1") => ({ type: "tool_use", id, name: "propose_expense", input: {
+  mode: "new", expense_id: null, item: null, category: null, subcategory: null, vendor: null, stage: "paid", price: null, quantity: 1,
+  taxable: false, gratuity_percent: 0, due_date: null, payment_amount: null, paid_on: null, payer: null, method: null, notes: null, ...input,
+} });
+
+test("the conversational form needs the form key, and says when Claude isn't set up", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const key = await formKeyFor(api);
+  const messages = [{ role: "user", content: "glassware" }];
+  assert.equal((await call(env, "/api/public/expense/chat", { method: "POST", body: { key: "nope", messages } })).status, 403);
+  const r = await call(env, "/api/public/expense/chat", { method: "POST", body: { key, messages } });
+  assert.equal(r.status, 503);
+  assert.equal(r.data.setup, true);
+});
+
+// Bug: searching the form for "glassware" found nothing, so it went in as a new item
+// when it belonged under Place Settings.
+test("Claude sees the items, line items and vendors, and its proposal saves through the expense form", async () => {
+  const env = makeEnv({ ANTHROPIC_API_KEY: "sk-test" });
+  const api = await adminClient(env);
+  const key = await formKeyFor(api);
+  const ps = (await api("/api/admin/expenses", { method: "POST", body: { category: "Ceremony & Reception", subcategory: "Decor", item: "Place Settings" } })).data.expense.id;
+  await api("/api/admin/expenses", { method: "POST", body: { parent_id: ps, item: "Plates", vendor: "Goodwill", unit_cost: 38.5, status: "paid" } });
+  const r = await withFetch(async (url, init) => {
+    assert.equal(url, "https://api.anthropic.com/v1/messages");
+    assert.equal(init.headers["x-api-key"], "sk-test");
+    const req = JSON.parse(init.body);
+    assert.equal(req.model, "claude-opus-5-5");
+    assert.equal(req.fallbacks, "default");
+    const sys = req.system.map((b) => b.text).join("\n");
+    assert.match(sys, new RegExp(`#${ps} Place Settings · Ceremony & Reception › Decor`));
+    assert.match(sys, /Plates · Goodwill · Paid · \$38\.50/);
+    assert.match(sys, /Filling this in: Kaitlyn\./);
+    return claudeReply([
+      { type: "text", text: "That sounds like it goes under Place Settings." },
+      proposeCall({ mode: "line_item", expense_id: ps, item: "Glassware", vendor: "Target", price: 45, paid_on: "2026-10-18", payer: "Kaitlyn", method: "Credit card" }),
+    ], "tool_use");
+  }, () => call(env, "/api/public/expense/chat", { method: "POST", body: { key, who: "Kaitlyn", today: "2026-10-18", messages: [{ role: "user", content: "bought glassware at target, $45" }] } }));
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.reply, "That sounds like it goes under Place Settings.");
+  assert.equal(r.data.messages.length, 2, "the browser gets the conversation back to send next time");
+  const { form, summary } = r.data.proposal;
+  assert.deepEqual([form.mode, form.expense_id, form.item, form.status, form.price], ["purchase", String(ps), "Glassware", "paid", "45"]);
+  assert.deepEqual(summary[0], ["Line item", "Glassware, under Place Settings"]);
+
+  const saved = await call(env, "/api/public/expense", { method: "POST", form: formOf({ key, submitted_by: "Kaitlyn", ...Object.fromEntries(Object.entries(form).filter(([, v]) => v !== "")) }) });
+  assert.equal(saved.status, 201, JSON.stringify(saved.data));
+  const kid = (await api(`/api/admin/expenses/${saved.data.expense_id}`)).data;
+  assert.equal(kid.expense.parent_id, ps);
+  assert.deepEqual(kid.payments.map((p) => [p.amount, p.payer, p.method]), [[45, "Kaitlyn", "Credit card"]]);
+});
+
+test("a proposal that doesn't check out goes back to Claude to fix before anyone sees it", async () => {
+  const env = makeEnv({ ANTHROPIC_API_KEY: "sk-test" });
+  const api = await adminClient(env);
+  const key = await formKeyFor(api);
+  const dj = (await api("/api/admin/expenses", { method: "POST", body: { category: "Entertainment", item: "DJ", unit_cost: 1200, status: "booked" } })).data.expense.id;
+  const r = await withFetch(async (url, init, calls) => {
+    const req = JSON.parse(init.body);
+    if (calls.length === 1) return claudeReply([proposeCall({ mode: "update", expense_id: 9999, stage: "booked", payment_amount: 300 })], "tool_use");
+    const last = req.messages[req.messages.length - 1].content[0];
+    assert.equal(last.type, "tool_result");
+    assert.equal(last.is_error, true);
+    assert.match(last.content, /#9999 isn't an open item/);
+    return claudeReply([proposeCall({ mode: "update", expense_id: dj, stage: "booked", price: 1200, payment_amount: 300, payer: "Patrick" }, "toolu_2")], "tool_use");
+  }, () => call(env, "/api/public/expense/chat", { method: "POST", body: { key, who: "Patrick", messages: [{ role: "user", content: "paid the DJ a $300 deposit" }] } }));
+  assert.equal(r.status, 200);
+  assert.equal(r.data.proposal.tool_use_id, "toolu_2");
+  assert.deepEqual([r.data.proposal.form.mode, r.data.proposal.form.payment_amount], ["update", "300"]);
+});
+
+test("a proposal is checked: paid in full ignores a payment amount, and payers and items must exist", async () => {
+  const { checkProposal } = await import("../src/intake.js");
+  const settings = { payers: ["Patrick", "Kaitlyn"], payment_methods: ["Cash"] };
+  const expenses = [{ id: 1, item: "Venue", status: "booked", purchases: 2 }, { id: 2, item: "Deposit", parent_id: 1, status: "paid" }];
+  const base = { mode: "new", expense_id: null, item: "Cake", category: "Food", subcategory: null, vendor: null, stage: "paid", price: 400, quantity: 1,
+    taxable: false, gratuity_percent: 0, due_date: "2027-01-01", payment_amount: 100, paid_on: null, payer: null, method: null, notes: null };
+  const ok = checkProposal(base, expenses, settings);
+  assert.equal(ok.form.payment_amount, "", "at Paid the price is what's paid");
+  assert.equal(ok.form.due_date, "");
+  assert.match(checkProposal({ ...base, payer: "Grandma" }, expenses, settings).error, /Payer must be one of/);
+  assert.match(checkProposal({ ...base, mode: "update", expense_id: 1 }, expenses, settings).error, /has line items/);
+  assert.match(checkProposal({ ...base, mode: "line_item", expense_id: 2 }, expenses, settings).error, /not a line item's|isn't an open item/);
+  assert.match(checkProposal({ ...base, category: "" }, expenses, settings).error, /needs a category/);
+});
+
 test("upgrading renames Partner to Kaitlyn in settings and payments, and seeds the vendor list", async () => {
   const env = makeEnv();
   env.DB.db.exec(`
