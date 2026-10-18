@@ -161,3 +161,11 @@ npm test                # the test suite (Node 22.5+)
   The Worker's name in the Cloudflare dashboard must match `"name"` in `wrangler.jsonc`.
   Secrets added under the dashboard's **Settings → Build** section are only for builds,
   and the running Worker never sees them.
+- **A merge to `main` never reaches the site**: the Builds page (Workers & Pages → wedding
+  → Deployments → Builds) shows no new build after the merge. Check **Settings → Build →
+  Branch control**: the production branch must be `main`. Changing it doesn't build
+  anything by itself, so retry the latest build or push to `main` afterwards.
+- **Pull request builds fail with "missing a `previews` block"**: Cloudflare builds every
+  branch but `main` with `wrangler preview`, which needs the `previews` section in
+  `wrangler.jsonc`. It points at its own D1 database (`wedding-preview`) so previews never
+  touch the real guest list.
