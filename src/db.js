@@ -268,6 +268,73 @@ const MIGRATIONS = [
        UNIQUE (guest_id, plus_one)
      )`,
   ],
+  // 10: vendors get contacts and the day-of / key flags (src/vendors.js); seating shapes
+  // get a color; saved custom reports (src/reports.js); named groups of guests and the
+  // run of show, with what each step involves (src/runofshow.js).
+  [
+    `ALTER TABLE seating_items ADD COLUMN color TEXT`,
+    `ALTER TABLE vendors ADD COLUMN category TEXT`,
+    `ALTER TABLE vendors ADD COLUMN website TEXT`,
+    `ALTER TABLE vendors ADD COLUMN notes TEXT`,
+    `ALTER TABLE vendors ADD COLUMN day_of INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE vendors ADD COLUMN key_vendor INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE vendors ADD COLUMN primary_first TEXT`,
+    `ALTER TABLE vendors ADD COLUMN primary_last TEXT`,
+    `ALTER TABLE vendors ADD COLUMN primary_email TEXT`,
+    `ALTER TABLE vendors ADD COLUMN primary_phone TEXT`,
+    `ALTER TABLE vendors ADD COLUMN secondary_first TEXT`,
+    `ALTER TABLE vendors ADD COLUMN secondary_last TEXT`,
+    `ALTER TABLE vendors ADD COLUMN secondary_email TEXT`,
+    `ALTER TABLE vendors ADD COLUMN secondary_phone TEXT`,
+    `ALTER TABLE vendors ADD COLUMN updated_at TEXT`,
+    `CREATE TABLE IF NOT EXISTS reports (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       name TEXT NOT NULL,
+       definition TEXT NOT NULL,
+       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+     )`,
+    `CREATE TABLE IF NOT EXISTS guest_groups (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       name TEXT NOT NULL,
+       notes TEXT,
+       created_at TEXT NOT NULL DEFAULT (datetime('now'))
+     )`,
+    `CREATE TABLE IF NOT EXISTS guest_group_members (
+       group_id INTEGER NOT NULL REFERENCES guest_groups(id) ON DELETE CASCADE,
+       guest_id INTEGER NOT NULL REFERENCES guests(id) ON DELETE CASCADE,
+       plus_one INTEGER NOT NULL DEFAULT 0,
+       PRIMARY KEY (group_id, guest_id, plus_one)
+     )`,
+    `CREATE TABLE IF NOT EXISTS ros_items (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       day TEXT NOT NULL DEFAULT '',
+       start_time TEXT NOT NULL DEFAULT '',
+       duration_min INTEGER,
+       title TEXT NOT NULL DEFAULT '',
+       location TEXT,
+       details TEXT,
+       status TEXT NOT NULL DEFAULT 'todo',
+       status_at TEXT,
+       status_by TEXT,
+       sort_order INTEGER NOT NULL DEFAULT 0,
+       created_at TEXT NOT NULL DEFAULT (datetime('now'))
+     )`,
+    // kind: vendor (ref_id = vendor), guest (ref_id = guest, plus_one), group (ref_id =
+    // guest_groups), table (ref_id = seating_items), or preset (ref_key names a built-in
+    // set of guests such as the wedding party). A link to something since deleted is
+    // dropped when the run of show is read.
+    `CREATE TABLE IF NOT EXISTS ros_links (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       item_id INTEGER NOT NULL REFERENCES ros_items(id) ON DELETE CASCADE,
+       kind TEXT NOT NULL,
+       ref_id INTEGER,
+       ref_key TEXT,
+       plus_one INTEGER NOT NULL DEFAULT 0,
+       role TEXT
+     )`,
+    `CREATE INDEX IF NOT EXISTS ros_links_item ON ros_links(item_id)`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

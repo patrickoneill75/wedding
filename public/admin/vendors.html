@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
+<title>Vendors — Wedding planner</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  .tag { font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; white-space: nowrap; }
+  .tag.key { color: var(--accent); border-color: var(--accent); }
+  .tag.dayof { color: #93370d; border-color: rgba(250, 178, 25, .6); background: rgba(250, 178, 25, .14); }
+  @media (prefers-color-scheme: dark) { .tag.dayof { color: var(--warn); } }
+  .contact { font-size: 12.5px; color: var(--text-secondary); }
+  .contact a { color: inherit; }
+  .summary { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); margin-bottom: 14px; }
+  .summary b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .flags { display: flex; gap: 18px; flex-wrap: wrap; margin: 4px 0 12px; }
+  h3.part { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 6px 0 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar" id="topbar"></div>
+  <div class="row" style="margin-bottom:6px">
+    <div><h1>Vendors</h1></div>
+    <span class="spacer"></span>
+    <button class="primary" id="addBtn">+ Add vendor</button>
+  </div>
+  <p class="sub">Everyone you buy from. Contacts are optional; a store needs none. A day-of vendor is a key vendor unless
+    you uncheck it. Vendors named on expenses appear here by themselves.</p>
+  <div class="summary" id="summary"></div>
+  <div class="filters">
+    <input type="search" id="search" placeholder="Search vendors, contacts, categories…">
+    <select id="show">
+      <option value="">All vendors</option>
+      <option value="key">Key vendors</option>
+      <option value="dayof">Day-of vendors</option>
+      <option value="nocontact">No contact yet</option>
+      <option value="owed">Money still owed</option>
+    </select>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Vendor</th><th>Primary contact</th><th>Secondary contact</th><th class="num">Expenses</th><th class="num">Projected</th><th class="num">Paid</th><th class="num">Owed</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</div>
+
+<script type="module">
+import { api, initPage, h, money, fmtDate, statusPill, openDialog, field, check, formValues, setMsg } from "/admin/admin.js";
+
+await initPage("vendors.html");
+let vendors = [];
+
+async function load() {
+  vendors = (await api("/api/admin/vendors")).vendors;
+  const total = (k) => vendors.reduce((n, v) => n + (v[k] || 0), 0);
+  const item = (n, label) => h("span", {}, h("b", {}, String(n)), ` ${label}`);
+  document.getElementById("summary").replaceChildren(
+    item(vendors.length, "vendors"), item(vendors.filter((v) => v.key_vendor).length, "key"), item(vendors.filter((v) => v.day_of).length, "day-of"),
+    item(money(total("projected"), true), "projected"), item(money(total("paid"), true), "paid"), item(money(total("owed"), true), "still owed"));
+  render();
+}
+
+const person = (v, which) => [v[`${which}_first`], v[`${which}_last`]].filter(Boolean).join(" ");
+const hasContact = (v) => ["primary", "secondary"].some((w) => person(v, w) || v[`${w}_email`] || v[`${w}_phone`]);
+
+function contactCell(v, which) {
+  const name = person(v, which);
+  const email = v[`${which}_email`];
+  const phone = v[`${which}_phone`];
+  if (!name && !email && !phone) return h("td", {}, h("span", { class: "muted" }, "—"));
+  return h("td", { class: "contact" },
+    name ? h("div", { style: "color:var(--text-primary)" }, name) : null,
+    phone ? h("div", {}, h("a", { href: `tel:${phone}`, onclick: (e) => e.stopPropagation() }, phone)) : null,
+    email ? h("div", {}, h("a", { href: `mailto:${email}`, onclick: (e) => e.stopPropagation() }, email)) : null);
+}
+
+function matches(v) {
+  const q = document.getElementById("search").value.trim().toLowerCase();
+  const show = document.getElementById("show").value;
+  if (q) {
+    const hay = [v.name, v.category, v.notes, v.website, ...["primary", "secondary"].flatMap((w) => [person(v, w), v[`${w}_email`], v[`${w}_phone`]])].join(" ").toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  if (show === "key" && !v.key_vendor) return false;
+  if (show === "dayof" && !v.day_of) return false;
+  if (show === "nocontact" && hasContact(v)) return false;
+  if (show === "owed" && !(v.owed > 0)) return false;
+  return true;
+}
+
+function render() {
+  const shown = vendors.filter(matches);
+  const rows = shown.map((v) => h("tr", { class: "clickable", onclick: () => openVendor(v.id) },
+    h("td", {}, h("div", { style: "font-weight:600" }, v.name),
+      h("div", { class: "row", style: "gap:5px; margin-top:3px" },
+        v.category ? h("span", { class: "muted", style: "font-size:12px" }, v.category) : null,
+        v.day_of ? h("span", { class: "tag dayof" }, "day-of") : null,
+        v.key_vendor ? h("span", { class: "tag key" }, "key") : null)),
+    contactCell(v, "primary"),
+    contactCell(v, "secondary"),
+    h("td", { class: "num" }, v.expenses ? String(v.expenses) : "—"),
+    h("td", { class: "num" }, v.expenses ? money(v.projected) : "—"),
+    h("td", { class: "num" }, v.paid ? money(v.paid) : "—"),
+    h("td", { class: "num" }, v.owed ? money(v.owed) : "—")));
+  if (!rows.length) rows.push(h("tr", {}, h("td", { colspan: 7, class: "muted" }, vendors.length ? "No vendors match." : "No vendors yet. Add one, or name a vendor on an expense.")));
+  document.getElementById("rows").replaceChildren(...rows);
+}
+
+for (const id of ["search", "show"]) document.getElementById(id).addEventListener("input", render);
+document.getElementById("addBtn").addEventListener("click", () => editVendor(null));
+
+async function openVendor(id) {
+  const detail = await api(`/api/admin/vendors/${id}`);
+  await editVendor(detail);
+}
+
+function editVendor(detail) {
+  const v = detail?.vendor || {};
+  return openDialog(detail ? v.name : "New vendor", (close) => {
+    const msg = h("p", { class: "msg" });
+    const keyBox = check("Key vendor", "key_vendor", v.key_vendor);
+    // A day-of vendor starts out key; unchecking key afterwards still sticks.
+    const dayBox = check("Day-of vendor (here on the wedding day)", "day_of", v.day_of, (ev) => {
+      if (ev.target.checked) keyBox.querySelector("input").checked = true;
+    });
+    const contact = (which, title) => [
+      h("h3", { class: "part" }, title),
+      h("div", { class: "fields" },
+        field("First name", `${which}_first`, { value: v[`${which}_first`] || "" }),
+        field("Last name", `${which}_last`, { value: v[`${which}_last`] || "" }),
+        field("Email", `${which}_email`, { type: "email", value: v[`${which}_email`] || "" }),
+        field("Phone", `${which}_phone`, { type: "tel", value: v[`${which}_phone`] || "" })),
+    ];
+    const form = h("form", { onsubmit: async (ev) => {
+      ev.preventDefault();
+      try {
+        const body = formValues(form);
+        const reply = detail
+          ? await api(`/api/admin/vendors/${v.id}`, { method: "PUT", body })
+          : await api("/api/admin/vendors", { method: "POST", body });
+        close(true);
+        await load();
+        if (!detail) openVendor(reply.vendor.id);
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    } },
+    h("div", { class: "fields" },
+      field("Vendor name", "name", { value: v.name || "", required: true, placeholder: "Riverside Florals" }),
+      field("Category", "category", { value: v.category || "", placeholder: "Florist, Caterer, DJ…", list: "categories" }),
+      field("Website", "website", { value: v.website || "", placeholder: "https://" })),
+    h("datalist", { id: "categories" }, [...new Set(vendors.map((x) => x.category).filter(Boolean))].sort().map((c) => h("option", { value: c }))),
+    h("div", { class: "flags" }, dayBox, keyBox),
+    contact("primary", "Primary contact"),
+    contact("secondary", "Secondary contact"),
+    h("div", { class: "fields" }, field("Notes", "notes", { type: "textarea", value: v.notes || "", wide: true })),
+    h("div", { class: "row" },
+      h("button", { class: "primary" }, detail ? "Save" : "Add vendor"),
+      detail ? h("button", { type: "button", class: "danger", onclick: async () => {
+        if (!confirm(`Delete ${v.name}?`)) return;
+        try {
+          await api(`/api/admin/vendors/${v.id}`, { method: "DELETE" });
+          close(true);
+          await load();
+        } catch (error) {
+          setMsg(msg, error.message, "err");
+        }
+      } }, "Delete") : null),
+    msg);
+
+    if (!detail) return form;
+    const labels = detail.status_labels || {};
+    const lines = detail.expenses.map((e) => h("tr", { class: "clickable", onclick: () => { location.href = `/admin/expenses.html#${e.id}`; } },
+      h("td", {}, e.item || "(no name)", e.part_of ? h("div", { class: "muted", style: "font-size:12px" }, `part of ${e.part_of}`) : null),
+      h("td", { class: "muted" }, [e.category, e.subcategory].filter(Boolean).join(" › ")),
+      h("td", {}, statusPill(e.status, labels)),
+      h("td", {}, e.due_date ? fmtDate(e.due_date) : "—"),
+      h("td", { class: "num" }, money(e.projected)),
+      h("td", { class: "num" }, e.paid ? money(e.paid) : "—"),
+      h("td", { class: "num" }, e.owed ? money(e.owed) : "—")));
+    if (!lines.length) lines.push(h("tr", {}, h("td", { colspan: 7, class: "muted" }, "No expenses name this vendor yet.")));
+    else lines.push(h("tr", { class: "group" }, h("td", { colspan: 4 }, "Total"), h("td", { class: "num" }, money(v.projected)), h("td", { class: "num" }, money(v.paid)), h("td", { class: "num" }, money(v.owed))));
+    return h("div", {}, form,
+      h("section", {}, h("h3", {}, "Expenses with this vendor"),
+        h("div", { class: "table-wrap" }, h("table", {},
+          h("thead", {}, h("tr", {}, ["Item", "Category", "Stage", "Due", "Projected", "Paid", "Owed"].map((t, i) => h("th", { class: i >= 4 ? "num" : "" }, t)))),
+          h("tbody", {}, lines)))));
+  });
+}
+
+await load();
+const wanted = Number(new URLSearchParams(location.search).get("open"));
+if (wanted) openVendor(wanted);
+</script>
+</body>
+</html>

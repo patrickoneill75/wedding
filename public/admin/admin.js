@@ -69,8 +69,11 @@ export function setMsg(node, text, kind = "") {
 const PAGES = [
   ["index.html", "Dashboard"],
   ["expenses.html", "Expenses"],
+  ["vendors.html", "Vendors"],
   ["guests.html", "Guests"],
   ["seating.html", "Seating"],
+  ["runofshow.html", "Run of show"],
+  ["reports.html", "Reports"],
   ["settings.html", "Settings"],
 ];
 

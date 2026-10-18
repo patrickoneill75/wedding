@@ -23,6 +23,9 @@
  *   GET    form-link                   the expense form's address (PUBLIC_URL/submit)
  *   POST   import                      the original spreadsheet (multipart)
  *   *      seating/*                   rooms, tables, templates and seats (src/seating.js)
+ *   *      vendors/*                   vendors and their contacts (src/vendors.js)
+ *   *      reports/*                   built-in and custom reports, CSV export (src/reports.js)
+ *   *      runofshow/*                 the run of show and guest groups (src/runofshow.js)
  *   GET    site/status                 the Zola copy: address, last check, pages, warnings
  *   POST   site/refresh                fetch the Zola site now ("Refresh from Zola")
  *   GET    drive/status, GET drive/connect, GET drive/folders?parent=,
@@ -64,6 +67,9 @@ import { syncToDrive } from "./sync.js";
 import { importWorkbook } from "./importer.js";
 import { refreshSite, requestGithubRefresh, siteSlug } from "./site.js";
 import { handleSeating, seatsByGuest } from "./seating.js";
+import { handleVendors } from "./vendors.js";
+import { handleReports } from "./reports.js";
+import { handleRunOfShow } from "./runofshow.js";
 
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
@@ -464,6 +470,9 @@ export async function handleAdminApi(route, request, env) {
 
     // ---- seating chart -----------------------------------------------------------
     if (parts[0] === "seating") return await handleSeating(parts, method, request, env, body);
+    if (parts[0] === "vendors") return await handleVendors(parts, method, request, env, body);
+    if (parts[0] === "reports") return await handleReports(parts, method, request, env, body);
+    if (parts[0] === "runofshow") return await handleRunOfShow(parts, method, request, env, body, user);
 
     // ---- settings ----------------------------------------------------------------
     if (route === "settings" && method === "GET") {

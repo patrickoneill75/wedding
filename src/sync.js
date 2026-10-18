@@ -7,6 +7,7 @@
  *   expenses.csv         one row per expense with its computed totals
  *   payments.csv         every payment
  *   price_history.csv    every status/price change
+ *   vendors.csv          every vendor with contacts, day-of / key flags and spending
  *   planning_numbers.csv guest counts, the drinks calculator, and settings
  *
  * Runs from the cron (every five minutes, only when something changed since the last
@@ -19,6 +20,7 @@ import { driveStatus, requireFolder, upsertFile } from "./google.js";
 import { listExpenses, loadContext } from "./store.js";
 import { STATUS_LABELS } from "./calc.js";
 import { seatsByGuest } from "./seating.js";
+import { vendorsWithSpending } from "./vendors.js";
 
 export function toCsv(header, rows) {
   const cell = (value) => {
@@ -162,6 +164,11 @@ export async function buildExports(env) {
     "price_history.csv": toCsv(
       ["at", "category", "item", "status", "total", "unit_cost", "quantity", "note", "changed_by"],
       history
+    ),
+    "vendors.csv": toCsv(
+      ["name", "category", "day_of", "key_vendor", "primary_first", "primary_last", "primary_email", "primary_phone",
+       "secondary_first", "secondary_last", "secondary_email", "secondary_phone", "website", "notes", "expenses", "projected", "paid", "owed"],
+      (await vendorsWithSpending(env, ctx)).map((v) => ({ ...v, day_of: yesNo(v.day_of), key_vendor: yesNo(v.key_vendor) }))
     ),
     "planning_numbers.csv": toCsv(["name", "value"], numbers),
   };

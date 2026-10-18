@@ -32,10 +32,20 @@ A Cloudflare Worker with two sides:
     guest when they RSVP), save-the-date / invite / gift / thank-you tracking, RSVPs,
     dietary needs and tables. Bulk edits and filters, and a Reset RSVP to un-answer a
     household.
+  - **Vendors**: every vendor with optional primary and secondary contacts, day-of and
+    key vendor flags (day-of vendors start out key), and the expenses with each.
   - **Seating**: rooms (ceremony, reception) drawn to size in feet, with round or
-    rectangular tables, single chairs and text notes ("North end", "DJ booth") you drag
-    into place. Table templates (size and seats) for the sizes you rent. At the reception
+    rectangular tables, single chairs, text notes ("North end", "DJ booth") and shapes of
+    any size with centered text (dance floor, bar) you drag into place. Table templates (size and seats) for the sizes you rent. At the reception
     each guest and plus-one gets a table number and a seat letter (A, B, C ...).
+  - **Run of show**: the day step by step, each linked to the vendors, guests, groups
+    and tables it needs. The coordinator gets a private link to a day-of view at
+    `/dayof/` for her iPad: now and next, tap to start and finish steps, who is in each
+    and where they sit, and vendor phone numbers. It never shows budgets or addresses.
+  - **Reports**: head counts, meal counts, dietary needs, table cards, the seating
+    chart board, ceremony-only / reception-only / both lists, the chase list, mailing
+    labels, thank-yous, vendor contacts and more, plus custom reports you build and
+    save. Each downloads as a CSV.
   - **Settings**: wedding details, 7% tax, budget, priority weights, the drinks
     calculator, the expense-form link, Google Drive, and the spreadsheet import.
 
@@ -74,14 +84,19 @@ src/intake.js      the expense form's conversation with Claude
 src/store.js       expense/payment writes with history and status moves
 src/calc.js        the budget math (pure; most tests live here)
 src/google.js      Google Drive: tokens, folder picker, uploads
-src/seating.js     the seating chart: rooms, tables, templates, who sits where
+src/seating.js     the seating chart: rooms, tables, shapes, templates, who sits where
+src/vendors.js     vendors, their contacts, and what's spent with each
+src/people.js      one row per guest and plus-one, for reports and the run of show
+src/reports.js     built-in and custom reports, CSV export
+src/runofshow.js   the run of show, guest groups, and the coordinator's day-of API
 src/sync.js        CSV exports and the Drive sync (cron every 5 minutes)
 src/site.js        the Zola website copy: fetch, clean, store, serve
 scripts/zola_refresh.mjs  runs src/site.js on GitHub and sends the pages to the site
 src/importer.js    one-time import of Wedding_Data.xlsx
 src/xlsx.js        a minimal .xlsx reader (no dependencies)
 src/db.js          D1 schema (self-migrating) and query helpers
-public/            static pages: RSVP page (/rsvp/), expense form, control panel
+public/            static pages: RSVP page (/rsvp/), expense form, control panel,
+                   the coordinator's day-of view (/dayof/)
 tests/             node tests/worker_test.mjs
 ```
 

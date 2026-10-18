@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Day of">
+<link rel="icon" href="/favicon.svg">
+<title>Day-of run of show</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  body { font-size: 16px; -webkit-tap-highlight-color: transparent; }
+  .wrap { max-width: 980px; padding: max(16px, env(safe-area-inset-top)) 16px 80px; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+  header h1 { font-size: 22px; margin: 0; }
+  header .clock { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; margin-left: auto; }
+  .banner { border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; font-size: 14px; }
+  .banner.warn { background: rgba(250, 178, 25, .18); color: #93370d; }
+  .banner.err { background: rgba(208, 59, 59, .12); color: var(--bad); }
+  @media (prefers-color-scheme: dark) { .banner.warn { color: var(--warn); } }
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  .tabs button { font-size: 15px; padding: 10px 16px; border-radius: 999px; }
+  .tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .now { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+  @media (max-width: 640px) { .now { grid-template-columns: 1fr; } }
+  .now .card { margin: 0; }
+  .now .label { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); font-weight: 650; }
+  .now .t { font-size: 19px; font-weight: 650; margin-top: 4px; }
+  .now .w { color: var(--text-secondary); font-size: 14px; }
+  input[type="search"] { font-size: 16px; padding: 11px 14px; margin-bottom: 14px; }
+  .step { border: 1px solid var(--border); border-radius: 14px; background: var(--surface-1); margin-bottom: 10px; overflow: hidden; }
+  .step.in_progress { border-color: var(--accent); box-shadow: inset 4px 0 0 var(--accent); }
+  .step.done .head { opacity: .55; }
+  .step .head { display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px 16px; cursor: pointer; }
+  .step .time { font-weight: 700; font-variant-numeric: tabular-nums; font-size: 16px; }
+  .step .time small { display: block; font-weight: 400; color: var(--text-muted); font-size: 13px; }
+  .step .title { font-weight: 650; font-size: 17px; }
+  .step .where { color: var(--text-secondary); font-size: 14px; }
+  .step .acts { display: flex; gap: 8px; }
+  .step .acts button { font-size: 15px; padding: 10px 16px; min-height: 44px; }
+  .step .acts button.go { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .step .acts button.finish { background: var(--good); border-color: var(--good); color: #fff; font-weight: 600; }
+  .step .body { border-top: 1px solid var(--border); padding: 12px 16px 16px; }
+  .step .details { white-space: pre-wrap; margin: 0 0 12px; font-size: 15px; }
+  .group { margin-bottom: 12px; }
+  .group h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 0 0 6px; }
+  .group h3 .role { text-transform: none; letter-spacing: 0; color: var(--text-secondary); font-weight: 500; }
+  .names { display: flex; flex-wrap: wrap; gap: 6px; }
+  .names span { background: var(--wash); border-radius: 8px; padding: 4px 10px; font-size: 14px; }
+  .names span small { color: var(--text-muted); margin-left: 4px; }
+  .vendor { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 12px; border-radius: 10px; background: var(--wash); margin-bottom: 6px; }
+  .vendor b { font-size: 15px; }
+  .vendor a.btn { padding: 8px 14px; min-height: 40px; font-size: 14px; }
+  .who-by { font-size: 12.5px; color: var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><h1 id="title">Run of show</h1><span class="muted" id="sub"></span><span class="clock" id="clock"></span></header>
+  <div id="banner"></div>
+  <div class="tabs" id="tabs"></div>
+  <div id="main"></div>
+</div>
+
+<script type="module">
+// The coordinator's view. The key lives in the link (#k=...), so the link works when it's
+// saved to the iPad's home screen; it's also kept in this browser in case the address is
+// shortened. An admin who is signed in needs no key.
+const KEY_STORE = "dayof-key";
+const CACHE = "dayof-cache";
+const fromHash = new URLSearchParams(location.hash.slice(1)).get("k");
+let key = fromHash || "";
+try {
+  if (fromHash) localStorage.setItem(KEY_STORE, fromHash);
+  else key = localStorage.getItem(KEY_STORE) || "";
+} catch {}
+
+let data = null;
+let tab = "steps";
+let day = null;
+let query = "";
+const open = new Set();
+let offline = false;
+let error = "";
+
+function h(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2), v);
+    else if (k === "class") node.className = v;
+    else node.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children.flat(Infinity)) if (c !== null && c !== undefined && c !== false) node.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return node;
+}
+
+async function call(path, body) {
+  const headers = { "x-wedding": "1" };
+  if (key) headers["x-dayof-key"] = key;
+  if (body) headers["content-type"] = "application/json";
+  const response = await fetch(path, { method: body ? "POST" : "GET", headers, credentials: "same-origin", body: body ? JSON.stringify(body) : undefined });
+  const reply = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const e = new Error(reply.error || `Something went wrong (${response.status}).`);
+    e.status = response.status;
+    throw e;
+  }
+  return reply;
+}
+
+async function refresh() {
+  try {
+    data = await call("/api/dayof");
+    offline = false;
+    error = "";
+    try { localStorage.setItem(CACHE, JSON.stringify(data)); } catch {}
+  } catch (e) {
+    if (e.status === 401) {
+      error = e.message;
+      data = null;
+    } else {
+      offline = true;
+      if (!data) try { data = JSON.parse(localStorage.getItem(CACHE) || "null"); } catch {}
+    }
+  }
+  render();
+}
+
+const pad = (n) => String(n).padStart(2, "0");
+const minutes = (t) => (t ? Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5)) : null);
+function clock(t) {
+  if (!t) return "";
+  const [hh, mm] = t.split(":").map(Number);
+  return `${((hh + 11) % 12) + 1}:${pad(mm)} ${hh < 12 ? "AM" : "PM"}`;
+}
+const endOf = (s) => (s.start_time && s.duration_min != null ? (() => { const t = (minutes(s.start_time) + s.duration_min) % 1440; return `${pad(Math.floor(t / 60))}:${pad(t % 60)}`; })() : "");
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const fmtDay = (d) => (d ? new Date(`${d}T12:00:00`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }) : "No day set");
+
+async function setStatus(step, status) {
+  const before = step.status;
+  step.status = status;
+  render();
+  try {
+    data = await call("/api/dayof/status", { item_id: step.id, status });
+    try { localStorage.setItem(CACHE, JSON.stringify(data)); } catch {}
+    offline = false;
+  } catch (e) {
+    step.status = before;
+    alert(e.status ? e.message : "No connection, so that wasn't saved. Try again when the wifi is back.");
+  }
+  render();
+}
+
+function stepMatches(s) {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return [s.title, s.location, s.details, ...s.links.flatMap((l) => [l.label, l.role, ...l.people.map((p) => p.name), l.vendor?.primary, l.vendor?.secondary])]
+    .filter(Boolean).join(" ").toLowerCase().includes(q);
+}
+
+function vendorCard(v, role) {
+  const phoneButtons = (name, phone, email) => [
+    phone ? h("a", { class: "btn", href: `tel:${phone}` }, `Call ${name || ""}`.trim()) : null,
+    phone ? h("a", { class: "btn", href: `sms:${phone}` }, "Text") : null,
+    email ? h("a", { class: "btn", href: `mailto:${email}` }, "Email") : null,
+  ];
+  return h("div", { class: "vendor" },
+    h("div", {}, h("b", {}, v.name), role ? h("div", { class: "muted", style: "font-size:13px" }, role) : null,
+      v.category ? h("div", { class: "muted", style: "font-size:13px" }, v.category) : null),
+    v.primary || v.primary_phone ? h("div", {}, h("div", { style: "font-size:14px" }, v.primary || "Main contact", v.primary_phone ? ` · ${v.primary_phone}` : "")) : null,
+    phoneButtons(v.primary.split(" ")[0], v.primary_phone, v.primary_email),
+    v.secondary || v.secondary_phone ? h("div", { style: "font-size:14px" }, `Backup: ${v.secondary || ""}${v.secondary_phone ? ` · ${v.secondary_phone}` : ""}`) : null,
+    v.secondary_phone ? h("a", { class: "btn", href: `tel:${v.secondary_phone}` }, "Call backup") : null);
+}
+
+function stepView(s) {
+  const expanded = open.has(s.id) || Boolean(query.trim());
+  const people = s.links.filter((l) => l.kind !== "vendor");
+  const vendors = s.links.filter((l) => l.kind === "vendor");
+  const end = endOf(s);
+  return h("div", { class: `step ${s.status}`, id: `step-${s.id}` },
+    h("div", { class: "head", onclick: () => { open.has(s.id) ? open.delete(s.id) : open.add(s.id); render(); } },
+      h("div", { class: "time" }, s.start_time ? clock(s.start_time) : "—", end ? h("small", {}, `to ${clock(end)}`) : null),
+      h("div", {}, h("div", { class: "title" }, s.title), s.location ? h("div", { class: "where" }, s.location) : null,
+        s.status === "done" && s.status_at ? h("div", { class: "who-by" }, `Done at ${new Date(s.status_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`) : null),
+      h("div", { class: "acts", onclick: (e) => e.stopPropagation() },
+        s.status === "todo" ? h("button", { class: "go", onclick: () => setStatus(s, "in_progress") }, "Start") : null,
+        s.status === "in_progress" ? h("button", { class: "finish", onclick: () => setStatus(s, "done") }, "Done") : null,
+        s.status !== "todo" ? h("button", { onclick: () => setStatus(s, s.status === "done" ? "in_progress" : "todo") }, "Undo") : null)),
+    expanded ? h("div", { class: "body" },
+      s.details ? h("p", { class: "details" }, s.details) : null,
+      vendors.length ? h("div", { class: "group" }, h("h3", {}, "Vendors"), vendors.map((l) => vendorCard(l.vendor, l.role))) : null,
+      people.map((l) => h("div", { class: "group" },
+        h("h3", {}, l.label, ` (${l.people.length})`, l.role ? h("span", { class: "role" }, ` · ${l.role}`) : null),
+        l.people.length ? h("div", { class: "names" }, l.people.map((p) => h("span", {}, p.name, p.table_seat ? h("small", {}, `table ${p.table_seat}`) : null)))
+          : h("p", { class: "muted", style: "margin:0" }, "Nobody in this group."))),
+      !s.details && !s.links.length ? h("p", { class: "muted", style: "margin:0" }, "Nothing more for this step.") : null) : null);
+}
+
+function render() {
+  // A refresh rebuilds the page; keep the cursor where it was in the search box.
+  const active = document.activeElement;
+  const typing = active && active.type === "search" ? active.selectionStart : null;
+  draw();
+  if (typing !== null) {
+    const box = document.querySelector('input[type="search"]');
+    if (box) { box.focus(); box.setSelectionRange(typing, typing); }
+  }
+}
+
+function draw() {
+  document.getElementById("clock").textContent = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  const banner = document.getElementById("banner");
+  const main = document.getElementById("main");
+  banner.replaceChildren(h("div", {},
+    error ? h("div", { class: "banner err" }, error) : null,
+    offline ? h("div", { class: "banner warn" }, "No connection. Showing the last copy; changes won't save until the wifi is back.") : null));
+  if (!data) {
+    document.getElementById("tabs").replaceChildren();
+    main.replaceChildren(error ? h("p", { class: "muted" }, "Ask the couple for the current day-of link.") : h("p", { class: "muted" }, "Loading…"));
+    return;
+  }
+  document.getElementById("title").textContent = data.couple_names ? `${data.couple_names}: run of show` : "Run of show";
+  document.getElementById("sub").textContent = data.wedding_date ? fmtDay(data.wedding_date) : "";
+
+  const days = [...new Set(data.steps.map((s) => s.day || ""))].sort((a, b) => (a || "9999").localeCompare(b || "9999"));
+  if (day === null || !days.includes(day)) day = days.includes(today()) ? today() : days.includes(data.wedding_date) ? data.wedding_date : days[0] ?? "";
+  document.getElementById("tabs").replaceChildren(
+    ...(days.length > 1 ? days : [day]).map((d) => h("button", { class: tab === "steps" && d === day ? "on" : "", onclick: () => { tab = "steps"; day = d; render(); } }, days.length > 1 ? fmtDay(d) : "Schedule")),
+    h("button", { class: tab === "vendors" ? "on" : "", onclick: () => { tab = "vendors"; render(); } }, "Vendor contacts"));
+
+  if (tab === "vendors") {
+    main.replaceChildren(...(data.day_of_vendors.length ? data.day_of_vendors.map((v) => vendorCard(v)) : [h("p", { class: "muted" }, "No day-of vendors marked yet.")]));
+    return;
+  }
+
+  const steps = data.steps.filter((s) => (s.day || "") === day);
+  // Now: the step marked happening, else the last one that has started by the clock.
+  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+  const isToday = day === today();
+  const current = steps.find((s) => s.status === "in_progress")
+    || (isToday ? [...steps].reverse().find((s) => s.status !== "done" && s.start_time && minutes(s.start_time) <= nowMin) : null);
+  const next = steps.find((s) => s.status === "todo" && s !== current && (!current || steps.indexOf(s) > steps.indexOf(current)));
+  const card = (label, s) => h("div", { class: "card", style: s ? "cursor:pointer" : null, onclick: s ? () => { open.add(s.id); render(); document.getElementById(`step-${s.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }); } : null },
+    h("div", { class: "label" }, label),
+    s ? [h("div", { class: "t" }, s.title), h("div", { class: "w" }, [s.start_time ? clock(s.start_time) : "", s.location].filter(Boolean).join(" · "))] : h("div", { class: "w", style: "margin-top:4px" }, "Nothing"));
+  const search = h("input", { type: "search", placeholder: "Find a person, vendor or step…", value: query, oninput: (e) => { query = e.target.value; render(); } });
+  const shown = steps.filter(stepMatches);
+  main.replaceChildren(
+    h("div", { class: "now" }, card("Now", current), card("Next", next)),
+    search,
+    ...(shown.length ? shown.map((s) => stepView(s)) : [h("p", { class: "muted" }, steps.length ? "No step matches that search." : "No steps on this day yet.")]));
+}
+
+await refresh();
+// Stay in step with everyone else's taps, and keep the clock and "Now" moving.
+setInterval(refresh, 30000);
+setInterval(render, 60000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+</script>
+</body>
+</html>

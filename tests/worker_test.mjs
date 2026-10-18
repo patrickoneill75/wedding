@@ -734,6 +734,7 @@ test("upgrading moves Booked items with payments on them to Partially paid", asy
   env.DB.db.exec(`
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO settings VALUES ('_schema_version', '6');
+    CREATE TABLE vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at TEXT);
     CREATE TABLE expenses (id INTEGER PRIMARY KEY, parent_id INTEGER, status TEXT NOT NULL, updated_at TEXT, category TEXT, subcategory TEXT, item TEXT, pricing TEXT, unit_cost REAL, units REAL, quantity_source TEXT, quantity_factor REAL, round_up INTEGER, taxable INTEGER, gratuity_rate REAL, notes TEXT, source TEXT, baseline_total REAL);
     CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER);
     INSERT INTO expenses (id, parent_id, status) VALUES (1, NULL, 'booked'), (2, NULL, 'booked'), (3, NULL, 'quote'), (4, 3, 'paid');
@@ -762,6 +763,7 @@ test("upgrading turns an item's leftover budget into an estimate line item and c
   env.DB.db.exec(`
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO settings VALUES ('_schema_version', '7');
+    CREATE TABLE vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at TEXT);
     CREATE TABLE expenses (id INTEGER PRIMARY KEY, parent_id INTEGER, status TEXT NOT NULL, updated_at TEXT, category TEXT, subcategory TEXT,
       item TEXT, pricing TEXT, unit_cost REAL, units REAL, quantity_source TEXT, quantity_factor REAL, round_up INTEGER, taxable INTEGER,
       gratuity_rate REAL, notes TEXT, source TEXT, baseline_total REAL);
@@ -1252,10 +1254,10 @@ test("Drive sync creates each CSV once, then updates the same files in place", a
 
   const first = await withFetch(drive, () => api("/api/admin/drive/sync", { method: "POST" }));
   assert.equal(first.status, 200, JSON.stringify(first.data));
-  assert.deepEqual([...files.keys()].sort(), ["expenses.csv", "guests.csv", "payments.csv", "planning_numbers.csv", "price_history.csv"]);
+  assert.deepEqual([...files.keys()].sort(), ["expenses.csv", "guests.csv", "payments.csv", "planning_numbers.csv", "price_history.csv", "vendors.csv"]);
   const second = await withFetch(drive, async (calls) => {
     const r = await api("/api/admin/drive/sync", { method: "POST" });
-    assert.equal(calls.filter((c) => c.init.method === "PATCH").length, 5);
+    assert.equal(calls.filter((c) => c.init.method === "PATCH").length, 6);
     assert.equal(calls.filter((c) => c.url.includes("uploadType=multipart")).length, 0);
     return r;
   });
@@ -1744,6 +1746,191 @@ test("seating: a long row of chairs is one insert, numbered in a reception room 
   const pews = await api("/api/admin/seating/items", { method: "POST", body: { room_id: chapel, kind: "seat", count: 10 } });
   assert.ok(pews.data.items.filter((i) => pews.data.ids.includes(i.id)).every((c) => c.label === ""));
   assert.equal((await api("/api/admin/seating/items", { method: "POST", body: { room_id: chapel, kind: "seat", count: 500 } })).status, 400);
+});
+
+/* ----------------------------------------------------------------------- vendors -- */
+
+test("vendors: a day-of vendor is a key vendor unless the same save says not; contacts are optional", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const costco = await api("/api/admin/vendors", { method: "POST", body: { name: "Costco" } });
+  assert.equal(costco.status, 201, "a store needs no contact");
+  assert.deepEqual([costco.data.vendor.day_of, costco.data.vendor.key_vendor], [0, 0]);
+  const dj = await api("/api/admin/vendors", { method: "POST", body: { name: "Spin City DJs", day_of: true, primary_first: "Rae", primary_phone: "555-0100" } });
+  assert.equal(dj.data.vendor.key_vendor, 1, "day-of makes it a key vendor");
+  const r = await api(`/api/admin/vendors/${dj.data.vendor.id}`, { method: "PUT", body: { key_vendor: false } });
+  assert.deepEqual([r.data.vendor.day_of, r.data.vendor.key_vendor], [1, 0], "unchecking key afterwards sticks");
+  const both = await api("/api/admin/vendors", { method: "POST", body: { name: "Shuttle Co", day_of: true, key_vendor: false } });
+  assert.equal(both.data.vendor.key_vendor, 0, "a save that sets both is taken as sent");
+  assert.equal((await api("/api/admin/vendors", { method: "POST", body: { name: "COSTCO" } })).status, 400, "names are unique ignoring case");
+  assert.equal((await api("/api/admin/vendors", { method: "POST", body: { name: "Florist", primary_email: "not-an-email" } })).status, 400);
+  assert.equal((await api("/api/admin/vendors", { method: "POST", body: { constructor: "x" } })).status, 400, "no name, no vendor");
+});
+
+test("vendors: each vendor lists its line items, a rename carries to them, and a vendor in use can't be deleted", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const parent = (await api("/api/admin/expenses", { method: "POST", body: { category: "Decor", item: "Place Settings" } })).data.expense.id;
+  await api("/api/admin/expenses", { method: "POST", body: { parent_id: parent, item: "Plates", vendor: "Goodwill", unit_cost: 120, status: "paid" } });
+  await api("/api/admin/expenses", { method: "POST", body: { parent_id: parent, item: "Glasses", vendor: "goodwill ", unit_cost: 30, status: "booked" } });
+  await api("/api/admin/expenses", { method: "POST", body: { item: "Cake", vendor: "Bakery", unit_cost: 500 } });
+  const list = (await api("/api/admin/vendors")).data.vendors;
+  const goodwill = list.find((v) => v.name === "Goodwill");
+  assert.ok(goodwill, "a vendor named on an expense shows up by itself");
+  assert.deepEqual([goodwill.expenses, goodwill.projected, goodwill.paid], [2, 150, 120], "matched ignoring case, and the item they sit under isn't counted twice");
+  assert.equal(goodwill.owed, 30, "owed is what's booked and unpaid: the paid plates owe nothing");
+  assert.equal(list.find((v) => v.name === "Bakery").owed, 0, "an estimate owes nothing yet");
+  const detail = (await api(`/api/admin/vendors/${goodwill.id}`)).data;
+  assert.deepEqual(detail.expenses.map((e) => [e.item, e.part_of]).sort(), [["Glasses", "Place Settings"], ["Plates", "Place Settings"]]);
+  // Bug: the vendor's Total row read $0.00 because its totals were taken from rows that had lost their vendor.
+  assert.deepEqual([detail.vendor.projected, detail.vendor.paid, detail.vendor.owed], [150, 120, 30]);
+  await api(`/api/admin/vendors/${goodwill.id}`, { method: "PUT", body: { name: "Goodwill Industries" } });
+  const { expenses } = (await api("/api/admin/expenses")).data;
+  assert.deepEqual(expenses.filter((e) => e.parent_id === parent).map((e) => e.vendor), ["Goodwill Industries", "Goodwill Industries"]);
+  assert.equal((await api(`/api/admin/vendors/${goodwill.id}`, { method: "DELETE" })).status, 400, "two expenses still name it");
+});
+
+/* -------------------------------------------------------------- seating shapes -- */
+
+test("seating: shapes take any size and centered text, never take seats, and may share a label", async () => {
+  const { api, id, roomId } = await seatingSetup();
+  const add = (body) => api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "shape", ...body } });
+  const floor = await add({ label: "Dance floor\nDJ at the north end", width_ft: 24, length_ft: 18, color: "blue" });
+  assert.equal(floor.status, 201, JSON.stringify(floor.data));
+  const shape = floor.data.items.find((i) => i.id === floor.data.ids[0]);
+  assert.deepEqual([shape.shape, shape.width_ft, shape.length_ft, shape.color, shape.label], ["rect", 24, 18, "blue", "Dance floor\nDJ at the north end"]);
+  const oval = await add({ shape: "round", width_ft: 12, length_ft: 6, label: "Dance floor" });
+  assert.equal(oval.data.items.find((i) => i.id === oval.data.ids[0]).length_ft, 6, "an oval keeps its own length");
+  assert.equal(oval.status, 201, "shapes can share a label; only table numbers are unique");
+  assert.equal((await add({ color: "plaid" })).status, 400);
+  assert.equal((await add({ width_ft: 900 })).status, 400);
+  const seat = await api("/api/admin/seating/assign", { method: "POST", body: { item_id: floor.data.ids[0], seat_letter: "A", guest_id: id.Avery } });
+  assert.equal(seat.status, 400, "nobody sits at a shape");
+});
+
+/* ----------------------------------------------------------------------- reports -- */
+
+async function reportSetup() {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const household = (body) => api("/api/admin/households", { method: "POST", body });
+  await household({ display_name: "The Smiths", address1: "1 Elm St", city: "Carmel", state: "IN", zip: "46032", email: "smiths@example.com",
+    guests: [{ first_name: "Avery", last_name: "Smith", rsvp: "yes", dietary: "Vegan", invite_ceremony: true, wedding_party: true },
+      { first_name: "Blake", last_name: "Smith", rsvp: "pending", invite_ceremony: true, plus_one_allowed: true }] });
+  await household({ display_name: "=HYPERLINK(1)", guests: [{ first_name: "Casey", last_name: "Jones", rsvp: "no" }] });
+  await household({ display_name: "Dana Lee", guests: [{ first_name: "Dana", last_name: "Lee", rsvp: "yes", invite_ceremony: true, invite_reception: false }] });
+  return { env, api };
+}
+
+const runReport = async (api, body) => {
+  const r = await api("/api/admin/reports/run", { method: "POST", body });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  return r.data.rows.map((row) => Object.fromEntries(r.data.columns.map((c, i) => [c.label, row[i]])));
+};
+
+test("reports: head count, table cards, chase list and mailing labels count the right people", async () => {
+  const { api } = await reportSetup();
+  const head = await runReport(api, { id: "headcount" });
+  const reception = head.find((r) => r.Event === "Reception");
+  assert.deepEqual([reception.Invited, reception.Coming, reception["Awaiting reply"], reception["Not coming"]], [4, 1, 2, 1],
+    "Blake's plus-one is invited and awaiting; Dana is ceremony only");
+  assert.equal(head.find((r) => r.Event === "Ceremony only").Invited, 1);
+
+  const cards = await runReport(api, { id: "table-cards" });
+  assert.deepEqual(cards.map((c) => c.Name), ["Avery Smith", "Blake Smith", "Guest of Blake Smith"],
+    "reception guests who haven't declined; an unnamed plus-one has no last name, so it sorts last");
+  assert.equal(cards.find((c) => c.Name === "Avery Smith")["Dietary needs"], "Vegan");
+
+  const chase = await runReport(api, { id: "chase-list" });
+  assert.deepEqual(chase.map((c) => [c["Name on the envelope"], c["Who hasn't replied"]]), [["The Smiths", "Blake Smith, Guest of Blake Smith"]]);
+
+  const labels = await runReport(api, { id: "mailing-labels" });
+  assert.deepEqual(labels.map((l) => [l["Name on the envelope"], l.ZIP]), [["The Smiths", "46032"]], "only households with an address");
+
+  const meals = await runReport(api, { id: "meal-counts" });
+  assert.deepEqual(meals, [{ "Dietary needs": "Vegan", Count: 1 }, { "Dietary needs": "Total", Count: 1 }]);
+  assert.deepEqual((await runReport(api, { id: "ceremony-only" })).map((r) => r.Name), ["Dana Lee"]);
+});
+
+test("reports: CSV downloads defuse formulas, and custom reports save, filter and count", async () => {
+  const { api } = await reportSetup();
+  const csv = await api("/api/admin/reports/full-list/csv");
+  assert.equal(csv.status, 200);
+  assert.match(csv.headers.get("content-type"), /text\/csv/);
+  assert.match(csv.headers.get("content-disposition"), /full-guest-list\.csv/);
+  assert.ok(csv.data.includes("'=HYPERLINK(1)"), "a household name that looks like a formula is defused");
+
+  const definition = { source: "people", columns: ["name", "side", "rsvp"], filters: [{ field: "ceremony", op: "is", value: "yes" }], sort: [{ field: "name", dir: "desc" }] };
+  const saved = await api("/api/admin/reports", { method: "POST", body: { name: "Ceremony crowd", definition } });
+  assert.equal(saved.status, 201, JSON.stringify(saved.data));
+  assert.deepEqual((await runReport(api, { id: saved.data.id })).map((r) => r.Name), ["Guest of Blake Smith", "Dana Lee", "Blake Smith", "Avery Smith"]);
+  const counted = await runReport(api, { definition: { source: "people", group_by: "rsvp", filters: [] } });
+  assert.deepEqual(counted.map((r) => [r.RSVP, r.Count]), [["Awaiting", 2], ["Coming", 2], ["Not coming", 1], ["Total", 5]]);
+  const list = (await api("/api/admin/reports")).data;
+  assert.ok(list.builtins.length >= 15 && list.custom.some((c) => c.name === "Ceremony crowd"));
+  for (const bad of [{ source: "constructor", columns: ["name"] }, { source: "people", columns: ["nope"] }, { source: "people", columns: ["name"], filters: [{ field: "toString", op: "is" }] }]) {
+    assert.equal((await api("/api/admin/reports/run", { method: "POST", body: { definition: bad } })).status, 400, JSON.stringify(bad));
+  }
+  assert.equal((await api("/api/admin/reports/csv", { method: "POST", body: { definition, name: "x" } })).status, 200);
+});
+
+/* ------------------------------------------------------------------ run of show -- */
+
+test("run of show: links resolve to the people in them, declined guests drop out, and deleted things unlink", async () => {
+  const { api } = await reportSetup();
+  const people = (await api("/api/admin/runofshow")).data.people;
+  const key = (name) => people.find((p) => p.name === name).key;
+  const vendor = (await api("/api/admin/vendors", { method: "POST", body: { name: "Lens Co", day_of: true, primary_first: "Pat", primary_phone: "555-0101" } })).data.vendor;
+  const group = await api("/api/admin/runofshow/groups", { method: "POST", body: { name: "Family photos", members: [key("Avery Smith"), key("Casey Jones"), "999:0"] } });
+  assert.equal(group.status, 201, JSON.stringify(group.data));
+  const groupId = group.data.id;
+  assert.equal(group.data.groups[0].members.length, 2, "an unknown guest isn't added");
+  const step = await api("/api/admin/runofshow/items", { method: "POST", body: {
+    title: "Family photos", day: "2027-06-12", start_time: "15:30", duration_min: 30, location: "Garden",
+    links: [{ kind: "vendor", ref_id: vendor.id, role: "shoots" }, { kind: "group", ref_id: groupId }, { kind: "preset", ref_key: "wedding_party" }, { kind: "group", ref_id: groupId }],
+  } });
+  assert.equal(step.status, 201, JSON.stringify(step.data));
+  const s = step.data.steps[0];
+  assert.equal(s.links.length, 3, "a repeated link is kept once");
+  assert.deepEqual(s.links.find((l) => l.kind === "group").people.map((p) => p.name), ["Avery Smith"], "Casey declined");
+  assert.deepEqual(s.links.find((l) => l.kind === "preset").people.map((p) => p.name), ["Avery Smith"]);
+  assert.equal(s.links.find((l) => l.kind === "vendor").vendor.primary_phone, "555-0101");
+  for (const bad of [{ kind: "vendor", ref_id: 999 }, { kind: "preset", ref_key: "constructor" }, { kind: "spaceship" }]) {
+    assert.equal((await api("/api/admin/runofshow/items", { method: "POST", body: { title: "X", links: [bad] } })).status, 400, JSON.stringify(bad));
+  }
+  assert.equal((await api("/api/admin/runofshow/items", { method: "POST", body: { title: "X", start_time: "25:00" } })).status, 400);
+  await api(`/api/admin/runofshow/groups/${groupId}`, { method: "DELETE" });
+  const after = (await api("/api/admin/runofshow")).data.steps[0];
+  assert.deepEqual(after.links.map((l) => l.kind).sort(), ["preset", "vendor"], "the deleted group's link is gone");
+  const rows = await runReport(api, { id: "run-of-show" });
+  assert.deepEqual([rows[0].Start, rows[0].End, rows[0].Vendors], ["15:30", "16:00", "Lens Co (shoots)"]);
+});
+
+test("day-of view: the coordinator's key reads and checks off steps, never budgets or addresses; a replaced key stops working", async () => {
+  const { env, api } = await reportSetup();
+  await api("/api/admin/vendors", { method: "POST", body: { name: "Lens Co", day_of: true } });
+  await api("/api/admin/expenses", { method: "POST", body: { item: "Photos", vendor: "Lens Co", unit_cost: 4321 } });
+  const stepId = (await api("/api/admin/runofshow/items", { method: "POST", body: { title: "Ceremony", start_time: "16:00", links: [{ kind: "preset", ref_key: "reception_guests" }] } })).data.id;
+  assert.equal((await call(env, "/api/dayof")).status, 401, "no key, no sign-in");
+  const made = (await api("/api/admin/runofshow/link", { method: "POST" })).data;
+  const key = new URL(made.url).hash.slice(3);
+  assert.ok(key.length >= 24);
+  const coordinator = (path, opts = {}) => call(env, path, { ...opts, headers: { "x-dayof-key": key } });
+  const view = await coordinator("/api/dayof");
+  assert.equal(view.status, 200, JSON.stringify(view.data));
+  const text = JSON.stringify(view.data);
+  for (const leak of ["4321", "projected", "1 Elm St", "smiths@example.com", "Vegan", "budget"]) assert.ok(!text.includes(leak), `day-of view leaks ${leak}`);
+  const done = await coordinator("/api/dayof/status", { method: "POST", body: { item_id: stepId, status: "done" } });
+  assert.equal(done.status, 200);
+  assert.equal(done.data.steps[0].status, "done");
+  assert.equal((await api("/api/admin/runofshow")).data.steps[0].status_by, "coordinator", "the couple see who checked it off");
+  assert.equal((await coordinator("/api/dayof/status", { method: "POST", body: { item_id: stepId, status: "exploded" } })).status, 400);
+  await api("/api/admin/runofshow/link", { method: "POST" });
+  assert.equal((await coordinator("/api/dayof")).status, 401, "the old link stops working once replaced");
+  const cookie = await sessionCookie(env);
+  assert.equal((await call(env, "/api/dayof", { cookie })).status, 200, "a signed-in admin needs no key");
+  assert.equal((await call(env, "/api/dayof/status", { method: "POST", cookie, body: { item_id: stepId, status: "todo" } })).status, 401,
+    "an admin's POST without the X-Wedding header is refused (CSRF)");
 });
 
 /* ------------------------------------------------------------------------- runner -- */
