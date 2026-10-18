@@ -1529,7 +1529,7 @@ test("pages get the current page script as they're served, replacing any copy st
   const page = (await call(env, "/")).data;
   assert.ok(!page.includes("an older version"), "the stored copy is gone");
   assert.equal(page.split(PAGE_SCRIPT).length, 2, "the current script appears once");
-  assert.ok(PAGE_SCRIPT.includes("wm-in-nav") && PAGE_SCRIPT.includes("br.right-24-w-64<row.right"), "the pill only joins the menu row when it fits");
+  assert.ok(PAGE_SCRIPT.includes("wm-in-nav") && PAGE_SCRIPT.includes("row.right+GAP+w>br.right-8"), "the pill only joins the menu row when it fits");
 });
 
 // Asked for: no RSVP button on the website while RSVPs are closed, and the button in #A4727E.
