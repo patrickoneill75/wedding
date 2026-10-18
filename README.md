@@ -47,6 +47,11 @@ High / Medium / Low priority, rounded up, as in the original spreadsheet. Once R
 in, **Convert all to confirmed RSVPs** on the dashboard re-prices everything on the real
 yes count.
 
+On the Expenses page every item's cost sits in one of two columns: **Estimated** (an
+estimate or a quote, not committed to yet) or **Incurred** (booked or paid). An item
+being bought in pieces splits across both: what's bought is incurred, and the rest of
+its budget is still estimated. **Owed** there is what's incurred and not yet paid.
+
 An item's **original estimate** is frozen the moment it leaves the Estimate stage, so the
 dashboard can show how far each category drifted.
 

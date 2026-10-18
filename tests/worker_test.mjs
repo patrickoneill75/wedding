@@ -691,7 +691,23 @@ test("In progress means everything bought so far is paid; Partially paid means a
   await api("/api/admin/expenses", { method: "POST", body: { parent_id: plates, item: "Chargers (maybe)", unit_cost: 80, status: "quote" } });
   const e = (await api(`/api/admin/expenses/${plates}`)).data.expense;
   assert.equal(e.status, "in_progress", "a quote isn't owed yet");
+  assert.deepEqual([e.incurred, e.estimated], [100, 400], "bought is incurred; the rest of the $500 budget is still estimated");
+  const v = (await api(`/api/admin/expenses/${venue}`)).data.expense;
+  assert.deepEqual([v.incurred, v.estimated], [4000, 0], "a booked balance is incurred even before it's paid");
   assert.equal((await api("/api/admin/expenses")).data.status_labels.in_progress, "In progress");
+});
+
+test("an item's cost is estimated until it's booked, then incurred; a cancelled one keeps only what was paid", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const make = async (body) => (await api("/api/admin/expenses", { method: "POST", body })).data.expense;
+  const quote = await make({ item: "Band", unit_cost: 2500, status: "quote" });
+  assert.deepEqual([quote.estimated, quote.incurred], [2500, 0]);
+  const booked = await make({ item: "DJ", unit_cost: 1200, status: "booked" });
+  assert.deepEqual([booked.estimated, booked.incurred], [0, 1200]);
+  await api(`/api/admin/expenses/${quote.id}/payments`, { method: "POST", body: { amount: 200 } });
+  const gone = (await api(`/api/admin/expenses/${quote.id}`, { method: "PUT", body: { status: "cancelled" } })).data.expense;
+  assert.deepEqual([gone.estimated, gone.incurred], [0, 200], "the forfeited deposit is incurred");
 });
 
 test("an item saved at Booked with a deposit already paid is Partially paid", async () => {

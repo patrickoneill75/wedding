@@ -45,7 +45,7 @@
   <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>Item</th><th>Stage</th><th class="num">Price</th>
+        <th>Item</th><th>Stage</th><th class="num" title="Estimates and quotes: not committed to yet">Estimated</th><th class="num" title="Booked or paid for">Incurred</th>
         <th class="num">Paid</th><th class="num">Owed</th><th>Due</th>
       </tr></thead>
       <tbody id="rows"></tbody>
@@ -120,10 +120,18 @@ function renderRows() {
   for (const e of data.expenses) if (e.parent_id) (kidsOf.get(e.parent_id) || kidsOf.set(e.parent_id, []).get(e.parent_id)).push(e);
   const shown = data.expenses.filter((e) => !e.parent_id && (matches(e) || (kidsOf.get(e.id) || []).some(matches)));
   const dueCell = (e) => h("td", {}, e.due_date ? (e.due_date < today() && e.owed > 0 ? h("span", { class: "pill overdue" }, fmtDate(e.due_date)) : fmtDate(e.due_date)) : "");
+  // Owed here is what's committed and not yet paid; an estimate or quote isn't owed.
+  const owedNow = (e) => Math.max(Math.round((e.incurred - e.paid) * 100) / 100, 0);
+  // Every dollar of an item's cost is in Estimated or Incurred; the price breakdown (or
+  // the budget) sits under whichever has most of it.
+  const amount = (n, sub) => (n ? [money(n), sub] : sub ? ["—", sub] : "—");
   const moneyCells = (e, sub) => [
-    h("td", { class: "num" }, e.priced || e.paid ? [money(e.projected), sub] : h("span", { class: "sub" }, "No price yet")),
+    ...(!e.priced && !e.paid
+      ? [h("td", { class: "num" }, h("span", { class: "sub" }, "No price yet")), h("td", { class: "num" }, "—")]
+      : [h("td", { class: "num" }, amount(e.estimated, e.estimated >= e.incurred ? sub : null)),
+         h("td", { class: "num" }, amount(e.incurred, e.estimated < e.incurred ? sub : null))]),
     h("td", { class: "num" }, e.paid ? money(e.paid) : "—"),
-    h("td", { class: "num" }, e.owed ? money(e.owed) : "—"),
+    h("td", { class: "num" }, owedNow(e) ? money(owedNow(e)) : "—"),
   ];
   const priceSub = (e) => (pricingLine(e) ? h("div", { class: "sub" }, pricingLine(e)) : null);
   const rows = [];
@@ -132,7 +140,7 @@ function renderRows() {
     const key = `${e.category} · ${e.subcategory}`;
     if (key !== group) {
       group = key;
-      rows.push(h("tr", { class: "group" }, h("td", { colspan: 6 }, e.subcategory ? `${e.category} — ${e.subcategory}` : e.category || "Uncategorized")));
+      rows.push(h("tr", { class: "group" }, h("td", { colspan: 7 }, e.subcategory ? `${e.category} — ${e.subcategory}` : e.category || "Uncategorized")));
     }
     const kids = kidsOf.get(e.id) || [];
     const open = kids.length && (expanded.has(e.id) || (filtering && kids.some(matches)));
@@ -156,17 +164,17 @@ function renderRows() {
         dueCell(k),
       ));
     }
-    rows.push(h("tr", { class: "add-line" }, h("td", { colspan: 6 },
+    rows.push(h("tr", { class: "add-line" }, h("td", { colspan: 7 },
       h("button", { class: "small", onclick: () => openEditor(null, { parentId: e.id }) }, `+ Add a line item to ${e.item}`))));
   }
-  if (!shown.length) rows.push(h("tr", {}, h("td", { colspan: 6, class: "muted" }, data.expenses.length ? "Nothing matches those filters." : "No expenses yet. Add one, or import the spreadsheet in Settings.")));
+  if (!shown.length) rows.push(h("tr", {}, h("td", { colspan: 7, class: "muted" }, data.expenses.length ? "Nothing matches those filters." : "No expenses yet. Add one, or import the spreadsheet in Settings.")));
   document.getElementById("rows").replaceChildren(...rows);
   // Totals over items only: an item already includes its line items.
   const sum = (k) => shown.reduce((s, e) => s + (e[k] || 0), 0);
   document.getElementById("foot").replaceChildren(h("tr", {},
     h("td", { colspan: 2 }, `${shown.length} items`),
-    h("td", { class: "num" }, money(sum("projected"))),
-    h("td", { class: "num" }, money(sum("paid"))), h("td", { class: "num" }, money(sum("owed"))), h("td", {})));
+    h("td", { class: "num" }, money(sum("estimated"))), h("td", { class: "num" }, money(sum("incurred"))),
+    h("td", { class: "num" }, money(sum("paid"))), h("td", { class: "num" }, money(shown.reduce((t, e) => t + owedNow(e), 0))), h("td", {})));
 }
 
 for (const id of ["search", "catFilter", "statusFilter", "unpricedOnly"]) {
@@ -361,7 +369,7 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
       preview.replaceChildren(
         h("div", {}, isContainer ? "Budget: " : "", `${money(Number(v.unit_cost) || 0)} × ${t.qty} = `, h("b", {}, money(t.subtotal)),
           t.tax ? ` + tax ${money(t.tax)}` : "", t.grat ? ` + gratuity ${money(t.grat)}` : "", " = ", h("b", {}, money(t.total))),
-        isContainer ? h("div", { class: "muted" }, `The line items add up to ${money(e.spent)}. Until it's done buying, its price is whichever is larger.`) : "",
+        isContainer ? h("div", { class: "muted" }, `The line items add up to ${money(e.spent)}. Until it's done buying, its cost is whichever is larger: what's bought so far is incurred, and the rest of the budget is still estimated.`) : "",
         variable && v.quantity_source === "guests"
           ? h("div", { class: "muted" }, `Guest count is ${data.basis_count} (${data.basis}). It updates on its own as the guest list and RSVPs change.`) : "",
       );

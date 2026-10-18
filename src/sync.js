@@ -105,6 +105,8 @@ export async function buildExports(env) {
     current_total: e.current,
     original_estimate: e.estimate,
     projected: e.projected,
+    estimated: e.estimated,
+    incurred: e.incurred,
     paid: e.paid,
     owed: e.owed,
     due_date: e.due_date,
