@@ -8,12 +8,15 @@
  *   PUT    seating/rooms/:id / DELETE seating/rooms/:id
  *   POST   seating/templates        { name, shape, width_ft, length_ft, seats, seat_sides }
  *   PUT    seating/templates/:id / DELETE seating/templates/:id
- *   POST   seating/items            { room_id, kind: "table" | "seat" | "note", template_id?,
+ *   POST   seating/items            { room_id, kind: "table" | "seat" | "note" | "shape", template_id?,
  *                                     count? (chairs in a row), ...fields }
  *   PUT    seating/items/:id / DELETE seating/items/:id
  *   POST   seating/assign           { item_id, seat_letter, guest_id, plus_one } puts that
  *                                   person in that seat (moving them from any other);
  *                                   guest_id null empties the seat
+ *
+ * A shape is a rectangle or oval of any size (a dance floor, the bar, a stage) with optional
+ * text centered in it; nobody sits at one.
  *
  * Sizes and positions are in feet. A table's seats are lettered A, B, C ... clockwise
  * from the top (public/admin/seating.html draws them); a single chair has one seat, A. Only reception rooms take seat
@@ -27,7 +30,8 @@ import { sqlValue } from "./importer.js";
 export const ROOM_KINDS = ["ceremony", "reception", "other"];
 export const SHAPES = ["round", "rect"];
 export const SEAT_SIDES = ["both", "one", "around"];
-const ITEM_KINDS = ["table", "seat", "note"];
+const ITEM_KINDS = ["table", "seat", "note", "shape"];
+export const SHAPE_COLORS = ["gray", "blue", "green", "amber", "rose"];
 const MAX_SEATS = 26;
 const MAX_ROW = 60;
 
@@ -84,12 +88,18 @@ function cleanTemplate(input) {
 
 function cleanItem(input, kind) {
   const patch = Object.create(null);
-  if (has(input, "label")) patch.label = text(input.label, kind === "note" ? 200 : 20);
+  if (has(input, "label")) patch.label = text(input.label, kind === "note" || kind === "shape" ? 200 : 20);
   if (has(input, "x")) patch.x = number(input.x, "Position", -50, 550);
   if (has(input, "y")) patch.y = number(input.y, "Position", -50, 550);
   if (has(input, "rotation")) patch.rotation = ((Math.round(number(input.rotation, "Rotation", -360, 360)) % 360) + 360) % 360;
   if (kind === "table") cleanTableShape(input, patch);
-  if (kind === "note" && has(input, "font_size")) patch.font_size = number(input.font_size, "Text size", 0.5, 10);
+  if ((kind === "note" || kind === "shape") && has(input, "font_size")) patch.font_size = number(input.font_size, "Text size", 0.5, 10);
+  if (kind === "shape") {
+    if (has(input, "shape")) patch.shape = oneOf(input.shape, SHAPES, "Shape");
+    if (has(input, "width_ft")) patch.width_ft = number(input.width_ft, "Width", 0.5, 500);
+    if (has(input, "length_ft")) patch.length_ft = number(input.length_ft, "Length", 0.5, 500);
+    if (has(input, "color")) patch.color = oneOf(input.color, SHAPE_COLORS, "Color");
+  }
   return patch;
 }
 
@@ -212,6 +222,12 @@ async function createItem(env, input) {
     return [result.meta.last_row_id];
   }
 
+  if (kind === "shape") {
+    const patch = Object.assign(base, { shape: "rect", width_ft: 10, length_ft: 10, color: "gray", font_size: 1.5 }, cleanItem(input, kind));
+    const result = await insert(env, "seating_items", patch);
+    return [result.meta.last_row_id];
+  }
+
   if (kind === "seat") {
     // A row of chairs, side by side, 2 ft apart, centered on (x, y).
     const count = has(input, "count") ? Math.round(number(input.count, "Chairs", 1, MAX_ROW)) : 1;
@@ -261,7 +277,7 @@ async function updateItem(env, id, input) {
   if (item.kind === "table" && (patch.shape || item.shape) === "round") {
     patch.length_ft = has(patch, "width_ft") ? patch.width_ft : item.width_ft;
   }
-  if (item.kind !== "note" && has(patch, "label")) {
+  if ((item.kind === "table" || item.kind === "seat") && has(patch, "label")) {
     if (!patch.label && item.kind === "table") throw new Error("A table needs a number.");
     await checkLabel(env, item.room_id, patch.label, id);
   }
@@ -286,7 +302,7 @@ async function assign(env, input) {
     "SELECT i.*, r.kind AS room_kind FROM seating_items i JOIN seating_rooms r ON r.id = i.room_id WHERE i.id = ?",
     Number(input.item_id)
   );
-  if (!item || item.kind === "note") throw new Error("Pick a table.");
+  if (!item || (item.kind !== "table" && item.kind !== "seat")) throw new Error("Pick a table.");
   if (item.room_kind !== "reception") throw new Error("Seats are only assigned in a reception room.");
   const letter = String(input.seat_letter || "").toUpperCase();
   if (!seatLetters(item.seats).includes(letter)) throw new Error(`Table ${item.label} has no seat ${letter || "(none)"}.`);

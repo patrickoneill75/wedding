@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
+<title>Reports — Wedding planner</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  .layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
+  .menu h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 14px 0 6px; }
+  .menu h3:first-child { margin-top: 0; }
+  .menu button { display: flex; width: 100%; text-align: left; justify-content: flex-start; white-space: normal; border: 0;
+                 background: none; padding: 6px 9px; border-radius: 8px; font-size: 13px; }
+  .menu button:hover { background: var(--wash); }
+  .menu button.on { background: var(--accent); color: #fff; font-weight: 600; }
+  .result .table-wrap { max-height: 70vh; overflow: auto; }
+  .count { color: var(--text-secondary); font-size: 13px; }
+  .builder .cols { display: flex; flex-wrap: wrap; gap: 6px 14px; max-height: 220px; overflow: auto; padding: 8px; border: 1px solid var(--border); border-radius: 8px; }
+  .builder .chosen { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+  .builder .chosen span { display: inline-flex; gap: 4px; align-items: center; background: var(--wash); border-radius: 999px; padding: 2px 4px 2px 10px; font-size: 12.5px; }
+  .builder .chosen button { padding: 0 6px; font-size: 12px; border: 0; background: none; }
+  .builder .line { display: grid; grid-template-columns: 1.3fr 1fr 1.2fr auto; gap: 8px; margin-bottom: 6px; align-items: center; }
+  .builder h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 16px 0 8px; }
+  @media print {
+    .topbar, .menu, .actions, .sub { display: none !important; }
+    .layout { display: block; }
+    .result .table-wrap { max-height: none; overflow: visible; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar" id="topbar"></div>
+  <div class="row" style="margin-bottom:6px">
+    <div><h1>Reports</h1></div>
+    <span class="spacer"></span>
+    <button class="primary" id="newBtn">+ Custom report</button>
+  </div>
+  <p class="sub">Standard reports for the venue, caterer, stationer and day-of, plus your own. Every report downloads as a CSV.</p>
+  <div class="layout">
+    <div class="card menu" id="menu"></div>
+    <div class="card result" id="result"></div>
+  </div>
+</div>
+
+<script type="module">
+import { api, initPage, h, openDialog, field, setMsg } from "/admin/admin.js";
+
+await initPage("reports.html");
+let meta;
+let current = new URLSearchParams(location.search).get("r") || "headcount";
+const OP_LABEL = { is: "is", is_not: "is not", contains: "contains", empty: "is blank", not_empty: "is not blank", gt: "is more than", lt: "is less than" };
+
+async function loadMeta() {
+  meta = await api("/api/admin/reports");
+  renderMenu();
+}
+
+function renderMenu() {
+  const groups = [];
+  for (const b of meta.builtins) {
+    let g = groups.find((x) => x.name === b.group);
+    if (!g) groups.push((g = { name: b.group, items: [] }));
+    g.items.push({ id: b.id, name: b.name });
+  }
+  if (meta.custom.length) groups.push({ name: "Your reports", items: meta.custom.map((c) => ({ id: String(c.id), name: c.name })) });
+  document.getElementById("menu").replaceChildren(...groups.flatMap((g) => [
+    h("h3", {}, g.name),
+    ...g.items.map((i) => h("button", { class: i.id === current ? "on" : "", onclick: () => show(i.id) }, i.name)),
+  ]));
+}
+
+const reportById = (id) => meta.builtins.find((b) => b.id === id) || meta.custom.find((c) => String(c.id) === String(id));
+
+function table(result) {
+  return h("div", { class: "table-wrap" }, h("table", {},
+    h("thead", {}, h("tr", {}, result.columns.map((c) => h("th", {}, c.label)))),
+    h("tbody", {}, result.rows.length
+      ? result.rows.map((r) => h("tr", {}, r.map((v) => h("td", {}, String(v ?? "")))))
+      : h("tr", {}, h("td", { colspan: result.columns.length || 1, class: "muted" }, "Nothing matches this report yet.")))));
+}
+
+async function show(id) {
+  current = id;
+  history.replaceState(null, "", `?r=${encodeURIComponent(id)}`);
+  renderMenu();
+  const report = reportById(id);
+  const box = document.getElementById("result");
+  if (!report) {
+    box.replaceChildren(h("p", { class: "muted" }, "Pick a report."));
+    return;
+  }
+  box.replaceChildren(h("h2", {}, report.name), h("p", { class: "muted" }, "Loading…"));
+  let result;
+  try {
+    result = await api("/api/admin/reports/run", { method: "POST", body: { id } });
+  } catch (error) {
+    box.replaceChildren(h("h2", {}, report.name), h("p", { class: "msg err" }, error.message));
+    return;
+  }
+  const custom = !report.group;
+  const grouped = report.definition?.group_by;
+  // filter(Boolean): replaceChildren() would print a null as the word "null".
+  box.replaceChildren(...[
+    h("div", { class: "row" }, h("h2", {}, report.name), h("span", { class: "spacer" }),
+      h("span", { class: "count" }, grouped || !report.definition ? "" : `${result.rows.length} row${result.rows.length === 1 ? "" : "s"}`)),
+    report.description ? h("p", { class: "desc" }, report.description) : null,
+    h("div", { class: "row actions", style: "margin-bottom:12px" },
+      h("a", { class: "btn primary", href: `/api/admin/reports/${encodeURIComponent(id)}/csv`, download: "" }, "Download CSV"),
+      h("button", { onclick: () => window.print() }, "Print"),
+      report.definition ? h("button", { onclick: () => builder(custom ? report : null, custom ? null : { ...report.definition, name: `${report.name} (copy)` }) }, custom ? "Edit" : "Copy and change") : null,
+      custom ? h("button", { class: "danger", onclick: async () => {
+        if (!confirm(`Delete the report ${report.name}?`)) return;
+        await api(`/api/admin/reports/${report.id}`, { method: "DELETE" });
+        current = "headcount";
+        await loadMeta();
+        show(current);
+      } }, "Delete") : null),
+    table(result)].filter(Boolean));
+}
+
+/* ------------------------------------------------------------ the builder ---- */
+
+function builder(saved, start = null) {
+  const d = structuredClone(saved?.definition || start || { source: "people", columns: ["name", "household", "rsvp"], filters: [], sort: [{ field: "last_name", dir: "asc" }], group_by: null });
+  let name = saved?.name || start?.name || "";
+  return openDialog(saved ? `Edit: ${saved.name}` : "Custom report", (close) => {
+    const msg = h("p", { class: "msg" });
+    const body = h("div", { class: "builder" });
+    const preview = h("div", { style: "margin-top:14px" });
+    const fields = () => meta.sources[d.source].fields;
+    const fieldOptions = (value, blank) => [...(blank ? [h("option", { value: "" }, blank)] : []), ...fields().map((f) => h("option", { value: f.key, selected: f.key === value }, f.label))];
+
+    const draw = () => {
+      const label = (key) => fields().find((f) => f.key === key)?.label || key;
+      const chosen = h("div", { class: "chosen" }, d.columns.map((key, i) => h("span", {}, label(key),
+        h("button", { type: "button", title: "Move left", disabled: i === 0, onclick: () => { [d.columns[i - 1], d.columns[i]] = [d.columns[i], d.columns[i - 1]]; draw(); } }, "‹"),
+        h("button", { type: "button", title: "Move right", disabled: i === d.columns.length - 1, onclick: () => { [d.columns[i + 1], d.columns[i]] = [d.columns[i], d.columns[i + 1]]; draw(); } }, "›"),
+        h("button", { type: "button", title: "Remove", onclick: () => { d.columns.splice(i, 1); draw(); } }, "×"))));
+      const filterLines = d.filters.map((f, i) => {
+        const type = fields().find((x) => x.key === f.field)?.type;
+        const needsValue = !["empty", "not_empty"].includes(f.op);
+        const value = type === "bool"
+          ? h("select", { onchange: (e) => { f.value = e.target.value; } }, [["yes", "Yes"], ["no", "No"]].map(([v, t]) => h("option", { value: v, selected: (f.value || "yes") === v }, t)))
+          : h("input", { value: f.value || "", placeholder: needsValue ? "value" : "", disabled: !needsValue, oninput: (e) => { f.value = e.target.value; } });
+        if (type === "bool" && !f.value) f.value = "yes";
+        return h("div", { class: "line" },
+          h("select", { onchange: (e) => { f.field = e.target.value; f.value = ""; draw(); } }, fieldOptions(f.field)),
+          h("select", { onchange: (e) => { f.op = e.target.value; draw(); } }, Object.entries(OP_LABEL).map(([v, t]) => h("option", { value: v, selected: v === f.op }, t))),
+          value,
+          h("button", { type: "button", class: "small", onclick: () => { d.filters.splice(i, 1); draw(); } }, "Remove"));
+      });
+      const sortLines = d.sort.map((s, i) => h("div", { class: "line", style: "grid-template-columns: 1.3fr 1fr auto" },
+        h("select", { onchange: (e) => { s.field = e.target.value; } }, fieldOptions(s.field)),
+        h("select", { onchange: (e) => { s.dir = e.target.value; } }, [["asc", "A to Z, low to high"], ["desc", "Z to A, high to low"]].map(([v, t]) => h("option", { value: v, selected: v === s.dir }, t))),
+        h("button", { type: "button", class: "small", onclick: () => { d.sort.splice(i, 1); draw(); } }, "Remove")));
+
+      body.replaceChildren(...[
+        h("div", { class: "fields" },
+          field("Report name", "name", { value: name, oninput: (e) => { name = e.target.value; }, placeholder: "Out-of-town guests" }),
+          field("It lists", "source", { value: d.source, options: Object.entries(meta.sources).map(([k, s]) => [k, s.label]),
+            onchange: (e) => { d.source = e.target.value; d.columns = []; d.filters = []; d.sort = []; d.group_by = null; draw(); } })),
+        h("h3", {}, "Columns, in order"),
+        d.group_by ? h("p", { class: "desc" }, "A counted report shows the value and how many rows have it, so it uses no columns.") : null,
+        chosen,
+        h("div", { class: "cols" }, fields().map((f) => h("label", { class: "check" },
+          h("input", { type: "checkbox", checked: d.columns.includes(f.key), onchange: (e) => {
+            if (e.target.checked) d.columns.push(f.key);
+            else d.columns = d.columns.filter((k) => k !== f.key);
+            draw();
+          } }), f.label))),
+        h("h3", {}, "Only rows where"),
+        ...filterLines,
+        h("button", { type: "button", class: "small", onclick: () => { d.filters.push({ field: fields()[0].key, op: "is", value: "" }); draw(); } }, "+ Add a filter"),
+        h("h3", {}, "Sort by"),
+        ...sortLines,
+        d.sort.length < 3 ? h("button", { type: "button", class: "small", onclick: () => { d.sort.push({ field: fields()[0].key, dir: "asc" }); draw(); } }, "+ Add a sort") : null,
+        h("h3", {}, "Count instead of list (optional)"),
+        h("div", { class: "fields" }, h("label", { class: "field" }, "Count rows by",
+          h("select", { onchange: (e) => { d.group_by = e.target.value || null; draw(); } }, fieldOptions(d.group_by, "Don't count; list every row")))),
+      ].filter(Boolean));
+    };
+
+    const runPreview = async () => {
+      try {
+        const result = await api("/api/admin/reports/run", { method: "POST", body: { definition: d, name } });
+        preview.replaceChildren(h("p", { class: "count" }, d.group_by ? "Preview" : `Preview: ${result.rows.length} rows`), table(result));
+        setMsg(msg, "");
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    };
+    const download = async () => {
+      try {
+        const response = await fetch("/api/admin/reports/csv", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-wedding": "1" },
+          credentials: "same-origin",
+          body: JSON.stringify({ definition: d, name: name || "report" }),
+        });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The download failed.");
+        const url = URL.createObjectURL(await response.blob());
+        const a = h("a", { href: url, download: `${(name || "report").replace(/[^A-Za-z0-9 _-]+/g, "").trim().replace(/\s+/g, "-").toLowerCase() || "report"}.csv` });
+        document.body.append(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    };
+    const save = async () => {
+      try {
+        if (!name.trim()) throw new Error("Name the report to save it.");
+        const reply = saved
+          ? await api(`/api/admin/reports/${saved.id}`, { method: "PUT", body: { name, definition: d } })
+          : await api("/api/admin/reports", { method: "POST", body: { name, definition: d } });
+        close(true);
+        await loadMeta();
+        show(String(reply.id));
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    };
+    draw();
+    return h("div", {}, body,
+      h("div", { class: "row", style: "margin-top:16px" },
+        h("button", { class: "primary", onclick: save }, saved ? "Save changes" : "Save report"),
+        h("button", { onclick: runPreview }, "Preview"),
+        h("button", { onclick: download }, "Download CSV without saving")),
+      msg, preview);
+  });
+}
+
+document.getElementById("newBtn").addEventListener("click", () => builder(null));
+await loadMeta();
+show(reportById(current) ? current : "headcount");
+</script>
+</body>
+</html>

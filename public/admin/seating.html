@@ -34,6 +34,14 @@
   .canvas .seatable .chair { cursor: pointer; }
   .canvas .note { fill: var(--text-secondary); font-style: italic; text-anchor: middle; dominant-baseline: central; }
   .canvas .sel .note { fill: var(--accent); }
+  .canvas .area { stroke-width: .1; }
+  .canvas .area.gray { fill: rgba(120, 120, 120, .14); stroke: rgba(120, 120, 120, .7); }
+  .canvas .area.blue { fill: rgba(42, 120, 214, .14); stroke: rgba(42, 120, 214, .75); }
+  .canvas .area.green { fill: rgba(27, 175, 122, .14); stroke: rgba(27, 175, 122, .75); }
+  .canvas .area.amber { fill: rgba(250, 178, 25, .18); stroke: rgba(201, 133, 0, .8); }
+  .canvas .area.rose { fill: rgba(232, 123, 164, .16); stroke: rgba(213, 81, 129, .75); }
+  .canvas .sel .area { stroke: var(--accent); stroke-width: .25; }
+  .canvas .area-text { fill: var(--text-primary); font-weight: 600; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
   .canvas .who { fill: var(--text-primary); font-size: .5px; text-anchor: middle; pointer-events: none; }
   .panel h2 { margin-bottom: 10px; }
   .panel .fields { grid-template-columns: 1fr 1fr; }
@@ -83,6 +91,8 @@ await initPage("seating.html");
 const KIND_LABEL = { ceremony: "Ceremony", reception: "Reception", other: "Other" };
 const SIDES_LABEL = { both: "Both long sides", one: "One long side (head table)", around: "All around, with the ends" };
 const RSVP_LABEL = { pending: "Awaiting", yes: "Coming", no: "Not coming" };
+const COLOR_LABEL = { gray: "Gray", blue: "Blue", green: "Green", amber: "Amber", rose: "Rose" };
+const isSeating = (item) => item.kind === "table" || item.kind === "seat";
 const CHAIR_R = 0.75; // a chair is about 18 inches across
 const CHAIR_GAP = 0.35; // from the table's edge to the chair's
 
@@ -183,10 +193,26 @@ function s(tag, attrs = {}, ...children) {
 }
 
 function drawItem(item, r) {
-  const seatable = r.kind === "reception" && item.kind !== "note";
+  const seatable = r.kind === "reception" && isSeating(item);
   const g = s("g", { class: `item${item.id === selectedId ? " sel" : ""}${seatable ? " seatable" : ""}`, transform: `translate(${item.x} ${item.y})`, "data-id": item.id });
   if (item.kind === "note") {
     g.append(s("text", { class: "note", "font-size": item.font_size, transform: `rotate(${item.rotation || 0})` }, item.label));
+    return g;
+  }
+  if (item.kind === "shape") {
+    const w = item.width_ft;
+    const l = item.length_ft;
+    const turn = `rotate(${item.rotation || 0})`;
+    g.append(item.shape === "round"
+      ? s("ellipse", { class: `area ${item.color || "gray"}`, rx: w / 2, ry: l / 2, transform: turn })
+      : s("rect", { class: `area ${item.color || "gray"}`, x: -w / 2, y: -l / 2, width: w, height: l, rx: 0.2, transform: turn }));
+    // The text sits dead center, across and up and down; each line of it is one row.
+    const lines = String(item.label || "").split(/\n/).filter((line, i, all) => line || all.length === 1);
+    if (item.label) {
+      const size = item.font_size || 1.5;
+      g.append(s("text", { class: "area-text", "font-size": size, transform: turn },
+        lines.map((line, i) => s("tspan", { x: 0, y: (i - (lines.length - 1) / 2) * size * 1.2 }, line))));
+    }
     return g;
   }
   if (item.kind === "table") {
@@ -225,7 +251,9 @@ function drawRoom(r) {
   for (let x = 0; x <= W; x += step) lines.push(s("text", { class: "ruler", x, y: -0.8, "text-anchor": "middle" }, `${x}′`));
   for (let y = step; y <= L; y += step) lines.push(s("text", { class: "ruler", x: -0.6, y, "text-anchor": "end", "dominant-baseline": "central" }, `${y}′`));
   svg.append(s("g", {}, lines));
-  for (const item of itemsOf(r.id)) svg.append(drawItem(item, r));
+  // Shapes go underneath, so a dance floor never hides the tables placed on it.
+  const items = itemsOf(r.id);
+  for (const item of [...items.filter((i) => i.kind === "shape"), ...items.filter((i) => i.kind !== "shape")]) svg.append(drawItem(item, r));
   wireDragging(svg, r);
   return svg;
 }
@@ -308,7 +336,8 @@ function render() {
           h("div", { class: "canvas", id: "canvas" }, drawRoom(r)),
           h("div", { class: "stats", style: "margin-top:10px" }, roomStats(r))),
         h("div", { class: "card panel" }, panel(r))),
-      r.kind === "reception" ? whoSitsWhere() : null,
+      // Not a null: replaceChildren() would print it as the word "null" under a ceremony room.
+      ...(r.kind === "reception" ? [whoSitsWhere()] : []),
     );
   }
   renderTemplates();
@@ -317,7 +346,7 @@ function render() {
 function roomStats(r) {
   const items = itemsOf(r.id);
   const tables = items.filter((i) => i.kind === "table");
-  const chairs = items.filter((i) => i.kind !== "note").reduce((n, i) => n + (i.kind === "seat" ? 1 : i.seats), 0);
+  const chairs = items.filter(isSeating).reduce((n, i) => n + (i.kind === "seat" ? 1 : i.seats), 0);
   const item = (n, label) => h("span", {}, h("b", {}, String(n)), ` ${label}`);
   const out = [item(`${r.width_ft} × ${r.length_ft}`, "ft"), item(tables.length, tables.length === 1 ? "table" : "tables"), item(chairs, "seats")];
   if (r.kind === "reception") {
@@ -359,6 +388,7 @@ function toolbar(r) {
     tableMenu,
     h("button", { class: "small", onclick: () => addChairs(r) }, "+ Chairs"),
     h("button", { class: "small", onclick: () => addNote(r) }, "+ Note"),
+    h("button", { class: "small", onclick: () => addItem({ room_id: r.id, kind: "shape", ...nextSpot(r) }) }, "+ Shape"),
     h("span", { class: "spacer" }),
     h("label", { class: "check" }, "Zoom",
       h("select", { onchange: (ev) => { zoom = Number(ev.target.value); try { localStorage.setItem("seating-zoom", zoom); } catch {} render(); } },
@@ -462,7 +492,7 @@ function panel(r) {
   const item = data.items.find((i) => i.id === selectedId && i.room_id === r.id);
   if (!item) {
     return h("div", {}, h("h2", {}, r.name),
-      h("p", { class: "desc" }, "Click a table, chair or note to change it. Drag to move it; positions snap to 3 inches."),
+      h("p", { class: "desc" }, "Click a table, chair, shape or note to change it. Drag to move it; positions snap to 3 inches."),
       r.kind === "reception" ? h("p", { class: "desc" }, "Click a chair to seat someone in it. Blue chairs are taken. Orange ones hold someone who has since declined or lost their invitation.") : null);
   }
   const msg = h("p", { class: "msg" });
@@ -492,6 +522,22 @@ function panel(r) {
         field("Turn (degrees)", "rotation", { type: "number", step: 15, value: item.rotation })),
       h("div", { class: "row" }, h("button", { class: "primary" }, "Save"), h("button", { type: "button", class: "danger", onclick: remove }, "Remove")), msg);
     return h("div", {}, h("h2", {}, "Note"), form);
+  }
+
+  if (item.kind === "shape") {
+    const label = h("textarea", { name: "label", rows: 2, placeholder: "Dance floor, Bar, Stage… (a new line starts a second line)" });
+    label.value = item.label || "";
+    const form = h("form", { onsubmit: (ev) => { ev.preventDefault(); save(form); } },
+      h("div", { class: "fields" },
+        h("label", { class: "field", style: "grid-column: 1 / -1" }, "Text, centered in the shape", label),
+        field("Shape", "shape", { options: [["rect", "Rectangle"], ["round", "Circle or oval"]], value: item.shape }),
+        field("Color", "color", { options: Object.entries(COLOR_LABEL), value: item.color || "gray" }),
+        field("Width (ft)", "width_ft", { type: "number", step: 0.5, min: 0.5, value: item.width_ft }),
+        field("Length (ft)", "length_ft", { type: "number", step: 0.5, min: 0.5, value: item.length_ft }),
+        field("Text size (ft)", "font_size", { type: "number", step: 0.25, min: 0.5, value: item.font_size }),
+        field("Turn (degrees)", "rotation", { type: "number", step: 15, value: item.rotation })),
+      h("div", { class: "row" }, h("button", { class: "primary" }, "Save"), h("button", { type: "button", class: "danger", onclick: remove }, "Remove")), msg);
+    return h("div", {}, h("h2", {}, "Shape"), form);
   }
 
   const seatable = r.kind === "reception";
@@ -587,7 +633,7 @@ function pickSeat(person) {
   openDialog(person.name, (close) => {
     const msg = h("p", { class: "msg" });
     const reception = data.rooms.filter((r) => r.kind === "reception");
-    const tables = reception.flatMap((r) => itemsOf(r.id).filter((i) => i.kind !== "note" && i.label).map((i) => ({ item: i, room: r })));
+    const tables = reception.flatMap((r) => itemsOf(r.id).filter((i) => isSeating(i) && i.label).map((i) => ({ item: i, room: r })));
     const tableSelect = h("select", { name: "item_id", onchange: () => fillSeats() },
       h("option", { value: "" }, "Choose a table…"),
       tables.map(({ item, room: r }) => {

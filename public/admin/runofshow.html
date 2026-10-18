@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
+<title>Run of show — Wedding planner</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  .days { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .days button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .step { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 14px; padding: 12px 14px; border: 1px solid var(--border);
+          border-radius: 12px; background: var(--surface-1); margin-bottom: 8px; cursor: pointer; }
+  .step:hover { background: var(--wash); }
+  .step .time { font-variant-numeric: tabular-nums; font-weight: 650; }
+  .step .time small { display: block; font-weight: 400; color: var(--text-muted); font-size: 12px; }
+  .step .title { font-weight: 650; font-size: 14.5px; }
+  .step .where { color: var(--text-secondary); font-size: 12.5px; }
+  .step .details { color: var(--text-secondary); font-size: 12.5px; margin-top: 4px; white-space: pre-wrap; }
+  .step.done { opacity: .6; }
+  .step.in_progress { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+  .chip { font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px; background: var(--wash); color: var(--text-secondary); }
+  .chip.vendor { border-color: rgba(250, 178, 25, .55); background: rgba(250, 178, 25, .12); }
+  .chip b { color: var(--text-primary); font-weight: 600; }
+  .status { font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 1px 8px; }
+  .status.in_progress { background: var(--accent); color: #fff; }
+  .status.done { background: rgba(12, 163, 12, .14); color: var(--good); }
+  .link-row { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) auto; gap: 8px; align-items: center; margin-bottom: 6px; font-size: 13px; }
+  .link-row .kind { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; }
+  .picker { border: 1px solid var(--border); border-radius: 10px; max-height: 260px; overflow: auto; margin-top: 6px; }
+  .picker button { display: flex; width: 100%; justify-content: space-between; border: 0; border-bottom: 1px solid var(--border); border-radius: 0;
+                   background: none; text-align: left; white-space: normal; padding: 7px 10px; font-size: 13px; }
+  .picker button:last-child { border-bottom: 0; }
+  .picker .k { font-size: 11px; color: var(--text-muted); }
+  .members { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; padding: 8px; margin-top: 6px; }
+  code.url { display: block; background: var(--wash); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; word-break: break-all; margin: 8px 0; }
+  @media print { .topbar, .actions, #groupsCard, #linkCard, .days { display: none !important; } .step { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar" id="topbar"></div>
+  <div class="row actions" style="margin-bottom:6px">
+    <div><h1>Run of show</h1></div>
+    <span class="spacer"></span>
+    <a class="btn" href="/dayof/" target="_blank" rel="noopener">Open day-of view ↗</a>
+    <button onclick="window.print()">Print</button>
+    <button class="primary" id="addBtn">+ Add step</button>
+  </div>
+  <p class="sub">The day, step by step. Link the vendors, guests, groups and tables each step needs. The coordinator
+    follows it on the day-of view and marks steps started and done; you see it here as it happens.</p>
+  <div class="days" id="days"></div>
+  <div id="steps"></div>
+
+  <div class="grid2" style="margin-top:16px">
+    <div class="card" id="groupsCard">
+      <div class="row"><h2>Guest groups</h2><span class="spacer"></span><button class="small" id="addGroup">+ New group</button></div>
+      <p class="desc">Named sets of guests to link to steps, like "Family photos: Smith side" or "Readers". The wedding party,
+        families, each side, and each table are ready-made and don't need a group.</p>
+      <div class="list" id="groups"></div>
+    </div>
+    <div class="card" id="linkCard"></div>
+  </div>
+</div>
+
+<script type="module">
+import { api, initPage, h, openDialog, field, formValues, setMsg, fmtDate } from "/admin/admin.js";
+
+await initPage("runofshow.html");
+let data;
+let day = null;
+const STATUS_TEXT = { todo: "Not started", in_progress: "Happening now", done: "Done" };
+const KIND_TEXT = { vendor: "Vendor", guest: "Guest", group: "Group", table: "Table", preset: "Everyone in" };
+
+function clock(t) {
+  if (!t) return "";
+  const [hh, mm] = t.split(":").map(Number);
+  return `${((hh + 11) % 12) + 1}:${String(mm).padStart(2, "0")} ${hh < 12 ? "AM" : "PM"}`;
+}
+function endOf(step) {
+  if (!step.start_time || step.duration_min == null) return "";
+  const [hh, mm] = step.start_time.split(":").map(Number);
+  const t = (hh * 60 + mm + step.duration_min) % 1440;
+  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+}
+
+async function load() {
+  data = await api("/api/admin/runofshow");
+  render();
+}
+function accept(reply) {
+  data = reply;
+  render();
+}
+
+function render() {
+  const days = [...new Set(data.steps.map((s) => s.day || ""))].sort((a, b) => (a || "9999").localeCompare(b || "9999"));
+  if (day === null || !days.includes(day)) day = days.includes(data.wedding_date) ? data.wedding_date : days[0] ?? "";
+  document.getElementById("days").replaceChildren(...(days.length > 1 ? days.map((d) =>
+    h("button", { class: d === day ? "on" : "", onclick: () => { day = d; render(); } }, d ? fmtDate(d) : "No day set")) : []));
+
+  const steps = data.steps.filter((s) => (s.day || "") === day);
+  document.getElementById("steps").replaceChildren(...(steps.length ? steps.map(stepCard) : [h("div", { class: "card" },
+    h("p", { class: "muted", style: "margin:0" }, data.steps.length ? "No steps on this day." : "No steps yet. Add the first one: hair and makeup, photos, the ceremony, the grand entrance…"))]));
+  renderGroups();
+  renderLink();
+}
+
+function stepCard(s) {
+  const people = new Set(s.links.flatMap((l) => l.people.map((p) => p.key))).size;
+  return h("div", { class: `step ${s.status}`, onclick: () => editStep(s) },
+    h("div", { class: "time" }, s.start_time ? clock(s.start_time) : "—", endOf(s) ? h("small", {}, `to ${clock(endOf(s))}`) : null,
+      s.duration_min != null ? h("small", {}, `${s.duration_min} min`) : null),
+    h("div", {},
+      h("div", { class: "row", style: "gap:8px" }, h("span", { class: "title" }, s.title),
+        s.status !== "todo" ? h("span", { class: `status ${s.status}` }, STATUS_TEXT[s.status]) : null),
+      s.location ? h("div", { class: "where" }, s.location) : null,
+      s.links.length ? h("div", { class: "chips" }, s.links.map((l) => h("span", { class: `chip${l.kind === "vendor" ? " vendor" : ""}` },
+        h("b", {}, l.label), l.kind !== "vendor" && l.kind !== "guest" ? ` · ${l.people.length}` : "", l.role ? ` · ${l.role}` : ""))) : null,
+      people ? h("div", { class: "where", style: "margin-top:4px" }, `${people} ${people === 1 ? "person" : "people"}`) : null,
+      s.details ? h("div", { class: "details" }, s.details) : null));
+}
+
+/** Everything a step can link to, for the search box. */
+function linkOptions() {
+  return [
+    ...data.vendors.map((v) => ({ kind: "vendor", ref_id: v.id, label: v.name, detail: [v.category, v.day_of ? "day-of" : ""].filter(Boolean).join(" · ") })),
+    ...data.presets.map((p) => ({ kind: "preset", ref_key: p.key, label: p.label, detail: "ready-made" })),
+    ...data.groups.map((g) => ({ kind: "group", ref_id: g.id, label: g.name, detail: `${g.members.length} people` })),
+    ...data.tables.map((t) => ({ kind: "table", ref_id: t.id, label: `Table ${t.label}`, detail: t.room })),
+    ...data.people.filter((p) => p.rsvp !== "no").map((p) => {
+      const [id, plusOne] = p.key.split(":").map(Number);
+      return { kind: "guest", ref_id: id, plus_one: plusOne, label: p.name, detail: [p.household, p.table_seat ? `table ${p.table_seat}` : ""].filter(Boolean).join(" · ") };
+    }),
+  ];
+}
+const sameLink = (a, b) => a.kind === b.kind && (a.kind === "preset" ? a.ref_key === b.ref_key : a.ref_id === b.ref_id && (a.plus_one || 0) === (b.plus_one || 0));
+
+/** Edit `step`, or with `copyOf` start a new step filled in from another one. */
+function editStep(step, copyOf = null) {
+  const v = step || copyOf || {};
+  const links = (v.links || []).map((l) => ({ kind: l.kind, ref_id: l.ref_id, ref_key: l.ref_key, plus_one: l.plus_one, role: l.role, label: l.label }));
+  openDialog(step ? step.title : copyOf ? "Copy of a step" : "New step", (close) => {
+    const msg = h("p", { class: "msg" });
+    const linkList = h("div", {});
+    const picker = h("div", { class: "picker", hidden: true });
+    const search = h("input", { type: "search", placeholder: "Add a vendor, group, table or guest…", oninput: () => fillPicker(), onfocus: () => fillPicker() });
+    const drawLinks = () => {
+      linkList.replaceChildren(...links.map((l, i) => {
+        const role = h("input", { value: l.role || "", placeholder: "Their part (optional)", oninput: (e) => { l.role = e.target.value; } });
+        return h("div", { class: "link-row" },
+          h("div", {}, h("div", { class: "kind" }, KIND_TEXT[l.kind]), l.label),
+          role,
+          h("button", { type: "button", class: "small", onclick: () => { links.splice(i, 1); drawLinks(); } }, "Remove"));
+      }));
+      if (!links.length) linkList.append(h("p", { class: "muted", style: "margin:0 0 6px" }, "Nobody linked yet."));
+    };
+    const fillPicker = () => {
+      const q = search.value.trim().toLowerCase();
+      const options = linkOptions().filter((o) => !links.some((l) => sameLink(l, o))).filter((o) => !q || `${o.label} ${o.detail}`.toLowerCase().includes(q)).slice(0, 40);
+      picker.hidden = false;
+      picker.replaceChildren(...options.map((o) => h("button", { type: "button", onclick: () => { links.push({ ...o, role: "" }); search.value = ""; picker.hidden = true; drawLinks(); } },
+        h("span", {}, o.label, o.detail ? h("div", { class: "k" }, o.detail) : null), h("span", { class: "k" }, KIND_TEXT[o.kind]))));
+      if (!options.length) picker.append(h("p", { class: "muted", style: "margin:8px 10px" }, "Nothing matches."));
+    };
+    drawLinks();
+
+    const form = h("form", { onsubmit: async (ev) => {
+      ev.preventDefault();
+      const body = { ...formValues(form), links: links.map(({ label, ...l }) => l) };
+      try {
+        const reply = step
+          ? await api(`/api/admin/runofshow/items/${step.id}`, { method: "PUT", body })
+          : await api("/api/admin/runofshow/items", { method: "POST", body });
+        day = body.day || "";
+        accept(reply);
+        close(true);
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    } },
+    h("div", { class: "fields" },
+      field("What happens", "title", { value: copyOf ? `${v.title} (copy)` : v.title || "", required: true, placeholder: "First look" }),
+      field("Day", "day", { type: "date", value: step || copyOf ? v.day : day || data.wedding_date || "" }),
+      field("Starts", "start_time", { type: "time", value: v.start_time || "" }),
+      field("Length (minutes)", "duration_min", { type: "number", min: 0, step: 5, value: v.duration_min ?? "" }),
+      field("Where", "location", { value: v.location || "", placeholder: "Garden terrace" })),
+    h("div", { class: "fields" }, field("Details for the coordinator", "details", { type: "textarea", value: v.details || "", wide: true,
+      placeholder: "Cue the DJ for the entrance song. Rings are with the best man." })),
+    h("h3", { style: "font-size:13.5px; margin:6px 0 8px" }, "Who's involved"),
+    linkList, search, picker,
+    step ? h("div", { class: "fields", style: "margin-top:12px" }, field("Status", "status_view", { options: Object.entries(STATUS_TEXT), value: step.status,
+      onchange: async (ev) => {
+        try {
+          accept(await api(`/api/admin/runofshow/items/${step.id}/status`, { method: "POST", body: { status: ev.target.value } }));
+          step.status = ev.target.value;
+        } catch (error) {
+          setMsg(msg, error.message, "err");
+        }
+      } })) : null,
+    h("div", { class: "row", style: "margin-top:14px" },
+      h("button", { class: "primary" }, step ? "Save" : "Add step"),
+      step ? h("button", { type: "button", onclick: () => { close(null); editStep(null, step); } }, "Duplicate") : null,
+      step ? h("button", { type: "button", class: "danger", onclick: async () => {
+        if (!confirm(`Delete the step "${step.title}"?`)) return;
+        try {
+          accept(await api(`/api/admin/runofshow/items/${step.id}`, { method: "DELETE" }));
+          close(true);
+        } catch (error) {
+          setMsg(msg, error.message, "err");
+        }
+      } }, "Delete") : null),
+    msg);
+    // The status menu is its own control, not part of the saved form.
+    form.querySelector('[name="status_view"]')?.removeAttribute("name");
+    return form;
+  });
+}
+
+/* ------------------------------------------------------------------ groups ---- */
+
+function renderGroups() {
+  const box = document.getElementById("groups");
+  box.replaceChildren(...data.groups.map((g) => h("div", { class: "item", style: "cursor:pointer", onclick: () => editGroup(g) },
+    h("b", {}, g.name), h("span", { class: "muted" }, `${g.members.length} ${g.members.length === 1 ? "person" : "people"}`),
+    g.notes ? h("span", { class: "muted" }, g.notes) : null)));
+  if (!data.groups.length) box.append(h("p", { class: "muted", style: "margin:0" }, "No groups yet."));
+}
+
+function editGroup(group) {
+  const members = new Set(group?.members || []);
+  openDialog(group ? group.name : "New guest group", (close) => {
+    const msg = h("p", { class: "msg" });
+    const list = h("div", { class: "members" });
+    const count = h("span", { class: "muted" });
+    const search = h("input", { type: "search", placeholder: "Find guests…", oninput: () => fill() });
+    const fill = () => {
+      const q = search.value.trim().toLowerCase();
+      const people = data.people.filter((p) => !q || `${p.name} ${p.household}`.toLowerCase().includes(q));
+      list.replaceChildren(...people.map((p) => h("label", { class: "check" },
+        h("input", { type: "checkbox", checked: members.has(p.key), onchange: (e) => { e.target.checked ? members.add(p.key) : members.delete(p.key); count.textContent = `${members.size} chosen`; } }),
+        p.name, h("span", { class: "muted", style: "font-size:12px" }, ` ${p.household}${p.rsvp === "no" ? " · not coming" : ""}`))));
+      count.textContent = `${members.size} chosen`;
+    };
+    fill();
+    const form = h("form", { onsubmit: async (ev) => {
+      ev.preventDefault();
+      const body = { ...formValues(form), members: [...members] };
+      try {
+        accept(group
+          ? await api(`/api/admin/runofshow/groups/${group.id}`, { method: "PUT", body })
+          : await api("/api/admin/runofshow/groups", { method: "POST", body }));
+        close(true);
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    } },
+    h("div", { class: "fields" },
+      field("Group name", "name", { value: group?.name || "", required: true, placeholder: "Family photos: Smith side" }),
+      field("Notes", "notes", { value: group?.notes || "" })),
+    h("div", { class: "row" }, search, count), list,
+    h("div", { class: "row", style: "margin-top:14px" },
+      h("button", { class: "primary" }, group ? "Save" : "Add group"),
+      group ? h("button", { type: "button", class: "danger", onclick: async () => {
+        if (!confirm(`Delete the group ${group.name}? Steps linked to it lose that link.`)) return;
+        try {
+          accept(await api(`/api/admin/runofshow/groups/${group.id}`, { method: "DELETE" }));
+          close(true);
+        } catch (error) {
+          setMsg(msg, error.message, "err");
+        }
+      } }, "Delete") : null),
+    msg);
+    return form;
+  });
+}
+
+/* ------------------------------------------------------- coordinator link ---- */
+
+let link = null;
+async function loadLink() {
+  link = await api("/api/admin/runofshow/link");
+  renderLink();
+}
+function renderLink() {
+  const box = document.getElementById("linkCard");
+  const msg = h("p", { class: "msg" });
+  const act = (method, confirmText) => async () => {
+    if (confirmText && !confirm(confirmText)) return;
+    try {
+      link = await api("/api/admin/runofshow/link", { method });
+      renderLink();
+    } catch (error) {
+      setMsg(msg, error.message, "err");
+    }
+  };
+  box.replaceChildren(
+    h("h2", {}, "Coordinator's day-of link"),
+    h("p", { class: "desc" }, "A private link for your coordinator's iPad. It opens the day-of view with no Google sign-in. It shows the steps, who is in each and where they sit, and vendor contacts. It never shows budgets or addresses. Add it to the iPad's home screen to use it like an app."),
+    link?.url
+      ? h("div", {},
+          h("code", { class: "url" }, link.url),
+          h("div", { class: "row" },
+            h("button", { class: "primary", onclick: async () => { await navigator.clipboard.writeText(link.url); setMsg(msg, "Copied.", "ok"); } }, "Copy link"),
+            h("button", { onclick: act("POST", "Make a new link? The current one stops working right away.") }, "Replace link"),
+            h("button", { class: "danger", onclick: act("DELETE", "Turn the link off? Anyone using it loses access.") }, "Turn off")))
+      : h("button", { class: "primary", onclick: act("POST") }, "Make the link"),
+    msg);
+}
+
+document.getElementById("addBtn").addEventListener("click", () => editStep(null));
+document.getElementById("addGroup").addEventListener("click", () => editGroup(null));
+await load();
+await loadLink();
+</script>
+</body>
+</html>

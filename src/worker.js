@@ -1,11 +1,12 @@
 import { ensureSchema } from "./db.js";
-import { currentUser, handleOAuthCallback, json, logoutResponse, startOAuth } from "./auth.js";
+import { currentUser, handleOAuthCallback, json, logoutResponse, sameSecret, startOAuth } from "./auth.js";
 import { handleAdminApi } from "./admin_api.js";
 import { handlePublicApi } from "./public_api.js";
 import { saveDriveTokens } from "./google.js";
 import { scheduledSync } from "./sync.js";
 import { ingestSite, serveFont, servePage } from "./site.js";
 import { loadSettings } from "./store.js";
+import { handleDayOf } from "./runofshow.js";
 
 /**
  * Worker entry point. Every request comes here first (run_worker_first in
@@ -20,6 +21,8 @@ import { loadSettings } from "./store.js";
  *   /api/auth/logout
  *   /api/admin/*         control panel (src/admin_api.js), admins only
  *   /api/public/*        RSVP and the unlisted expense form (src/public_api.js)
+ *   /api/dayof/*         the coordinator's run of show for /dayof/ (src/runofshow.js):
+ *                        the day-of link's key, or an admin's sign-in
  *   /api/site/config     GET, and /api/site/ingest POST: for the GitHub Action that
  *                        copies the Zola site (scripts/zola_refresh.mjs). Both need
  *                        "Authorization: Bearer <ZOLA_INGEST_SECRET>".
@@ -50,16 +53,6 @@ import { loadSettings } from "./store.js";
 
 const SECRETS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "ADMIN_EMAILS"];
 const OPTIONAL_SECRETS = ["ZOLA_INGEST_SECRET", "GH_DISPATCH_TOKEN", "ANTHROPIC_API_KEY"];
-
-/** Constant-time comparison, so a wrong secret can't be guessed a character at a time. */
-function sameSecret(given, expected) {
-  if (typeof given !== "string" || typeof expected !== "string" || !expected) return false;
-  const a = new TextEncoder().encode(given);
-  const b = new TextEncoder().encode(expected);
-  let diff = a.length ^ b.length;
-  for (let i = 0; i < b.length; i++) diff |= (a[i] ?? 0) ^ b[i];
-  return diff === 0;
-}
 
 async function handleSiteApi(route, request, env) {
   const auth = request.headers.get("authorization") || "";
@@ -108,6 +101,7 @@ async function handleApi(route, request, env) {
   if (route.startsWith("admin/")) return handleAdminApi(route.slice("admin/".length), request, env);
   if (route.startsWith("public/")) return handlePublicApi(route.slice("public/".length), request, env);
   if (route.startsWith("site/")) return handleSiteApi(route, request, env);
+  if (route === "dayof" || route.startsWith("dayof/")) return handleDayOf(route, request, env);
   return json({ error: "Not found." }, 404);
 }
 

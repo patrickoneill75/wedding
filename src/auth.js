@@ -51,6 +51,16 @@ function b64urlDecode(text) {
   return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
 }
 
+/** Constant-time comparison, so a wrong secret can't be guessed a character at a time. */
+export function sameSecret(given, expected) {
+  if (typeof given !== "string" || typeof expected !== "string" || !expected) return false;
+  const a = new TextEncoder().encode(given);
+  const b = new TextEncoder().encode(expected);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < b.length; i++) diff |= (a[i] ?? 0) ^ b[i];
+  return diff === 0;
+}
+
 export function randomToken(bytes = 24) {
   return b64url(crypto.getRandomValues(new Uint8Array(bytes)));
 }
