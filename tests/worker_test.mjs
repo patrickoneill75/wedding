@@ -1082,8 +1082,8 @@ test("cleaning a Zola page strips Zola's app, branding and footer, and adds the 
 
 test("the copy's links point at its own pages, our RSVP page, and Zola for anything else", () => {
   const html = cleanPage(zolaPage(), { slug: SLUG, pages: new Set(["travel"]), currentPath: "/" }).html;
-  assert.ok(html.includes('<a href="/" data-wm-nav="">Home</a>'));
-  assert.ok(html.includes('<a href="/travel" data-wm-nav="">Travel</a>'));
+  assert.ok(html.includes('<a href="/" data-wm-nav="menu">Home</a>'));
+  assert.ok(html.includes('<a href="/travel" data-wm-nav="menu">Travel</a>'));
   assert.ok(html.includes(`href="https://www.zola.com/wedding/${SLUG}/registry"`), "the registry stays on Zola, where gifts work");
   assert.ok(html.includes('<a href="/rsvp/">RSVP</a>'), "Zola's RSVP page becomes ours");
   assert.ok(html.includes('href="https://www.zola.com/terms"'), "other relative links go to Zola, not to us");
@@ -1234,6 +1234,31 @@ test("a site built on GitHub is stored and served, and resending it isn't a chan
   assert.equal(again.data.status.changed, false);
 });
 
+// Bug: with Zola's footer taken off, the copied pages ended flush at the last section,
+// with no footer and no way to get in touch.
+test("copied pages get our footer with a Contact us link from Settings, as they're served", async () => {
+  const { buildSite } = await import("../src/site.js");
+  const env = siteEnv();
+  const built = await buildSite({ zolaUrl: `https://www.zola.com/wedding/${SLUG}`, fetchPage: async (url) => {
+    if (url.endsWith("fonts.css")) return "";
+    if (url.endsWith(SLUG)) return zolaPage();
+    throw new Error(`Zola returned 404 for ${url}`);
+  } });
+  assert.equal((await ingest(env, JSON.parse(JSON.stringify(built)))).status, 200);
+  let page = (await call(env, "/")).data;
+  assert.match(page, /<footer class="wm-footer">.*href="mailto:patricko\.indy@gmail\.com">Contact us<\/a>.*<\/footer><\/body>/s);
+  assert.ok(!page.slice(page.indexOf("wm-footer")).includes('href="/rsvp/"'), "the footer's only link is Contact us; RSVP lives in the menu row");
+  const api = await adminClient(env);
+  assert.equal((await api("/api/admin/settings", { method: "PUT", body: { contact_email: "not an email" } })).status, 400);
+  await api("/api/admin/settings", { method: "PUT", body: { contact_email: "us@example.com", couple_names: "A & <B>" } });
+  page = (await call(env, "/")).data;
+  assert.ok(page.includes('href="mailto:us@example.com"'), "a new address shows without a refresh");
+  assert.ok(page.includes("<p>A &#38; &#60;B&#62;</p>"), "names are escaped");
+  assert.equal((await call(env, "/api/public/info")).data.contact_email, "us@example.com");
+  await api("/api/admin/settings", { method: "PUT", body: { contact_email: "" } });
+  assert.ok(!(await call(env, "/")).data.includes("mailto:"), "no address, no link");
+});
+
 test("the ingest route only accepts pages the site would make itself", async () => {
   const env = siteEnv();
   const page = (path, extra = {}) => ({ path, title: "t", html: "<p>x</p>", hash: "a".repeat(64), ...extra });
@@ -1256,7 +1281,7 @@ test("when GitHub can't reach Zola it reports why, and the last copy stays up", 
   const r = await ingest(env, { error: "Zola returned 403 for https://www.zola.com/wedding/x" });
   assert.equal(r.status, 200);
   assert.match(r.data.status.error, /GitHub couldn't refresh it: Zola returned 403/);
-  assert.equal((await call(env, "/")).data, "<p>home</p>");
+  assert.ok((await call(env, "/")).data.startsWith("<p>home</p>"));
 });
 
 test("Refresh from Zola starts the GitHub workflow when it's set up, without fetching Zola itself", async () => {

@@ -141,6 +141,7 @@ function fill() {
     field("Wedding date", "wedding_date", { type: "date", value: s.wedding_date }),
     field("Venue", "venue", { value: s.venue }),
     field("RSVP by", "rsvp_deadline", { type: "date", value: s.rsvp_deadline }),
+    field("Contact email (the Contact us link at the bottom of the website and RSVP page)", "contact_email", { type: "email", value: s.contact_email, placeholder: "Leave blank for no link" }),
     field("Message on the RSVP page", "rsvp_intro", { type: "textarea", value: s.rsvp_intro, wide: true }),
     h("div", {}, check("RSVPs are open", "rsvp_open", s.rsvp_open)),
   );
