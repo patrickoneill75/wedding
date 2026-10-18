@@ -29,6 +29,10 @@
  *   owed       projected - paid, never negative
  *   actual     the real cost once there is one: null while the item is still an
  *              estimate, otherwise projected
+ *   incurred   what's committed to: the whole cost once it's Booked or further along,
+ *              otherwise just what's been paid (a forfeited deposit, if Cancelled)
+ *   estimated  the rest of the projected cost, still an estimate or a quote:
+ *              projected - incurred. Every dollar of projected is in exactly one.
  *
  * Line items: an item can have line items under it (parent_id), one level deep --
  * "Place Settings" bought a bit at a time from several vendors. (The code calls them
@@ -44,13 +48,19 @@
  *   paid       everything paid, on the line items (and on the item itself, for data
  *              from before items became containers)
  *   actual     the line items' actual costs added up (null until one has one)
+ *   incurred   the line items' incurred costs added up; estimated is the rest of
+ *              projected (budget not yet spent, line items still at a quote)
  *   projected  the larger of the budget and what's spent, since more may be bought --
  *              until the item is marked done buying (stored as Paid), when it's exactly
  *              what was spent
- *   status     worked out from the line items: Partially paid once anything is paid,
- *              Paid once it's done buying and nothing is owed, otherwise the furthest
- *              stage a line item reached (Booked at most). `done` says whether it's
- *              marked done buying.
+ *   status     worked out from the line items. Once anything is paid: Partially paid
+ *              while a booked line item still owes money (the venue's deposit is in,
+ *              the rest is due), In progress while everything bought so far is paid
+ *              but more is to come (place settings bought a few at a time), and Paid
+ *              once it's done buying and nothing is owed. Before anything is paid, the
+ *              furthest stage a line item reached (Booked at most). `done` says
+ *              whether it's marked done buying. In progress only ever comes from line
+ *              items, so it's a label, not one of the STATUSES an expense is saved at.
  * Totals, the category table and the pie use top-level rows only, so line items are
  * never counted twice; payments due and stages come from the line items themselves.
  */
@@ -60,6 +70,7 @@ export const STATUS_LABELS = {
   estimate: "Estimate",
   quote: "Quote",
   booked: "Booked",
+  in_progress: "In progress",
   partially_paid: "Partially paid",
   paid: "Paid",
   cancelled: "Cancelled",
@@ -263,6 +274,10 @@ export function expenseTotals(expense, ctx) {
   return { quantity, subtotal, tax, gratuity, total: cents(subtotal + tax + gratuity) };
 }
 
+// Stages at which an item's whole price is committed to.
+const COMMITTED = ["booked", "partially_paid", "paid"];
+const split = (projected, incurred) => ({ incurred: cents(incurred), estimated: cents(Math.max(projected - incurred, 0)) });
+
 export function enrichExpense(expense, paid, ctx) {
   const totals = expenseTotals(expense, ctx);
   const current = totals.total;
@@ -284,6 +299,7 @@ export function enrichExpense(expense, paid, ctx) {
     paid: paidAmount,
     owed: cents(Math.max(projected - paidAmount, 0)),
     actual: expense.status === "estimate" ? null : cents(projected),
+    ...split(projected, COMMITTED.includes(expense.status) ? projected : Math.min(paidAmount, projected)),
     priced: expense.unit_cost != null && num(expense.unit_cost) !== 0,
   };
 }
@@ -309,10 +325,12 @@ export function rollupPurchases(expenses) {
     else if (done) projected = spent;
     else projected = Math.max(e.current, spent);
     const owed = cents(Math.max(projected - paid, 0));
+    // A line item that's committed to (past Quote) and not fully paid yet.
+    const committedOwing = list.some((k) => k.owed > 0.004 && !["estimate", "quote", "cancelled"].includes(k.status));
     let status;
     if (e.status === "cancelled") status = "cancelled";
     else if (done && owed === 0) status = "paid";
-    else if (paid > 0) status = "partially_paid";
+    else if (paid > 0) status = done || committedOwing ? "partially_paid" : "in_progress";
     else {
       const furthest = Math.max(0, ...list.filter((k) => k.status !== "cancelled").map((k) => STATUSES.indexOf(k.status)));
       status = STATUSES[Math.min(furthest, STATUSES.indexOf("booked"))];
@@ -329,6 +347,9 @@ export function rollupPurchases(expenses) {
       projected: cents(projected),
       owed,
       actual: known.length ? cents(known.reduce((s, k) => s + k.actual, 0)) : null,
+      // Committed line items (and anything paid on the item itself); the rest of the
+      // projected cost -- unspent budget, quotes -- is still estimated.
+      ...split(projected, e.status === "cancelled" ? paid : e.paid + list.reduce((s, k) => s + k.incurred, 0)),
       priced: e.priced || spent > 0,
     };
   });

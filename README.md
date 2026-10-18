@@ -19,8 +19,11 @@ A Cloudflare Worker with two sides:
   - **Expenses**: every budget line moving through
     Estimate → Quote → Booked → Partially paid → Paid (stages can be skipped, or an item
     cancelled), with price history, payments, who paid, due dates, and contracts and
-    receipts in Drive. An item bought in pieces gets line items: the item keeps its
-    price as the budget, and each line item has its own vendor, stage and payments.
+    receipts in Drive. Anything with a deposit paid and more to pay is Partially paid.
+    An item bought in pieces gets line items: the item keeps its price as the budget,
+    and each line item has its own vendor, stage and payments. The item reads In
+    progress while everything bought so far is paid and more is to come, and Paid once
+    it's marked done buying.
   - **Guests**: households and guests like a small CRM. Address, side, priority, separate
     ceremony and reception invitations, family and wedding-party flags, plus-ones (named by the
     guest when they RSVP), save-the-date / invite / gift / thank-you tracking, RSVPs,
@@ -43,6 +46,11 @@ The guest count starts as **weighted invites**: each invitee counts 0.9 / 0.6 / 
 High / Medium / Low priority, rounded up, as in the original spreadsheet. Once RSVPs are
 in, **Convert all to confirmed RSVPs** on the dashboard re-prices everything on the real
 yes count.
+
+On the Expenses page every item's cost sits in one of two columns: **Estimated** (an
+estimate or a quote, not committed to yet) or **Incurred** (booked or paid). An item
+being bought in pieces splits across both: what's bought is incurred, and the rest of
+its budget is still estimated. **Owed** there is what's incurred and not yet paid.
 
 An item's **original estimate** is frozen the moment it leaves the Estimate stage, so the
 dashboard can show how far each category drifted.

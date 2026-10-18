@@ -428,7 +428,7 @@ const OLD_GUEST_COLUMNS = `id INTEGER PRIMARY KEY, household_id INTEGER, first_n
   plus_one_allowed INTEGER NOT NULL DEFAULT 0, plus_one_name TEXT`;
 // The other tables later migrations alter, in their oldest shape.
 const OLD_OTHER_TABLES = `
-  CREATE TABLE expenses (id INTEGER PRIMARY KEY, vendor TEXT, payer TEXT);
+  CREATE TABLE expenses (id INTEGER PRIMARY KEY, vendor TEXT, payer TEXT, status TEXT NOT NULL DEFAULT 'estimate', updated_at TEXT);
   CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER, payer TEXT);`;
 
 test("upgrading from the first schema carries the spreadsheet's ceremony flag all the way through", async () => {
@@ -651,7 +651,7 @@ test("the first line item moves the item's own booking into a line item, leaving
   assert.equal(r.status, 400, "the form can't update a split item's price as if it were one booking");
 });
 
-test("an item with line items is Booked, Partially paid or Paid by what its line items are", async () => {
+test("an item with line items is Booked, In progress, Partially paid or Paid by what its line items are", async () => {
   const env = makeEnv();
   const api = await adminClient(env);
   const id = (await api("/api/admin/expenses", { method: "POST", body: { item: "Favors", unit_cost: 100 } })).data.expense.id;
@@ -662,7 +662,7 @@ test("an item with line items is Booked, Partially paid or Paid by what its line
   await api(`/api/admin/expenses/${a}`, { method: "PUT", body: { status: "booked" } });
   assert.equal((await stage()).status, "booked");
   await api(`/api/admin/expenses/${a}`, { method: "PUT", body: { status: "paid" } });
-  assert.equal((await stage()).status, "partially_paid", "more may be bought until it's marked done");
+  assert.equal((await stage()).status, "in_progress", "what's bought is paid, and more may come until it's marked done");
   await api(`/api/admin/expenses/${id}`, { method: "PUT", body: { status: "paid" } });
   let e = await stage();
   assert.equal(e.done, true);
@@ -673,6 +673,66 @@ test("an item with line items is Booked, Partially paid or Paid by what its line
   e = await stage();
   assert.equal(e.status, "paid");
   assert.equal(e.owed, 0);
+});
+
+// Bug: place settings bought a few at a time, all paid so far, read "Partially paid"
+// as if money were owed; the venue with only its deposit paid read the same.
+test("In progress means everything bought so far is paid; Partially paid means a booking still owes", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const venue = (await api("/api/admin/expenses", { method: "POST", body: { item: "Venue", unit_cost: 4000 } })).data.expense.id;
+  await api("/api/admin/expenses", { method: "POST", body: { parent_id: venue, item: "Security deposit", unit_cost: 1000, status: "paid" } });
+  await api("/api/admin/expenses", { method: "POST", body: { parent_id: venue, item: "Remaining cost", unit_cost: 3000, status: "booked" } });
+  assert.equal((await api(`/api/admin/expenses/${venue}`)).data.expense.status, "partially_paid");
+
+  const plates = (await api("/api/admin/expenses", { method: "POST", body: { item: "Place Settings", unit_cost: 500 } })).data.expense.id;
+  await api("/api/admin/expenses", { method: "POST", body: { parent_id: plates, item: "Plates", unit_cost: 40, status: "paid" } });
+  await api("/api/admin/expenses", { method: "POST", body: { parent_id: plates, item: "Glasses", unit_cost: 60, status: "paid" } });
+  await api("/api/admin/expenses", { method: "POST", body: { parent_id: plates, item: "Chargers (maybe)", unit_cost: 80, status: "quote" } });
+  const e = (await api(`/api/admin/expenses/${plates}`)).data.expense;
+  assert.equal(e.status, "in_progress", "a quote isn't owed yet");
+  assert.deepEqual([e.incurred, e.estimated], [100, 400], "bought is incurred; the rest of the $500 budget is still estimated");
+  const v = (await api(`/api/admin/expenses/${venue}`)).data.expense;
+  assert.deepEqual([v.incurred, v.estimated], [4000, 0], "a booked balance is incurred even before it's paid");
+  assert.equal((await api("/api/admin/expenses")).data.status_labels.in_progress, "In progress");
+});
+
+test("an item's cost is estimated until it's booked, then incurred; a cancelled one keeps only what was paid", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const make = async (body) => (await api("/api/admin/expenses", { method: "POST", body })).data.expense;
+  const quote = await make({ item: "Band", unit_cost: 2500, status: "quote" });
+  assert.deepEqual([quote.estimated, quote.incurred], [2500, 0]);
+  const booked = await make({ item: "DJ", unit_cost: 1200, status: "booked" });
+  assert.deepEqual([booked.estimated, booked.incurred], [0, 1200]);
+  await api(`/api/admin/expenses/${quote.id}/payments`, { method: "POST", body: { amount: 200 } });
+  const gone = (await api(`/api/admin/expenses/${quote.id}`, { method: "PUT", body: { status: "cancelled" } })).data.expense;
+  assert.deepEqual([gone.estimated, gone.incurred], [0, 200], "the forfeited deposit is incurred");
+});
+
+test("an item saved at Booked with a deposit already paid is Partially paid", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const id = (await api("/api/admin/expenses", { method: "POST", body: { item: "Photographer", unit_cost: 3000, status: "booked" } })).data.expense.id;
+  await api(`/api/admin/expenses/${id}/payments`, { method: "POST", body: { amount: 500 } });
+  assert.equal((await api(`/api/admin/expenses/${id}`)).data.expense.status, "partially_paid");
+  const back = await api(`/api/admin/expenses/${id}`, { method: "PUT", body: { status: "booked" } });
+  assert.equal(back.data.expense.status, "partially_paid", "the deposit is still paid, so it can't go back to Booked");
+});
+
+test("upgrading moves Booked items with payments on them to Partially paid", async () => {
+  const env = makeEnv();
+  env.DB.db.exec(`
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO settings VALUES ('_schema_version', '6');
+    CREATE TABLE expenses (id INTEGER PRIMARY KEY, parent_id INTEGER, status TEXT NOT NULL, updated_at TEXT);
+    CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER);
+    INSERT INTO expenses (id, parent_id, status) VALUES (1, NULL, 'booked'), (2, NULL, 'booked'), (3, NULL, 'quote'), (4, 3, 'paid');
+    INSERT INTO payments (expense_id) VALUES (1), (3), (4);
+  `);
+  assert.equal((await call(env, "/api/auth/me")).status, 401);
+  const rows = env.DB.db.prepare("SELECT status FROM expenses ORDER BY id").all().map((r) => r.status);
+  assert.deepEqual(rows, ["partially_paid", "booked", "quote", "paid"], "an item with line items is left alone");
 });
 
 test("the expense form still updates an item itself in update mode", async () => {
@@ -693,9 +753,9 @@ test("upgrading renames Partner to Kaitlyn in settings and payments, and seeds t
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO settings VALUES ('_schema_version', '5');
     INSERT INTO settings VALUES ('payers', '["Patrick","Partner","Joint"]');
-    CREATE TABLE expenses (id INTEGER PRIMARY KEY, vendor TEXT, payer TEXT);
+    CREATE TABLE expenses (id INTEGER PRIMARY KEY, vendor TEXT, payer TEXT, status TEXT NOT NULL DEFAULT 'estimate', updated_at TEXT);
     CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER, payer TEXT);
-    INSERT INTO expenses VALUES (1, ' Goodwill ', 'Partner'), (2, 'goodwill', NULL), (3, NULL, 'Patrick');
+    INSERT INTO expenses (id, vendor, payer) VALUES (1, ' Goodwill ', 'Partner'), (2, 'goodwill', NULL), (3, NULL, 'Patrick');
     INSERT INTO payments VALUES (1, 1, 'Partner');
   `);
   assert.equal((await call(env, "/api/auth/me")).status, 401);

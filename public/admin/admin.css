@@ -78,11 +78,13 @@ tr.group td { background: var(--surface-2); font-weight: 650; font-size: 12.5px;
 .pill.quote { background: rgba(42, 120, 214, .10); color: var(--accent); border-color: rgba(42, 120, 214, .3); }
 .pill.booked { background: rgba(98, 80, 214, .12); color: #6250d6; border-color: rgba(98, 80, 214, .3); }
 .pill.partially_paid { background: rgba(250, 178, 25, .16); color: #93370d; border-color: rgba(250, 178, 25, .45); }
+.pill.in_progress { background: rgba(27, 175, 122, .12); color: #11714f; border-color: rgba(27, 175, 122, .35); }
 .pill.paid, .pill.yes { background: rgba(12, 163, 12, .12); color: var(--good); border-color: rgba(12, 163, 12, .3); }
 .pill.cancelled, .pill.no { background: rgba(208, 59, 59, .10); color: var(--bad); border-color: rgba(208, 59, 59, .3); text-decoration: none; }
 .pill.overdue { background: rgba(208, 59, 59, .10); color: var(--bad); border-color: rgba(208, 59, 59, .3); }
 @media (prefers-color-scheme: dark) {
   .pill.partially_paid { color: var(--warn); }
+  .pill.in_progress { color: #4cc89a; }
   .pill.booked { color: #9085e9; }
 }
 /* stat tiles */
