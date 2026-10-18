@@ -437,7 +437,6 @@ function paymentsSection(id, detail, closeDialog) {
       field("Amount ($)", "amount", { type: "number", step: "0.01", value: detail.expense.owed || "" }),
       field("Date paid", "paid_on", { type: "date", value: today() }),
       field("Paid by", "payer", { options: [["", "—"], ...data.settings.payers.map((p) => [p, p])], value: detail.expense.payer || "" }),
-      field("Method", "method", { options: [["", "—"], ...data.settings.payment_methods.map((p) => [p, p])] }),
     ),
     h("div", { class: "fields" },
       field("Note", "note", {}),
@@ -468,7 +467,7 @@ function paymentsSection(id, detail, closeDialog) {
   const list = detail.payments.length
     ? h("div", { class: "list" }, detail.payments.map((p) => h("div", { class: "item" },
         h("b", {}, money(p.amount)), h("span", {}, p.paid_on ? fmtDate(p.paid_on) : "date unknown"),
-        p.payer ? h("span", {}, `by ${p.payer}`) : null, p.method ? h("span", { class: "muted" }, p.method) : null,
+        p.payer ? h("span", {}, `by ${p.payer}`) : null, 
         p.note ? h("span", { class: "muted" }, p.note) : null, h("span", { class: "spacer" }),
         h("button", { class: "small danger", onclick: async () => {
           if (!confirm("Delete this payment? The stage won't move back on its own.")) return;

@@ -87,7 +87,6 @@
           <label class="field" id="amountLabel">Amount paid ($)<input name="payment_amount" type="number" step="0.01" inputmode="decimal" placeholder="Nothing yet"></label>
           <label class="field paid-only">Date paid<input name="paid_on" type="date" id="paidOn"></label>
           <label class="field paid-only">Paid by<select name="payer" id="payer"></select></label>
-          <label class="field paid-only">Method<select name="method" id="method"></select></label>
         </div>
       </div>
 
@@ -187,7 +186,6 @@ async function load() {
   const lastWho = options.me || recall("expense-form-who");
   $("who").replaceChildren(...options.payers.map((p) => opt(p, p, p === lastWho)));
   $("payer").replaceChildren(opt("", "—"), ...options.payers.map((p) => opt(p, p)));
-  $("method").replaceChildren(opt("", "—"), ...options.payment_methods.map((m) => opt(m, m)));
   $("stages").replaceChildren(...options.statuses.map((s) => {
     const l = document.createElement("label");
     const input = Object.assign(document.createElement("input"), { type: "radio", name: "status", value: s.value });
@@ -303,7 +301,7 @@ form.addEventListener("submit", async (ev) => {
   const data = new FormData(form);
   data.set("submitted_by", $("who").value);
   // Who/when/how only mean something when money changed hands.
-  if (stage() !== "paid" && !data.get("payment_amount")) for (const k of ["paid_on", "payer", "method"]) data.delete(k);
+  if (stage() !== "paid" && !data.get("payment_amount")) for (const k of ["paid_on", "payer"]) data.delete(k);
   if (mode() === "update") {
     data.delete("item");
     for (const k of ["units", "gratuity_percent", "taxable"]) data.delete(k);
