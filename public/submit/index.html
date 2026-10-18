@@ -64,7 +64,7 @@
       <textarea id="text" rows="1" placeholder="What did you spend on?" autocomplete="off" enterkeyhint="send"></textarea>
       <button type="submit" class="primary" id="send">Send</button>
     </div>
-    <div class="foot">Rather fill in a form? <a id="formLink" href="form.html">Use the plain form</a>.</div>
+    <div class="foot">Rather fill in a form? <a id="formLink" href="form.html">Use the plain form</a> · <a href="/admin/expenses.html">All expenses</a></div>
   </form>
 </div>
 
@@ -301,8 +301,11 @@ async function saveProposal(p, button, msg) {
       el("dl", {}, p.summary.flatMap(([label, value]) => [el("dt", {}, label), el("dd", {}, value)])),
       // Spread and filtered: replaceChildren() prints a null as the text "null".
       ...[body.receipt_error ? el("p", { class: "msg err" }, body.receipt_error) : body.receipt ? el("p", { class: "desc" }, `Receipt saved to Drive as ${body.receipt}.`) : null].filter(Boolean),
-      el("p", { class: "desc", style: "margin:0 0 10px" }, "Something else, or a change to this one? Just say so."),
-      el("div", { class: "row" }, el("button", { type: "button", class: "primary", onclick: start }, "Start a new one")),
+      el("p", { class: "desc", style: "margin:0 0 10px" }, "More on the same receipt, or a change to this one? Just say so here."),
+      el("div", { class: "row" },
+        el("button", { type: "button", class: "primary", onclick: start }, "Add another"),
+        // The control panel opens the entry it was given in the address.
+        el("a", { class: "btn", href: `/admin/expenses.html#${body.expense_id}` }, "Open in Expenses")),
     );
   } catch (error) {
     button.disabled = false;

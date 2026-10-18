@@ -113,7 +113,10 @@
   <div class="card done" id="done" hidden>
     <h2>Saved</h2>
     <p class="desc" id="doneText"></p>
-    <button class="primary" id="another">Add another</button>
+    <div class="row" style="justify-content:center">
+      <button class="primary" id="another">Add another</button>
+      <a class="btn" id="openSaved" href="/admin/expenses.html">Open in Expenses</a>
+    </div>
   </div>
 </div>
 
@@ -317,6 +320,7 @@ form.addEventListener("submit", async (ev) => {
     if (!r.ok) throw new Error(body.error || "Couldn't save.");
     remember("expense-form-who", $("who").value);
     $("doneText").textContent = body.receipt_error ? body.receipt_error : body.receipt ? `Saved, with ${body.receipt} in Google Drive.` : "Saved.";
+    $("openSaved").href = `/admin/expenses.html#${body.expense_id}`;
     form.hidden = true;
     $("done").hidden = false;
   } catch (error) {
