@@ -61,7 +61,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
       </button>
       <input type="file" id="file" accept="image/*,application/pdf" hidden>
-      <textarea id="text" rows="1" placeholder="What did you spend on?" autocomplete="off"></textarea>
+      <textarea id="text" rows="1" placeholder="What did you spend on?" autocomplete="off" enterkeyhint="send"></textarea>
       <button type="submit" class="primary" id="send">Send</button>
     </div>
     <div class="foot">Rather fill in a form? <a id="formLink" href="form.html">Use the plain form</a>.</div>
@@ -318,7 +318,8 @@ $("composer").addEventListener("submit", (ev) => {
   send(text);
 });
 $("text").addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing && window.matchMedia("(pointer: fine)").matches) {
+  // Enter sends, on phones too; Shift+Enter starts a new line.
+  if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
     ev.preventDefault();
     $("composer").requestSubmit();
   }
