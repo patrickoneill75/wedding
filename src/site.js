@@ -31,7 +31,10 @@
  */
 
 import { all, first, getSetting, run, setSetting } from "./db.js";
-import { DEFAULT_SETTINGS } from "./calc.js";
+import { loadSettings } from "./store.js";
+
+// The RSVP button's color unless Settings picks another.
+export const RSVP_COLOR = "#A4727E";
 
 const ZOLA_ORIGIN = "https://www.zola.com";
 const ZOLA_CDN = "https://d1tntvpcrzvon2.cloudfront.net";
@@ -244,9 +247,10 @@ var right=Math.max.apply(null,links.map(function(a){return a.getBoundingClientRe
 return box?{box:box,link:links[0],right:right}:null}
 function toBar(){pill.classList.remove("wm-in-nav");pill.style.top="";bar.insertBefore(pill,menu);bar.style.display=""}
 function layout(){var phone=!navShown();bar.classList.toggle("wm-phone",phone);if(!phone)close();
+if(!pill){bar.style.display=phone?"":"none";return}
 toBar();if(phone)return;var row=menuRow();if(!row)return;
 var w=pill.getBoundingClientRect().width,br=row.box.getBoundingClientRect();
-if(br.right-24-w-16<row.right)return;
+if(br.right-24-w-64<row.right)return;
 if(getComputedStyle(row.box).position==="static")row.box.style.position="relative";
 var lr=row.link.getBoundingClientRect();pill.classList.add("wm-in-nav");pill.style.top=(lr.top+lr.height/2-br.top)+"px";row.box.appendChild(pill);bar.style.display="none"}
 function close(){menu.hidden=true;btn.setAttribute("aria-expanded","false")}
@@ -352,7 +356,7 @@ export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpCol
 
   // 6. Our additions to <head>: our icon, the theme's fonts, the RSVP pill's style.
   const colors = themeColors(source);
-  const pill = rsvpColor || contrastingColor(colors.text);
+  const pill = rsvpColor || RSVP_COLOR;
   append(head, el("link", { rel: "icon", href: "/favicon.svg" }));
   if (fontCss) append(head, el("style", { "data-wm": "fonts" }, [fontCss]));
   const font = themeFont(source);
@@ -699,12 +703,16 @@ export async function servePage(env, pathname) {
   if (RESERVED.has(path.slice(1))) return null;
   const page = await first(env, "SELECT html FROM site_pages WHERE path = ?", path);
   if (!page) return null;
-  const footer = siteFooter({
-    coupleNames: await getSetting(env, "couple_names", ""),
-    contactEmail: await getSetting(env, "contact_email", DEFAULT_SETTINGS.contact_email),
-  });
+  const s = await loadSettings(env);
+  const footer = siteFooter({ coupleNames: s.couple_names, contactEmail: s.contact_email });
   // Pages copied before the script moved here carry an old copy of it: swap it out.
   let stored = page.html;
+  // No RSVP button while RSVPs are closed; its color follows Settings without a refresh.
+  if (!s.rsvp_open) stored = stored.replace(/<a class="wm-rsvp"[^>]*>RSVP<\/a>/, "");
+  const color = /^#[0-9a-f]{6}$/i.test(s.rsvp_button_color) ? s.rsvp_button_color : RSVP_COLOR;
+  const head = stored.indexOf("</head>");
+  const style = `<style data-wm="rsvp-color">.wm-rsvp{background:${color}}.wm-rsvp:focus-visible{outline-color:${color}}</style>`;
+  if (head !== -1) stored = stored.slice(0, head) + style + stored.slice(head);
   const old = stored.indexOf(`<script>${PAGE_SCRIPT.slice(0, 40)}`);
   if (old !== -1) stored = stored.slice(0, old) + stored.slice(stored.indexOf("</script>", old) + "</script>".length);
   const tail = `${footer}<script>${PAGE_SCRIPT}</script>`;

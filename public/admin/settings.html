@@ -76,8 +76,8 @@
     <div class="fields">
       <label class="field" style="grid-column: span 2">Zola website address
         <input name="zola_url" placeholder="https://www.zola.com/wedding/your-site"></label>
-      <label class="field">RSVP button color (blank picks one from your theme)
-        <div class="row" style="flex-wrap:nowrap"><input name="rsvp_button_color" placeholder="automatic" style="flex:1">
+      <label class="field">RSVP button color (blank for the default, #A4727E)
+        <div class="row" style="flex-wrap:nowrap"><input name="rsvp_button_color" placeholder="#A4727E" style="flex:1">
           <input type="color" id="rsvpColorPick" style="width:44px;padding:2px;height:36px"></div></label>
     </div>
     <div class="row">
@@ -386,7 +386,7 @@ async function renderSite() {
   const { zola_url, status, pages, via_github } = await api("/api/admin/site/status");
   siteForm.elements.zola_url.value = state.settings.zola_url || zola_url || "";
   siteForm.elements.rsvp_button_color.value = state.settings.rsvp_button_color || "";
-  if (state.settings.rsvp_button_color) document.getElementById("rsvpColorPick").value = state.settings.rsvp_button_color;
+  document.getElementById("rsvpColorPick").value = state.settings.rsvp_button_color || "#a4727e";
   const when = (iso) => (iso ? new Date(iso).toLocaleString() : "never");
   const box = document.getElementById("siteStatus");
   if (!status) {
