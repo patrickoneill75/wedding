@@ -182,6 +182,11 @@ function cleanSettings(input) {
     if (url && !siteSlug(url)) throw new Error("The Zola address should look like https://www.zola.com/wedding/your-site.");
     patch.zola_url = url;
   }
+  if (has(input, "contact_email")) {
+    const email = String(input.contact_email || "").trim();
+    if (email && !/^[^\s@<>"]+@[^\s@<>"]+\.[a-z]{2,}$/i.test(email)) throw new Error("The contact email doesn't look like an email address.");
+    patch.contact_email = email;
+  }
   if (has(input, "rsvp_button_color")) {
     const color = String(input.rsvp_button_color || "").trim();
     if (color && !/^#[0-9a-f]{6}$/i.test(color)) throw new Error("The RSVP button color must be a hex color like #2f5d62.");

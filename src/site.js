@@ -31,6 +31,7 @@
  */
 
 import { all, first, getSetting, run, setSetting } from "./db.js";
+import { DEFAULT_SETTINGS } from "./calc.js";
 
 const ZOLA_ORIGIN = "https://www.zola.com";
 const ZOLA_CDN = "https://d1tntvpcrzvon2.cloudfront.net";
@@ -335,6 +336,8 @@ export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpCol
   const font = themeFont(source);
   append(head, el("style", { "data-wm": "rsvp" }, [
     `html,body{background:${colors.background}}`
+    // For the footer servePage adds: the theme's text color and font.
+    + `:root{--wm-text:${colors.text};--wm-font:${font ? `'${font}',` : ""}Georgia,serif}`
     + `.wm-rsvp-bar{position:sticky;top:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 16px;background:${colors.background}}`
     + `.wm-menu-btn{display:none;align-items:center;gap:8px;margin-right:auto;padding:9px 14px;border:1px solid ${colors.text}55;border-radius:999px;background:transparent;color:${colors.text};`
     + `font:500 15px/1 ${font ? `'${font}',` : ""}Georgia,serif;cursor:pointer}`
@@ -648,6 +651,23 @@ export async function requestGithubRefresh(env) {
 
 /* ------------------------------------------------------------------- serving -- */
 
+const escapeHtml = (text) => String(text).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/**
+ * Our footer, in place of Zola's: some room at the bottom of the page, and a Contact
+ * us link. Added as the page is served, so a new address in Settings shows at once.
+ */
+export function siteFooter({ coupleNames = "", contactEmail = "" }) {
+  const links = [`<a href="/rsvp/">RSVP</a>`];
+  if (contactEmail) links.push(`<a href="mailto:${escapeHtml(contactEmail)}">Contact us</a>`);
+  return `<footer class="wm-footer"><style>`
+    + `.wm-footer{margin:56px 0 0;padding:40px 16px 64px;border-top:1px solid rgba(127,127,127,.25);text-align:center;color:var(--wm-text,inherit);font-family:var(--wm-font,inherit)}`
+    + `.wm-footer p{margin:0 0 12px;font-size:18px;letter-spacing:.04em}`
+    + `.wm-footer nav{display:flex;justify-content:center;gap:28px;flex-wrap:wrap;font-size:15px;letter-spacing:.08em;text-transform:uppercase}`
+    + `.wm-footer a{color:inherit;text-decoration:underline;text-underline-offset:4px}`
+    + `</style>${coupleNames ? `<p>${escapeHtml(coupleNames)}</p>` : ""}<nav aria-label="Footer">${links.join("")}</nav></footer>`;
+}
+
 /** The stored copy of a page, or null. Only plain page paths are looked up. */
 export async function servePage(env, pathname) {
   let path = pathname.replace(/\/index\.html$/, "/");
@@ -656,7 +676,13 @@ export async function servePage(env, pathname) {
   if (RESERVED.has(path.slice(1))) return null;
   const page = await first(env, "SELECT html FROM site_pages WHERE path = ?", path);
   if (!page) return null;
-  return new Response(page.html, {
+  const footer = siteFooter({
+    coupleNames: await getSetting(env, "couple_names", ""),
+    contactEmail: await getSetting(env, "contact_email", DEFAULT_SETTINGS.contact_email),
+  });
+  const at = page.html.lastIndexOf("</body>");
+  const html = at === -1 ? page.html + footer : page.html.slice(0, at) + footer + page.html.slice(at);
+  return new Response(html, {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300", "x-robots-tag": "noindex" },
   });
 }

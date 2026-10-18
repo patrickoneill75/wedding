@@ -400,6 +400,7 @@ export async function handlePublicApi(route, request, env) {
         rsvp_deadline: s.rsvp_deadline,
         rsvp_open: Boolean(s.rsvp_open),
         rsvp_intro: s.rsvp_intro,
+        contact_email: s.contact_email,
       });
     }
     if (route.startsWith("rsvp/")) {

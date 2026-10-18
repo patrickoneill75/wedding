@@ -123,6 +123,8 @@ export const DEFAULT_SETTINGS = {
   // wrangler.jsonc), and the RSVP button's color there ("" picks one from the theme).
   zola_url: "",
   rsvp_button_color: "",
+  // The "Contact us" link in the footer of the website copy and the RSVP page.
+  contact_email: "patricko.indy@gmail.com",
 };
 
 export const PUBLIC_SETTING_KEYS = Object.keys(DEFAULT_SETTINGS);

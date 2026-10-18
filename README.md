@@ -5,7 +5,8 @@ A Cloudflare Worker with two sides:
 - **Public**:
   - The home page (`/`, `/travel`, …) is a copy of our Zola wedding website, refreshed
     from Zola once a day (or with **Refresh from Zola** in Settings), with Zola's
-    branding taken off and an RSVP button at the top. Zola blocks Cloudflare's servers, so
+    branding taken off, an RSVP button at the top, and our own footer with a Contact
+    us link (the address is in Settings). Zola blocks Cloudflare's servers, so
     a GitHub Action (`.github/workflows/zola-refresh.yml`) does the copying.
   - The RSVP page at `/rsvp/`, where guests find their name and answer for their
     household.
