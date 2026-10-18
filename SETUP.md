@@ -115,6 +115,20 @@ reports whether each secret is set, never its value.
 The website is `YOUR_URL/` and the RSVP page is `YOUR_URL/rsvp/`. Until the first copy
 is made, `YOUR_URL/` sends visitors to the RSVP page.
 
+## Your own domain
+
+The site is served at `patrickandkaitlyn.com` and `www.patrickandkaitlyn.com` as well as
+the workers.dev address (`routes` in `wrangler.jsonc`). The domain is registered at
+Hover with its DNS on Cloudflare (Cloudflare → **Add a domain** → Free plan, then
+Cloudflare's two nameservers set at Hover). Deploying creates the DNS records and
+certificates for both names; a deploy fails if the domain isn't active in this
+Cloudflare account.
+
+For Google sign-in on the domain, add each address's callback to the OAuth client's
+**Authorized redirect URIs** (section 3): `https://patrickandkaitlyn.com/api/auth/callback`
+and `https://www.patrickandkaitlyn.com/api/auth/callback`. The expense form link takes the
+address Settings is opened on.
+
 ## Running it locally
 
 ```sh
