@@ -20,10 +20,11 @@
  * Expense form (unlisted, for the couple): every route needs the form key from
  * the control panel (?k=... or the "key" field). Rotating the key in Settings kills
  * the old link.
- *   GET  expense/options?k=   categories, existing items (no purchases), vendors,
+ *   GET  expense/options?k=   categories, items (top level, not line items), vendors,
  *                             payers, methods
- *   POST expense              multipart: a new item, a purchase under an existing item
- *                             (mode=purchase), or an update to one (mode=update); a
+ *   POST expense              multipart: a new item, a line item under an existing item
+ *                             (mode=purchase), or an update to an item that isn't split
+ *                             into line items (mode=update); a
  *                             payment; a receipt (to Drive). Saving at the Paid stage
  *                             records the payment by itself, so no amount is needed.
  */
@@ -254,6 +255,7 @@ async function expenseOptions(env) {
         unit_cost: e.unit_cost,
         quantity: e.quantity,
         total: e.current,
+        spent: e.spent || 0,
         paid: e.paid,
         owed: e.owed,
       })),
@@ -278,18 +280,24 @@ async function submitExpense(env, form) {
   if (expenseId) {
     const existing = await first(env, "SELECT id, pricing, parent_id FROM expenses WHERE id = ?", expenseId);
     if (!existing || existing.parent_id) return json({ error: "That item no longer exists. Reload the form." }, 400);
+    const split = await first(env, "SELECT id FROM expenses WHERE parent_id = ? LIMIT 1", existing.id);
+    if (field("mode") !== "purchase" && split) {
+      return json({ error: "That item is split into line items. Add a line item to it instead." }, 400);
+    }
     if (field("mode") === "purchase") {
-      // A new purchase filed under the chosen item.
+      // A new line item filed under the chosen item.
       expenseId = await createExpense(
         env,
         {
           parent_id: existing.id,
-          item: field("item") || "Purchase",
+          item: field("item") || "Line item",
           vendor: field("vendor"),
           status,
           pricing: "fixed",
           unit_cost: price === "" ? null : price,
-          units: 1,
+          units: field("units") || 1,
+          taxable: field("taxable") === "on" || field("taxable") === "1",
+          gratuity_rate: field("gratuity_percent") ? Number(field("gratuity_percent")) / 100 : 0,
           due_date: field("due_date"),
           notes: note,
           history_note: "Added from the expense form",

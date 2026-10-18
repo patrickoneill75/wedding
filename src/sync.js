@@ -88,7 +88,8 @@ export async function buildExports(env) {
   const expenseRows = expenses.map((e) => ({
     id: e.id,
     part_of: e.parent_id ? itemName.get(e.parent_id) || e.parent_id : "",
-    purchases: e.purchases || "",
+    line_items: e.purchases || "",
+    spent: e.purchases ? e.spent : "",
     category: e.category,
     subcategory: e.subcategory,
     item: e.item,

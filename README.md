@@ -10,16 +10,17 @@ A Cloudflare Worker with two sides:
   - The RSVP page at `/rsvp/`, where guests find their name and answer for their
     household.
   - An unlisted expense form at `/submit/?k=…` for the two of us to log expenses,
-    payments and receipts from a phone.
+    payments and receipts from a phone. Start typing what it's for and pick the item
+    (or make a new one); categories and vendors suggest as you type too.
 - **Control panel** (`/admin/`, Google sign-in, admins only):
   - **Dashboard**: guest counts, projected / paid / owed / overdue, upcoming payments,
     a pie of projected cost by category or subcategory, and an estimated vs. actual cost
     table by category, subcategory and item.
-  - **Expenses**: every budget line (with purchases under it when it's bought in
-    pieces) moving through
+  - **Expenses**: every budget line moving through
     Estimate → Quote → Booked → Partially paid → Paid (stages can be skipped, or an item
     cancelled), with price history, payments, who paid, due dates, and contracts and
-    receipts in Drive.
+    receipts in Drive. An item bought in pieces gets line items: the item keeps its
+    price as the budget, and each line item has its own vendor, stage and payments.
   - **Guests**: households and guests like a small CRM. Address, side, priority, separate
     ceremony and reception invitations, family and wedding-party flags, plus-ones (named by the
     guest when they RSVP), save-the-date / invite / gift / thank-you tracking, RSVPs,
