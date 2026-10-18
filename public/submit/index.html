@@ -219,7 +219,7 @@ function choose(next) {
     $("chosenInfo").textContent = [
       where(item),
       item.purchases
-        ? `${item.purchases} line item${item.purchases === 1 ? "" : "s"} · ${money(item.spent)} spent${item.total ? ` of a ${money(item.total)} budget` : ""} · ${money(item.paid)} paid`
+        ? `${item.purchases} line item${item.purchases === 1 ? "" : "s"} · ${money(item.estimated)} estimated · ${money(item.incurred)} incurred · ${money(item.paid)} paid`
         : `${label(item.status)} · ${money(item.total)} · ${money(item.paid)} paid`,
     ].filter(Boolean).join(" · ");
   } else {
@@ -238,7 +238,7 @@ function setMode(m) {
   $("modeNote").hidden = m !== "purchase";
   $("modeNote").textContent = item?.purchases
     ? `Adds a line item under ${item.item}.`
-    : `Bought in pieces, or from more than one vendor? Line items go under ${item?.item}. Its price becomes the budget, and what's already booked or paid becomes the first line item.`;
+    : `Bought in pieces, or from more than one vendor? Line items go under ${item?.item}. What's already on it (price, vendor, stage, payments) becomes the first line item.`;
   $("itemLabel").hidden = m === "update";
   $("itemLabel").firstElementChild.textContent = m === "purchase" ? "What did you buy?" : "Name";
   form.item.required = m !== "update";

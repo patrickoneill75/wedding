@@ -428,7 +428,7 @@ const OLD_GUEST_COLUMNS = `id INTEGER PRIMARY KEY, household_id INTEGER, first_n
   plus_one_allowed INTEGER NOT NULL DEFAULT 0, plus_one_name TEXT`;
 // The other tables later migrations alter, in their oldest shape.
 const OLD_OTHER_TABLES = `
-  CREATE TABLE expenses (id INTEGER PRIMARY KEY, vendor TEXT, payer TEXT, status TEXT NOT NULL DEFAULT 'estimate', updated_at TEXT);
+  CREATE TABLE expenses (id INTEGER PRIMARY KEY, vendor TEXT, payer TEXT, status TEXT NOT NULL DEFAULT 'estimate', updated_at TEXT, category TEXT, subcategory TEXT, item TEXT, pricing TEXT, unit_cost REAL, units REAL, quantity_source TEXT, quantity_factor REAL, round_up INTEGER, taxable INTEGER, gratuity_rate REAL, notes TEXT, source TEXT, baseline_total REAL);
   CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER, payer TEXT);`;
 
 test("upgrading from the first schema carries the spreadsheet's ceremony flag all the way through", async () => {
@@ -514,10 +514,10 @@ test("one guest can be invited to the ceremony only, the reception only, or both
 
 /* -------------------------------------------------------- purchases and vendors -- */
 
-test("purchases roll up into their item: actual and paid add up, projected keeps the estimate until done", async () => {
+test("line items roll up into their item: estimate, actual, paid and projected add up", async () => {
   const env = makeEnv();
   const api = await adminClient(env);
-  const parent = (await api("/api/admin/expenses", { method: "POST", body: { category: "Ceremony & Reception", subcategory: "Decor", item: "Place Settings", unit_cost: 500 } })).data.expense.id;
+  const parent = (await api("/api/admin/expenses", { method: "POST", body: { category: "Ceremony & Reception", subcategory: "Decor", item: "Place Settings" } })).data.expense.id;
   const a = await api("/api/admin/expenses", { method: "POST", body: { parent_id: parent, item: "Plates", vendor: "Goodwill", unit_cost: 120, status: "paid" } });
   assert.equal(a.status, 201, JSON.stringify(a.data));
   assert.equal(a.data.expense.category, "Ceremony & Reception", "a purchase files under its item's category");
@@ -526,22 +526,22 @@ test("purchases roll up into their item: actual and paid add up, projected keeps
 
   let p = (await api(`/api/admin/expenses/${parent}`)).data.expense;
   assert.equal(p.purchases, 2);
-  assert.equal(p.estimate, 500);
+  assert.equal(p.estimate, 170);
   assert.equal(p.actual, 170);
   assert.equal(p.paid, 120);
-  assert.equal(p.projected, 500, "more purchases may come, so the estimate still stands");
-  assert.equal(p.owed, 380);
+  assert.equal(p.projected, 170);
+  assert.equal(p.owed, 50);
   assert.equal(p.purchase_list.length, 2);
 
   const s = (await api("/api/admin/summary")).data;
-  assert.equal(s.totals.projected, 500, "purchases are not counted on top of their item");
+  assert.equal(s.totals.projected, 170, "line items are not counted on top of their item");
   assert.equal(s.totals.paid, 120);
   assert.equal(s.items.length, 1, "the category table lists the item, not each purchase");
   assert.equal(s.upcoming[0].item, "Place Settings: Napkins", "a purchase's due payment names its item");
 
   await api(`/api/admin/expenses/${parent}`, { method: "PUT", body: { status: "paid" } });
   p = (await api(`/api/admin/expenses/${parent}`)).data.expense;
-  assert.equal(p.projected, 170, "done buying: projected is what the purchases add up to");
+  assert.equal(p.projected, 170, "done buying changes the stage, not the total");
   assert.equal(p.owed, 50);
   assert.equal((await api(`/api/admin/expenses/${parent}`)).data.payments.length, 0, "marking an item with purchases Paid records no payment of its own");
 });
@@ -620,7 +620,7 @@ test("the expense form adds a purchase under an existing item, and lists items w
 
 // Bug: an item with purchases kept its own vendor, stage and payments next to theirs, so
 // its Pricing column and stage said one thing and its purchases another.
-test("the first line item moves the item's own booking into a line item, leaving the price as the budget", async () => {
+test("the first line item moves the item's own price and booking into a line item; the item just adds them up", async () => {
   const env = makeEnv();
   const api = await adminClient(env);
   const id = (await api("/api/admin/expenses", { method: "POST", body: {
@@ -632,9 +632,9 @@ test("the first line item moves the item's own booking into a line item, leaving
   assert.equal(d.payments.length, 0, "the deposit moved off the item");
   assert.equal(d.expense.vendor, null);
   assert.equal(d.expense.due_date, null);
-  assert.equal(d.expense.budget, 2000);
-  assert.equal(d.expense.estimate, 2000, "the frozen estimate holds");
-  assert.equal(d.expense.spent, 2090);
+  assert.equal(d.expense.unit_cost, null, "no budget left on the item");
+  assert.equal(d.expense.estimate, 2090, "the frozen estimate moved with the booking");
+  assert.equal(d.expense.projected, 2090);
   assert.equal(d.expense.paid, 590);
   assert.equal(d.expense.status, "partially_paid", "the item's stage comes from its line items");
   const first = d.expense.purchase_list.find((k) => k.vendor === "Petal Co");
@@ -654,7 +654,7 @@ test("the first line item moves the item's own booking into a line item, leaving
 test("an item with line items is Booked, In progress, Partially paid or Paid by what its line items are", async () => {
   const env = makeEnv();
   const api = await adminClient(env);
-  const id = (await api("/api/admin/expenses", { method: "POST", body: { item: "Favors", unit_cost: 100 } })).data.expense.id;
+  const id = (await api("/api/admin/expenses", { method: "POST", body: { item: "Favors" } })).data.expense.id;
   const a = (await api("/api/admin/expenses", { method: "POST", body: { parent_id: id, item: "Bags", unit_cost: 40, status: "quote" } })).data.expense.id;
   assert.equal((await api("/api/admin/expenses", { method: "POST", body: { parent_id: id, item: "Tags", unit_cost: 20 } })).status, 201);
   const stage = async () => (await api(`/api/admin/expenses/${id}`)).data.expense;
@@ -680,18 +680,18 @@ test("an item with line items is Booked, In progress, Partially paid or Paid by 
 test("In progress means everything bought so far is paid; Partially paid means a booking still owes", async () => {
   const env = makeEnv();
   const api = await adminClient(env);
-  const venue = (await api("/api/admin/expenses", { method: "POST", body: { item: "Venue", unit_cost: 4000 } })).data.expense.id;
+  const venue = (await api("/api/admin/expenses", { method: "POST", body: { item: "Venue" } })).data.expense.id;
   await api("/api/admin/expenses", { method: "POST", body: { parent_id: venue, item: "Security deposit", unit_cost: 1000, status: "paid" } });
   await api("/api/admin/expenses", { method: "POST", body: { parent_id: venue, item: "Remaining cost", unit_cost: 3000, status: "booked" } });
   assert.equal((await api(`/api/admin/expenses/${venue}`)).data.expense.status, "partially_paid");
 
-  const plates = (await api("/api/admin/expenses", { method: "POST", body: { item: "Place Settings", unit_cost: 500 } })).data.expense.id;
+  const plates = (await api("/api/admin/expenses", { method: "POST", body: { item: "Place Settings" } })).data.expense.id;
   await api("/api/admin/expenses", { method: "POST", body: { parent_id: plates, item: "Plates", unit_cost: 40, status: "paid" } });
   await api("/api/admin/expenses", { method: "POST", body: { parent_id: plates, item: "Glasses", unit_cost: 60, status: "paid" } });
   await api("/api/admin/expenses", { method: "POST", body: { parent_id: plates, item: "Chargers (maybe)", unit_cost: 80, status: "quote" } });
   const e = (await api(`/api/admin/expenses/${plates}`)).data.expense;
   assert.equal(e.status, "in_progress", "a quote isn't owed yet");
-  assert.deepEqual([e.incurred, e.estimated], [100, 400], "bought is incurred; the rest of the $500 budget is still estimated");
+  assert.deepEqual([e.incurred, e.estimated], [100, 80], "bought is incurred; the quote is still estimated");
   const v = (await api(`/api/admin/expenses/${venue}`)).data.expense;
   assert.deepEqual([v.incurred, v.estimated], [4000, 0], "a booked balance is incurred even before it's paid");
   assert.equal((await api("/api/admin/expenses")).data.status_labels.in_progress, "In progress");
@@ -725,14 +725,50 @@ test("upgrading moves Booked items with payments on them to Partially paid", asy
   env.DB.db.exec(`
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO settings VALUES ('_schema_version', '6');
-    CREATE TABLE expenses (id INTEGER PRIMARY KEY, parent_id INTEGER, status TEXT NOT NULL, updated_at TEXT);
+    CREATE TABLE expenses (id INTEGER PRIMARY KEY, parent_id INTEGER, status TEXT NOT NULL, updated_at TEXT, category TEXT, subcategory TEXT, item TEXT, pricing TEXT, unit_cost REAL, units REAL, quantity_source TEXT, quantity_factor REAL, round_up INTEGER, taxable INTEGER, gratuity_rate REAL, notes TEXT, source TEXT, baseline_total REAL);
     CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER);
     INSERT INTO expenses (id, parent_id, status) VALUES (1, NULL, 'booked'), (2, NULL, 'booked'), (3, NULL, 'quote'), (4, 3, 'paid');
     INSERT INTO payments (expense_id) VALUES (1), (3), (4);
   `);
   assert.equal((await call(env, "/api/auth/me")).status, 401);
   const rows = env.DB.db.prepare("SELECT status FROM expenses ORDER BY id").all().map((r) => r.status);
-  assert.deepEqual(rows, ["partially_paid", "booked", "quote", "paid"], "an item with line items is left alone");
+  assert.deepEqual(rows, ["partially_paid", "booked", "estimate", "paid"], "an item with line items isn't moved on by its payments");
+});
+
+// Bug: Hair & Makeup, with a quote and an estimate under it, read "$875 spent · no
+// budget set" -- nothing was spent, and we don't keep budgets.
+test("an item with only a quote and an estimate under it has nothing incurred or paid", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const id = (await api("/api/admin/expenses", { method: "POST", body: { item: "Hair & Makeup" } })).data.expense.id;
+  await api("/api/admin/expenses", { method: "POST", body: { parent_id: id, item: "Hair", unit_cost: 600, status: "quote" } });
+  await api("/api/admin/expenses", { method: "POST", body: { parent_id: id, item: "Makeup", unit_cost: 275 } });
+  const e = (await api(`/api/admin/expenses/${id}`)).data.expense;
+  assert.deepEqual([e.estimated, e.incurred, e.paid, e.projected, e.status], [875, 0, 0, 875, "quote"]);
+  assert.ok(!("budget" in e) && !("spent" in e));
+});
+
+test("upgrading turns an item's leftover budget into an estimate line item and clears the item's price", async () => {
+  const env = makeEnv();
+  env.DB.db.exec(`
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO settings VALUES ('_schema_version', '7');
+    CREATE TABLE expenses (id INTEGER PRIMARY KEY, parent_id INTEGER, status TEXT NOT NULL, updated_at TEXT, category TEXT, subcategory TEXT,
+      item TEXT, pricing TEXT, unit_cost REAL, units REAL, quantity_source TEXT, quantity_factor REAL, round_up INTEGER, taxable INTEGER,
+      gratuity_rate REAL, notes TEXT, source TEXT, baseline_total REAL);
+    INSERT INTO expenses (id, parent_id, status, item, pricing, unit_cost, units) VALUES
+      (1, NULL, 'booked', 'Place Settings', 'fixed', 500, 1), (2, 1, 'paid', 'Plates', 'fixed', 120, 1),
+      (3, NULL, 'estimate', 'Hair & Makeup', 'fixed', NULL, 1), (4, 3, 'quote', 'Hair', 'fixed', 600, 1),
+      (5, NULL, 'paid', 'Favors', 'fixed', 90, 1), (6, 5, 'paid', 'Bags', 'fixed', 40, 1);
+    CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER);
+  `);
+  assert.equal((await call(env, "/api/auth/me")).status, 401);
+  const rows = env.DB.db.prepare("SELECT id, parent_id, status, item, unit_cost FROM expenses ORDER BY id").all().map((r) => ({ ...r }));
+  assert.deepEqual(rows.find((r) => r.id === 1), { id: 1, parent_id: null, status: "estimate", item: "Place Settings", unit_cost: null });
+  assert.deepEqual(rows.filter((r) => r.id > 6).map((r) => [r.parent_id, r.status, r.item, r.unit_cost]), [[1, "estimate", "Place Settings", 500]],
+    "only an open item with a price gets one; a done item's budget was already ignored");
+  assert.equal(rows.find((r) => r.id === 5).unit_cost, null);
+  assert.equal(rows.find((r) => r.id === 5).status, "paid", "done buying stays done");
 });
 
 test("the expense form still updates an item itself in update mode", async () => {
@@ -753,7 +789,7 @@ test("upgrading renames Partner to Kaitlyn in settings and payments, and seeds t
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO settings VALUES ('_schema_version', '5');
     INSERT INTO settings VALUES ('payers', '["Patrick","Partner","Joint"]');
-    CREATE TABLE expenses (id INTEGER PRIMARY KEY, vendor TEXT, payer TEXT, status TEXT NOT NULL DEFAULT 'estimate', updated_at TEXT);
+    CREATE TABLE expenses (id INTEGER PRIMARY KEY, vendor TEXT, payer TEXT, status TEXT NOT NULL DEFAULT 'estimate', updated_at TEXT, category TEXT, subcategory TEXT, item TEXT, pricing TEXT, unit_cost REAL, units REAL, quantity_source TEXT, quantity_factor REAL, round_up INTEGER, taxable INTEGER, gratuity_rate REAL, notes TEXT, source TEXT, baseline_total REAL);
     CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER, payer TEXT);
     INSERT INTO expenses (id, vendor, payer) VALUES (1, ' Goodwill ', 'Partner'), (2, 'goodwill', NULL), (3, NULL, 'Patrick');
     INSERT INTO payments VALUES (1, 1, 'Partner');

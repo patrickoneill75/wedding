@@ -37,22 +37,17 @@
  * Line items: an item can have line items under it (parent_id), one level deep --
  * "Place Settings" bought a bit at a time from several vendors. (The code calls them
  * purchases.) Each line item is a full expense of its own: vendor, stage, price,
- * payments. The item above them becomes a container: its own price is the budget for
- * the group, and it holds no vendor, stage or payments of its own (adding the first
- * line item moves those down into one; see splitIntoLineItems in src/store.js).
- * rollupPurchases() then makes the item speak for the group:
- *   budget     the item's own price
- *   spent      what the line items add up to
- *   estimate   the item's own estimate, as for any item (the budget, frozen once it's
- *              marked done)
+ * payments. The item above them becomes a container that holds no price, vendor,
+ * stage or payments of its own (adding the first line item moves whatever it had into
+ * one; see splitIntoLineItems in src/store.js) -- we track estimates, quotes and
+ * what's paid, not budgets. rollupPurchases() then makes the item speak for the group:
+ *   projected  what the line items add up to (only what was paid, if Cancelled)
+ *   estimate   the line items' original estimates added up
  *   paid       everything paid, on the line items (and on the item itself, for data
  *              from before items became containers)
  *   actual     the line items' actual costs added up (null until one has one)
- *   incurred   the line items' incurred costs added up; estimated is the rest of
- *              projected (budget not yet spent, line items still at a quote)
- *   projected  the larger of the budget and what's spent, since more may be bought --
- *              until the item is marked done buying (stored as Paid), when it's exactly
- *              what was spent
+ *   incurred   the line items' incurred costs added up; estimated is the rest
+ *              (line items still at an estimate or a quote)
  *   status     worked out from the line items. Once anything is paid: Partially paid
  *              while a booked line item still owes money (the venue's deposit is in,
  *              the rest is due), In progress while everything bought so far is paid
@@ -322,10 +317,7 @@ export function rollupPurchases(expenses) {
     const paid = cents(e.paid + list.reduce((s, k) => s + k.paid, 0));
     const known = list.filter((k) => k.actual != null);
     const done = e.status === "paid";
-    let projected;
-    if (e.status === "cancelled") projected = paid;
-    else if (done) projected = spent;
-    else projected = Math.max(e.current, spent);
+    const projected = e.status === "cancelled" ? paid : spent;
     const owed = cents(Math.max(projected - paid, 0));
     // A line item that's committed to (past Quote) and not fully paid yet.
     const committedOwing = list.some((k) => k.owed > 0.004 && !["estimate", "quote", "cancelled"].includes(k.status));
@@ -343,16 +335,15 @@ export function rollupPurchases(expenses) {
       own_status: e.status,
       done,
       purchases: list.length,
-      budget: e.current,
-      spent,
+      estimate: cents(e.status === "cancelled" ? 0 : list.reduce((s, k) => s + k.estimate, 0)),
       paid,
       projected: cents(projected),
       owed,
       actual: known.length ? cents(known.reduce((s, k) => s + k.actual, 0)) : null,
-      // Committed line items (and anything paid on the item itself); the rest of the
-      // projected cost -- unspent budget, quotes -- is still estimated.
+      // Committed line items (and anything paid on the item itself); the rest --
+      // estimates and quotes -- is still estimated.
       ...split(projected, e.status === "cancelled" ? paid : e.paid + list.reduce((s, k) => s + k.incurred, 0)),
-      priced: e.priced || spent > 0,
+      priced: list.some((k) => k.priced),
     };
   });
 }

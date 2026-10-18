@@ -17,12 +17,12 @@ A Cloudflare Worker with two sides:
   - **Dashboard**: guest counts, projected / paid / owed / overdue, upcoming payments,
     a pie of projected cost by category or subcategory, and an estimated vs. actual cost
     table by category, subcategory and item.
-  - **Expenses**: every budget line moving through
+  - **Expenses**: every expense moving through
     Estimate → Quote → Booked → Partially paid → Paid (stages can be skipped, or an item
     cancelled), with price history, payments, who paid, due dates, and contracts and
     receipts in Drive. Anything with a deposit paid and more to pay is Partially paid.
-    An item bought in pieces gets line items: the item keeps its price as the budget,
-    and each line item has its own vendor, stage and payments. The item reads In
+    An item bought in pieces gets line items, each with its own price, vendor, stage
+    and payments; the item adds them up. The item reads In
     progress while everything bought so far is paid and more is to come, and Paid once
     it's marked done buying.
   - **Guests**: households and guests like a small CRM. Address, side, priority, separate
@@ -50,8 +50,9 @@ yes count.
 
 On the Expenses page every item's cost sits in one of two columns: **Estimated** (an
 estimate or a quote, not committed to yet) or **Incurred** (booked or paid). An item
-being bought in pieces splits across both: what's bought is incurred, and the rest of
-its budget is still estimated. **Owed** there is what's incurred and not yet paid.
+with line items splits across both: its booked and paid line items are incurred, its
+estimates and quotes are still estimated. **Owed** there is what's incurred and not
+yet paid.
 
 An item's **original estimate** is frozen the moment it leaves the Estimate stage, so the
 dashboard can show how far each category drifted.
