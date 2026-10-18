@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
+<title>Seating — Wedding planner</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  .rooms { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .rooms button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .rooms .kind { font-size: 11px; opacity: .8; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  .toolbar select { width: auto; }
+  .canvas { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); max-height: 76vh; touch-action: none; }
+  .canvas svg { display: block; user-select: none; -webkit-user-select: none; }
+  .canvas .floor { fill: var(--surface-1); stroke: var(--text-secondary); stroke-width: .12; }
+  .canvas .g1 { stroke: var(--grid); stroke-width: .03; }
+  .canvas .g5 { stroke: var(--grid); stroke-width: .08; }
+  .canvas .ruler { fill: var(--text-muted); font-size: .8px; }
+  .canvas .item { cursor: grab; }
+  .canvas .item.dragging { cursor: grabbing; }
+  .canvas .top { fill: var(--surface-2); stroke: var(--text-secondary); stroke-width: .08; }
+  .canvas .sel .top, .canvas .sel .chair.solo { stroke: var(--accent); stroke-width: .2; }
+  .canvas .num { fill: var(--text-primary); font-weight: 650; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+  .canvas .chair { fill: var(--surface-1); stroke: var(--text-secondary); stroke-width: .06; }
+  .canvas .chair.taken { fill: var(--accent); stroke: var(--accent); }
+  .canvas .chair.stale { fill: var(--warn); stroke: var(--warn); }
+  .canvas .letter { fill: var(--text-secondary); font-size: .6px; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+  .canvas .taken + .letter, .canvas .stale + .letter { fill: #fff; font-weight: 650; }
+  .canvas .seatable .chair { cursor: pointer; }
+  .canvas .note { fill: var(--text-secondary); font-style: italic; text-anchor: middle; dominant-baseline: central; }
+  .canvas .sel .note { fill: var(--accent); }
+  .canvas .who { fill: var(--text-primary); font-size: .5px; text-anchor: middle; pointer-events: none; }
+  .panel h2 { margin-bottom: 10px; }
+  .panel .fields { grid-template-columns: 1fr 1fr; }
+  .seatlist { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; font-size: 13px; }
+  .seatlist button { justify-content: flex-start; text-align: left; white-space: normal; padding: 5px 9px; }
+  .seatlist .l { font-weight: 650; width: 1.4em; color: var(--text-muted); }
+  .stats { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); }
+  .stats b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .people { display: flex; flex-direction: column; gap: 4px; max-height: 50vh; overflow: auto; margin-top: 10px; }
+  .people button { justify-content: space-between; text-align: left; white-space: normal; }
+  .people .detail { font-size: 12px; color: var(--text-muted); }
+  .tag { font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; }
+  .tag.warn { color: var(--bad); border-color: rgba(208, 59, 59, .3); }
+  @media print {
+    .topbar, .toolbar, .panel, #templatesCard, #whoCard, .rooms, #addRoom { display: none !important; }
+    .layout { display: block; }
+    .canvas { max-height: none; overflow: visible; border: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar" id="topbar"></div>
+  <div class="row" style="margin-bottom:6px">
+    <div><h1>Seating</h1></div>
+    <span class="spacer"></span>
+    <button class="primary" id="addRoom">+ Add room</button>
+  </div>
+  <p class="sub">Lay out each room in feet. Drag tables, chairs and notes to move them. In a reception room, click a
+    chair to seat someone there: each person gets a table number and a seat letter.</p>
+  <div class="rooms" id="rooms"></div>
+  <div id="main"></div>
+
+  <div class="card" id="templatesCard">
+    <div class="row"><h2>Table templates</h2><span class="spacer"></span><button class="small" id="addTemplate">+ New template</button></div>
+    <p class="desc">Sizes you rent, ready to drop into a room. Changing a template doesn't change tables already placed.</p>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Shape</th><th>Size</th><th class="num">Seats</th><th></th></tr></thead>
+      <tbody id="templateRows"></tbody></table></div>
+  </div>
+</div>
+
+<script type="module">
+import { api, initPage, h, openDialog, field, formValues, setMsg, showTooltip, hideTooltip } from "/admin/admin.js";
+
+await initPage("seating.html");
+
+const KIND_LABEL = { ceremony: "Ceremony", reception: "Reception", other: "Other" };
+const SIDES_LABEL = { both: "Both long sides", one: "One long side (head table)", around: "All around, with the ends" };
+const RSVP_LABEL = { pending: "Awaiting", yes: "Coming", no: "Not coming" };
+const CHAIR_R = 0.75; // a chair is about 18 inches across
+const CHAIR_GAP = 0.35; // from the table's edge to the chair's
+
+let data;
+let roomId = Number(new URLSearchParams(location.search).get("room")) || null;
+let selectedId = null;
+let zoom = 1;
+try { zoom = Number(localStorage.getItem("seating-zoom")) || 1; } catch {}
+
+const room = () => data.rooms.find((r) => r.id === roomId) || null;
+const itemsOf = (id) => data.items.filter((i) => i.room_id === id);
+const personKey = (guestId, plusOne) => `${guestId}:${plusOne ? 1 : 0}`;
+const letters = (n) => Array.from({ length: Math.max(0, Math.min(26, n)) }, (_, i) => String.fromCharCode(65 + i));
+const ft = (n) => `${Number(n)} ft`;
+
+function accept(next) {
+  data = next;
+  data.person = new Map(data.people.map((p) => [personKey(p.guest_id, p.plus_one), p]));
+  data.bySeat = new Map(data.assignments.map((a) => [`${a.item_id}:${a.seat_letter}`, a]));
+  data.byPerson = new Map(data.assignments.map((a) => [personKey(a.guest_id, a.plus_one), a]));
+  if (!room()) roomId = data.rooms[0]?.id ?? null;
+  if (selectedId && !data.items.some((i) => i.id === selectedId)) selectedId = null;
+}
+
+async function load() {
+  accept(await api("/api/admin/seating"));
+  render();
+}
+
+/** Send a change; the reply is the whole seating chart again. */
+async function send(path, method, body) {
+  const reply = await api(`/api/admin/seating/${path}`, { method, body });
+  accept(reply);
+  render();
+  return reply;
+}
+
+const occupant = (itemId, letter) => {
+  const a = data.bySeat.get(`${itemId}:${letter}`);
+  return a ? data.person.get(personKey(a.guest_id, a.plus_one)) : null;
+};
+const problem = (p) => (p.stale ? "no plus-one any more" : !p.invited ? "not invited to the reception" : p.rsvp === "no" ? "not coming" : "");
+const seatName = (a) => {
+  const item = data.items.find((i) => i.id === a.item_id);
+  return item ? `Table ${item.label}, seat ${a.seat_letter}` : "";
+};
+
+/* ------------------------------------------------------------ seat geometry ---- */
+
+/** Where each seat goes, relative to the table's center, with the table turned. */
+function seatSpots(item) {
+  if (item.kind === "seat") return [{ letter: "A", x: 0, y: 0 }];
+  const n = Math.min(26, item.seats);
+  const spots = [];
+  if (item.shape === "round") {
+    const r = item.width_ft / 2 + CHAIR_GAP + CHAIR_R;
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI / 2 + (i * 2 * Math.PI) / n;
+      spots.push({ x: r * Math.cos(a), y: r * Math.sin(a) });
+    }
+  } else {
+    const w = item.width_ft;
+    const l = item.length_ft;
+    const off = CHAIR_GAP + CHAIR_R;
+    const along = (count, y, reverse) => {
+      const row = Array.from({ length: count }, (_, i) => ({ x: -w / 2 + (w * (i + 0.5)) / count, y }));
+      return reverse ? row.reverse() : row;
+    };
+    if (item.seat_sides === "one") spots.push(...along(n, -(l / 2 + off)));
+    else if (item.seat_sides === "around" && n >= 4) {
+      const top = Math.ceil((n - 2) / 2);
+      spots.push(...along(top, -(l / 2 + off)), { x: w / 2 + off, y: 0 }, ...along(n - 2 - top, l / 2 + off, true), { x: -(w / 2 + off), y: 0 });
+    } else {
+      const top = Math.ceil(n / 2);
+      spots.push(...along(top, -(l / 2 + off)), ...along(n - top, l / 2 + off, true));
+    }
+  }
+  const t = ((item.rotation || 0) * Math.PI) / 180;
+  return spots.map((p, i) => ({
+    letter: String.fromCharCode(65 + i),
+    x: p.x * Math.cos(t) - p.y * Math.sin(t),
+    y: p.x * Math.sin(t) + p.y * Math.cos(t),
+  }));
+}
+
+/* ------------------------------------------------------------------- drawing ---- */
+
+const NS = "http://www.w3.org/2000/svg";
+function s(tag, attrs = {}, ...children) {
+  const node = document.createElementNS(NS, tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value === null || value === undefined || value === false) continue;
+    if (key.startsWith("on") && typeof value === "function") node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value);
+  }
+  for (const child of children.flat()) if (child) node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  return node;
+}
+
+function drawItem(item, r) {
+  const seatable = r.kind === "reception" && item.kind !== "note";
+  const g = s("g", { class: `item${item.id === selectedId ? " sel" : ""}${seatable ? " seatable" : ""}`, transform: `translate(${item.x} ${item.y})`, "data-id": item.id });
+  if (item.kind === "note") {
+    g.append(s("text", { class: "note", "font-size": item.font_size, transform: `rotate(${item.rotation || 0})` }, item.label));
+    return g;
+  }
+  if (item.kind === "table") {
+    const top = item.shape === "round"
+      ? s("circle", { class: "top", r: item.width_ft / 2 })
+      : s("rect", { class: "top", x: -item.width_ft / 2, y: -item.length_ft / 2, width: item.width_ft, height: item.length_ft, rx: 0.15, transform: `rotate(${item.rotation || 0})` });
+    g.append(top);
+  }
+  for (const spot of seatSpots(item)) {
+    const who = seatable ? occupant(item.id, spot.letter) : null;
+    const state = who ? (problem(who) ? " stale" : " taken") : "";
+    const chair = s("circle", { class: `chair${item.kind === "seat" ? " solo" : ""}${state}`, cx: spot.x, cy: spot.y, r: CHAIR_R, "data-letter": spot.letter });
+    if (seatable) {
+      chair.addEventListener("pointerenter", (ev) => showTooltip(ev, `Table ${item.label}, seat ${spot.letter}`,
+        [[who ? who.name : "Empty", who ? problem(who) || RSVP_LABEL[who.rsvp] : "click to seat someone"]]));
+      chair.addEventListener("pointerleave", hideTooltip);
+    }
+    g.append(chair, item.kind === "seat" ? null : s("text", { class: "letter", x: spot.x, y: spot.y }, spot.letter));
+  }
+  const labelSize = item.kind === "seat" ? 0.6 : Math.max(0.7, Math.min(1.6, Math.min(item.width_ft, item.length_ft) / 2.2));
+  if (item.label) g.append(s("text", { class: "num", "font-size": labelSize, style: item.kind === "seat" && seatable && occupant(item.id, "A") ? "fill:#fff" : null }, item.label));
+  return g;
+}
+
+function drawRoom(r) {
+  const pad = 3;
+  const W = r.width_ft;
+  const L = r.length_ft;
+  const svg = s("svg", { viewBox: `${-pad} ${-pad} ${W + pad * 2} ${L + pad * 2}`, style: `width:${Math.round(zoom * 100)}%; min-width:${Math.round(zoom * 100)}%` });
+  svg.append(s("rect", { class: "floor", x: 0, y: 0, width: W, height: L }));
+  const lines = [];
+  const fine = W <= 120 && L <= 120;
+  for (let x = 1; x < W; x++) if (x % 5 === 0 || fine) lines.push(s("line", { class: x % 5 ? "g1" : "g5", x1: x, y1: 0, x2: x, y2: L }));
+  for (let y = 1; y < L; y++) if (y % 5 === 0 || fine) lines.push(s("line", { class: y % 5 ? "g1" : "g5", x1: 0, y1: y, x2: W, y2: y }));
+  const step = W > 150 ? 20 : 10;
+  for (let x = 0; x <= W; x += step) lines.push(s("text", { class: "ruler", x, y: -0.8, "text-anchor": "middle" }, `${x}′`));
+  for (let y = step; y <= L; y += step) lines.push(s("text", { class: "ruler", x: -0.6, y, "text-anchor": "end", "dominant-baseline": "central" }, `${y}′`));
+  svg.append(s("g", {}, lines));
+  for (const item of itemsOf(r.id)) svg.append(drawItem(item, r));
+  wireDragging(svg, r);
+  return svg;
+}
+
+/** Drag to move; a press that doesn't move selects (and, on a reception chair, seats someone). */
+function wireDragging(svg, r) {
+  let drag = null;
+  const toRoom = (ev) => {
+    const pt = svg.createSVGPoint();
+    pt.x = ev.clientX;
+    pt.y = ev.clientY;
+    return pt.matrixTransform(svg.getScreenCTM().inverse());
+  };
+  svg.addEventListener("pointerdown", (ev) => {
+    const g = ev.target.closest(".item");
+    if (!g) {
+      if (selectedId) { selectedId = null; render(); }
+      return;
+    }
+    const item = data.items.find((i) => i.id === Number(g.dataset.id));
+    const p = toRoom(ev);
+    drag = { item, g, dx: p.x - item.x, dy: p.y - item.y, x: item.x, y: item.y, moved: false, letter: ev.target.dataset.letter || null, pointer: ev.pointerId };
+    svg.setPointerCapture(ev.pointerId);
+    g.classList.add("dragging");
+    hideTooltip();
+  });
+  svg.addEventListener("pointermove", (ev) => {
+    if (!drag || ev.pointerId !== drag.pointer) return;
+    const p = toRoom(ev);
+    const snap = (v, max) => Math.min(max, Math.max(0, Math.round(v * 4) / 4));
+    const x = snap(p.x - drag.dx, r.width_ft);
+    const y = snap(p.y - drag.dy, r.length_ft);
+    if (!drag.moved && Math.hypot(x - drag.item.x, y - drag.item.y) < 0.4) return;
+    drag.moved = true;
+    drag.x = x;
+    drag.y = y;
+    drag.g.setAttribute("transform", `translate(${x} ${y})`);
+  });
+  const finish = async (ev) => {
+    if (!drag || ev.pointerId !== drag.pointer) return;
+    const { item, moved, x, y, letter } = drag;
+    drag.g.classList.remove("dragging");
+    drag = null;
+    if (moved) {
+      item.x = x;
+      item.y = y;
+      try {
+        await send(`items/${item.id}`, "PUT", { x, y });
+      } catch (error) {
+        alert(error.message);
+        await load();
+      }
+      return;
+    }
+    selectedId = item.id;
+    render();
+    if (letter && r.kind === "reception") pickPerson(item, letter);
+  };
+  svg.addEventListener("pointerup", finish);
+  svg.addEventListener("pointercancel", finish);
+}
+
+/* -------------------------------------------------------------------- page ---- */
+
+function render() {
+  document.getElementById("rooms").replaceChildren(
+    ...data.rooms.map((r) => h("button", { class: r.id === roomId ? "on" : "", onclick: () => { roomId = r.id; selectedId = null; history.replaceState(null, "", `?room=${r.id}`); render(); } },
+      r.name, h("span", { class: "kind" }, KIND_LABEL[r.kind] || r.kind)))
+  );
+  const r = room();
+  const main = document.getElementById("main");
+  if (!r) {
+    main.replaceChildren(h("div", { class: "card" }, h("h2", {}, "No rooms yet"),
+      h("p", { class: "desc" }, "Add the ceremony room and the reception room with their size in feet, then place tables, chairs and notes in them.")));
+  } else {
+    main.replaceChildren(
+      h("div", { class: "layout" },
+        h("div", {},
+          toolbar(r),
+          h("div", { class: "canvas", id: "canvas" }, drawRoom(r)),
+          h("div", { class: "stats", style: "margin-top:10px" }, roomStats(r))),
+        h("div", { class: "card panel" }, panel(r))),
+      r.kind === "reception" ? whoSitsWhere() : null,
+    );
+  }
+  renderTemplates();
+}
+
+function roomStats(r) {
+  const items = itemsOf(r.id);
+  const tables = items.filter((i) => i.kind === "table");
+  const chairs = items.filter((i) => i.kind !== "note").reduce((n, i) => n + (i.kind === "seat" ? 1 : i.seats), 0);
+  const item = (n, label) => h("span", {}, h("b", {}, String(n)), ` ${label}`);
+  const out = [item(`${r.width_ft} × ${r.length_ft}`, "ft"), item(tables.length, tables.length === 1 ? "table" : "tables"), item(chairs, "seats")];
+  if (r.kind === "reception") {
+    const ids = new Set(items.map((i) => i.id));
+    out.push(item(data.assignments.filter((a) => ids.has(a.item_id)).length, "seated here"));
+  }
+  return out;
+}
+
+function nextSpot(r) {
+  const n = itemsOf(r.id).length;
+  return { x: Math.round((r.width_ft / 2 + ((n % 5) - 2) * 1.5) * 4) / 4, y: Math.round((r.length_ft / 2 + ((Math.floor(n / 5) % 5) - 2) * 1.5) * 4) / 4 };
+}
+
+async function addItem(body) {
+  try {
+    const reply = await api("/api/admin/seating/items", { method: "POST", body });
+    accept(reply);
+    selectedId = reply.ids[reply.ids.length - 1];
+    render();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+function toolbar(r) {
+  const tableMenu = h("select", {
+    onchange: (ev) => {
+      const v = ev.target.value;
+      ev.target.value = "";
+      if (!v) return;
+      addItem({ room_id: r.id, kind: "table", ...nextSpot(r), ...(v === "custom" ? {} : { template_id: Number(v) }) });
+    },
+  },
+  h("option", { value: "" }, "+ Add table…"),
+  data.templates.map((t) => h("option", { value: t.id }, t.name)),
+  h("option", { value: "custom" }, "Custom table (edit its size after)"));
+  return h("div", { class: "toolbar" },
+    tableMenu,
+    h("button", { class: "small", onclick: () => addChairs(r) }, "+ Chairs"),
+    h("button", { class: "small", onclick: () => addNote(r) }, "+ Note"),
+    h("span", { class: "spacer" }),
+    h("label", { class: "check" }, "Zoom",
+      h("select", { onchange: (ev) => { zoom = Number(ev.target.value); try { localStorage.setItem("seating-zoom", zoom); } catch {} render(); } },
+        [1, 1.5, 2, 3, 4].map((z) => h("option", { value: z, selected: z === zoom }, `${z * 100}%`)))),
+    h("button", { class: "small", onclick: () => window.print() }, "Print"),
+    h("button", { class: "small", onclick: () => editRoom(r) }, "Room settings"));
+}
+
+function addChairs(r) {
+  openDialog("Add chairs", (close) => {
+    const msg = h("p", { class: "msg" });
+    const form = h("form", { onsubmit: async (ev) => {
+      ev.preventDefault();
+      const v = formValues(form);
+      try {
+        const reply = await api("/api/admin/seating/items", { method: "POST", body: { room_id: r.id, kind: "seat", count: v.count, label: v.label, ...nextSpot(r) } });
+        accept(reply);
+        selectedId = reply.ids[reply.ids.length - 1];
+        close(true);
+        render();
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    } },
+    h("p", { class: "desc" }, r.kind === "reception"
+      ? "Chairs on their own, not at a table. In a reception room each one gets its own number, like a table with one seat (A)."
+      : "A row of chairs, 2 ft apart. Drag each one where it goes."),
+    h("div", { class: "fields" },
+      field("How many, in a row", "count", { type: "number", min: 1, value: 1 }),
+      field(r.kind === "reception" ? "Number (one chair only; blank for the next free one)" : "Label (optional)", "label", {})),
+    h("button", { class: "primary" }, "Add"), msg);
+    return form;
+  });
+}
+
+function addNote(r) {
+  openDialog("Add a note", (close) => {
+    const msg = h("p", { class: "msg" });
+    const form = h("form", { onsubmit: async (ev) => {
+      ev.preventDefault();
+      const v = formValues(form);
+      try {
+        const reply = await api("/api/admin/seating/items", { method: "POST", body: { room_id: r.id, kind: "note", label: v.label, font_size: v.font_size, ...nextSpot(r) } });
+        accept(reply);
+        selectedId = reply.ids[0];
+        close(true);
+        render();
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    } },
+    h("div", { class: "fields" },
+      field("Text", "label", { placeholder: "North end, DJ booth, Bar, Dance floor…", required: true }),
+      field("Text size (ft tall)", "font_size", { type: "number", step: 0.25, min: 0.5, value: 1.5 })),
+    h("button", { class: "primary" }, "Add"), msg);
+    return form;
+  });
+}
+
+function editRoom(r) {
+  openDialog(r ? `Room: ${r.name}` : "New room", (close) => {
+    const msg = h("p", { class: "msg" });
+    const form = h("form", { onsubmit: async (ev) => {
+      ev.preventDefault();
+      const v = formValues(form);
+      if (r && r.kind === "reception" && v.kind !== "reception" && data.assignments.some((a) => itemsOf(r.id).some((i) => i.id === a.item_id))
+          && !confirm("Only reception rooms have assigned seats. Everyone seated in this room loses their seat. Go ahead?")) return;
+      try {
+        const reply = r ? await send(`rooms/${r.id}`, "PUT", v) : await send("rooms", "POST", v);
+        if (!r) { roomId = reply.id; history.replaceState(null, "", `?room=${roomId}`); render(); }
+        close(true);
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    } },
+    h("div", { class: "fields" },
+      field("Name", "name", { value: r?.name || "", placeholder: "Reception hall", required: true }),
+      field("Used for", "kind", { options: Object.entries(KIND_LABEL), value: r?.kind || "reception" }),
+      field("Width (ft, left to right)", "width_ft", { type: "number", step: 0.5, min: 5, value: r?.width_ft ?? 60 }),
+      field("Length (ft, top to bottom)", "length_ft", { type: "number", step: 0.5, min: 5, value: r?.length_ft ?? 40 })),
+    h("p", { class: "desc" }, "Only reception rooms take seat assignments."),
+    h("div", { class: "row" },
+      h("button", { class: "primary" }, r ? "Save" : "Add room"),
+      r ? h("button", { type: "button", class: "danger", onclick: async () => {
+        if (!confirm(`Delete ${r.name}, everything in it, and every seat assigned in it?`)) return;
+        try {
+          await send(`rooms/${r.id}`, "DELETE");
+          close(true);
+        } catch (error) {
+          setMsg(msg, error.message, "err");
+        }
+      } }, "Delete room") : null),
+    msg);
+    return form;
+  });
+}
+
+/* ---------------------------------------------------------- the side panel ---- */
+
+function panel(r) {
+  const item = data.items.find((i) => i.id === selectedId && i.room_id === r.id);
+  if (!item) {
+    return h("div", {}, h("h2", {}, r.name),
+      h("p", { class: "desc" }, "Click a table, chair or note to change it. Drag to move it; positions snap to 3 inches."),
+      r.kind === "reception" ? h("p", { class: "desc" }, "Click a chair to seat someone in it. Blue chairs are taken. Orange ones hold someone who has since declined or lost their invitation.") : null);
+  }
+  const msg = h("p", { class: "msg" });
+  const save = async (form) => {
+    try {
+      await send(`items/${item.id}`, "PUT", formValues(form));
+      setMsg(msg, "Saved.", "ok");
+    } catch (error) {
+      setMsg(msg, error.message, "err");
+    }
+  };
+  const remove = async () => {
+    const seated = data.assignments.filter((a) => a.item_id === item.id).length;
+    if (seated && !confirm(`Remove this and unseat the ${seated} ${seated === 1 ? "person" : "people"} in it?`)) return;
+    try {
+      await send(`items/${item.id}`, "DELETE");
+    } catch (error) {
+      setMsg(msg, error.message, "err");
+    }
+  };
+
+  if (item.kind === "note") {
+    const form = h("form", { onsubmit: (ev) => { ev.preventDefault(); save(form); } },
+      h("div", { class: "fields" },
+        field("Text", "label", { value: item.label, wide: true }),
+        field("Text size (ft)", "font_size", { type: "number", step: 0.25, min: 0.5, value: item.font_size }),
+        field("Turn (degrees)", "rotation", { type: "number", step: 15, value: item.rotation })),
+      h("div", { class: "row" }, h("button", { class: "primary" }, "Save"), h("button", { type: "button", class: "danger", onclick: remove }, "Remove")), msg);
+    return h("div", {}, h("h2", {}, "Note"), form);
+  }
+
+  const seatable = r.kind === "reception";
+  const seatButtons = seatable
+    ? h("div", { class: "seatlist" }, seatSpots(item).map((spot) => {
+        const who = occupant(item.id, spot.letter);
+        return h("button", { type: "button", onclick: () => pickPerson(item, spot.letter) },
+          h("span", { class: "l" }, spot.letter),
+          who ? h("span", {}, who.name, problem(who) ? h("span", { class: "tag warn", style: "margin-left:6px" }, problem(who)) : null) : h("span", { class: "muted" }, "Empty"));
+      }))
+    : null;
+
+  if (item.kind === "seat") {
+    const form = h("form", { onsubmit: (ev) => { ev.preventDefault(); save(form); } },
+      h("div", { class: "fields" }, field(seatable ? "Number" : "Label", "label", { value: item.label, wide: true })),
+      h("div", { class: "row" }, h("button", { class: "primary" }, "Save"), h("button", { type: "button", class: "danger", onclick: remove }, "Remove")), msg);
+    return h("div", {}, h("h2", {}, seatable ? `Chair ${item.label}` : "Chair"), form, seatButtons);
+  }
+
+  const lengthField = field("Length (ft)", "length_ft", { type: "number", step: 0.5, min: 1, value: item.length_ft });
+  const sidesField = field("Seats on", "seat_sides", { options: Object.entries(SIDES_LABEL), value: item.seat_sides, wide: true });
+  const widthField = field("Width (ft)", "width_ft", { type: "number", step: 0.5, min: 1, value: item.width_ft });
+  const showShape = (shape) => {
+    lengthField.hidden = shape === "round";
+    sidesField.hidden = shape === "round";
+    widthField.firstChild.textContent = shape === "round" ? "Diameter (ft)" : "Width (ft)";
+  };
+  const form = h("form", { onsubmit: (ev) => { ev.preventDefault(); save(form); } },
+    h("div", { class: "fields" },
+      field("Table number", "label", { value: item.label }),
+      field("Shape", "shape", { options: [["round", "Round"], ["rect", "Rectangle"]], value: item.shape, onchange: (ev) => showShape(ev.target.value) }),
+      widthField, lengthField,
+      field("Seats", "seats", { type: "number", min: 0, value: item.seats }),
+      field("Turn (degrees)", "rotation", { type: "number", step: 15, value: item.rotation }),
+      sidesField),
+    h("div", { class: "row" },
+      h("button", { class: "primary" }, "Save"),
+      h("button", { type: "button", onclick: () => editTemplate(null, { ...item, name: "" }) }, "Save as template"),
+      h("button", { type: "button", class: "danger", onclick: remove }, "Remove")),
+    msg);
+  showShape(item.shape);
+  return h("div", {}, h("h2", {}, `Table ${item.label}`), form, seatButtons);
+}
+
+/* --------------------------------------------------------- seating people ---- */
+
+/** The people the reception lists: invited, not declined, or already holding a seat. */
+const seatablePeople = () => data.people.filter((p) => (p.invited && p.rsvp !== "no") || data.byPerson.has(personKey(p.guest_id, p.plus_one)));
+
+function pickPerson(item, letter) {
+  const current = occupant(item.id, letter);
+  openDialog(`Table ${item.label}, seat ${letter}`, (close) => {
+    const msg = h("p", { class: "msg" });
+    const list = h("div", { class: "people" });
+    const search = h("input", { type: "search", placeholder: "Type a name…", oninput: () => fill() });
+    const assign = async (body) => {
+      try {
+        await send("assign", "POST", { item_id: item.id, seat_letter: letter, ...body });
+        close(true);
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    };
+    const fill = () => {
+      const q = search.value.trim().toLowerCase();
+      const people = seatablePeople()
+        .filter((p) => p.invited && !p.stale)
+        .filter((p) => !q || `${p.name} ${p.household}`.toLowerCase().includes(q))
+        .sort((a, b) => Number(data.byPerson.has(personKey(a.guest_id, a.plus_one))) - Number(data.byPerson.has(personKey(b.guest_id, b.plus_one))));
+      list.replaceChildren(...people.slice(0, 60).map((p) => {
+        const seat = data.byPerson.get(personKey(p.guest_id, p.plus_one));
+        return h("button", { type: "button", onclick: () => assign({ guest_id: p.guest_id, plus_one: p.plus_one }) },
+          h("span", {}, p.name, h("div", { class: "detail" }, p.household)),
+          h("span", { class: "detail" }, seat ? `now at ${seatName(seat)}` : RSVP_LABEL[p.rsvp]));
+      }));
+      if (!people.length) list.append(h("p", { class: "muted" }, "Nobody matches."));
+    };
+    fill();
+    setTimeout(() => search.focus(), 0);
+    return h("div", {},
+      current ? h("div", { class: "row", style: "margin-bottom:12px" },
+        h("span", {}, "Now: ", h("b", {}, current.name), problem(current) ? h("span", { class: "tag warn", style: "margin-left:6px" }, problem(current)) : null),
+        h("span", { class: "spacer" }),
+        h("button", { class: "small danger", onclick: () => assign({ guest_id: null }) }, "Empty this seat")) : null,
+      search,
+      h("p", { class: "desc", style: "margin:8px 0 0" }, "Guests invited to the reception who haven't declined. Picking someone who already has a seat moves them here."),
+      list, msg);
+  });
+}
+
+function pickSeat(person) {
+  const current = data.byPerson.get(personKey(person.guest_id, person.plus_one));
+  openDialog(person.name, (close) => {
+    const msg = h("p", { class: "msg" });
+    const reception = data.rooms.filter((r) => r.kind === "reception");
+    const tables = reception.flatMap((r) => itemsOf(r.id).filter((i) => i.kind !== "note" && i.label).map((i) => ({ item: i, room: r })));
+    const tableSelect = h("select", { name: "item_id", onchange: () => fillSeats() },
+      h("option", { value: "" }, "Choose a table…"),
+      tables.map(({ item, room: r }) => {
+        const free = letters(item.kind === "seat" ? 1 : item.seats).filter((l) => !data.bySeat.has(`${item.id}:${l}`)).length;
+        return h("option", { value: item.id, selected: current?.item_id === item.id }, `${reception.length > 1 ? `${r.name}: ` : ""}Table ${item.label} (${free} free)`);
+      }));
+    const seatSelect = h("select", { name: "seat_letter" });
+    const fillSeats = () => {
+      const item = data.items.find((i) => i.id === Number(tableSelect.value));
+      seatSelect.replaceChildren(...(item ? letters(item.kind === "seat" ? 1 : item.seats) : []).map((l) => {
+        const who = occupant(item.id, l);
+        return h("option", { value: l, selected: current?.item_id === item.id && current.seat_letter === l }, who ? `${l}: ${who.name}` : `${l}: empty`);
+      }));
+      if (item && !(current?.item_id === item.id)) {
+        const firstFree = [...seatSelect.options].find((o) => o.textContent.endsWith("empty"));
+        if (firstFree) firstFree.selected = true;
+      }
+    };
+    fillSeats();
+    const save = async () => {
+      if (!tableSelect.value || !seatSelect.value) return setMsg(msg, "Choose a table and a seat.", "err");
+      const taken = occupant(Number(tableSelect.value), seatSelect.value);
+      if (taken && !(taken.guest_id === person.guest_id && taken.plus_one === person.plus_one)
+          && !confirm(`${taken.name} sits there now. Seat ${person.name} there instead, leaving ${taken.name} without a seat?`)) return;
+      try {
+        await send("assign", "POST", { item_id: Number(tableSelect.value), seat_letter: seatSelect.value, guest_id: person.guest_id, plus_one: person.plus_one });
+        close(true);
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    };
+    if (!tables.length) return h("p", { class: "desc" }, "Add a table to a reception room first.");
+    return h("div", {},
+      problem(person) ? h("p", { class: "msg err" }, `Note: ${problem(person)}.`) : null,
+      h("div", { class: "fields" }, h("label", { class: "field" }, "Table", tableSelect), h("label", { class: "field" }, "Seat", seatSelect)),
+      h("div", { class: "row" },
+        h("button", { class: "primary", onclick: save }, "Save"),
+        current ? h("button", { class: "danger", onclick: async () => {
+          try {
+            await send("assign", "POST", { item_id: current.item_id, seat_letter: current.seat_letter, guest_id: null });
+            close(true);
+          } catch (error) {
+            setMsg(msg, error.message, "err");
+          }
+        } }, "Remove from seat") : null),
+      msg);
+  });
+}
+
+let whoFilter = "unseated";
+let whoSearch = "";
+function whoSitsWhere() {
+  const people = seatablePeople();
+  const seated = people.filter((p) => data.byPerson.has(personKey(p.guest_id, p.plus_one)));
+  const rows = h("tbody");
+  const fill = () => {
+    const q = whoSearch.trim().toLowerCase();
+    const shown = people.filter((p) => {
+      const has = data.byPerson.has(personKey(p.guest_id, p.plus_one));
+      if (whoFilter === "unseated" && has) return false;
+      if (whoFilter === "seated" && !has) return false;
+      if (whoFilter === "problems" && !(has && problem(p))) return false;
+      return !q || `${p.name} ${p.household}`.toLowerCase().includes(q);
+    });
+    rows.replaceChildren(...shown.map((p) => {
+      const seat = data.byPerson.get(personKey(p.guest_id, p.plus_one));
+      const item = seat && data.items.find((i) => i.id === seat.item_id);
+      const roomName = item && data.rooms.find((r) => r.id === item.room_id)?.name;
+      return h("tr", { class: "clickable", onclick: () => pickSeat(p) },
+        h("td", {}, p.name, problem(p) ? h("span", { class: "tag warn", style: "margin-left:6px" }, problem(p)) : null),
+        h("td", { class: "muted" }, p.household),
+        h("td", {}, h("span", { class: `pill ${p.rsvp}` }, RSVP_LABEL[p.rsvp])),
+        h("td", {}, item ? item.label : h("span", { class: "muted" }, "—")),
+        h("td", {}, seat ? seat.seat_letter : h("span", { class: "muted" }, "—")),
+        h("td", { class: "muted" }, roomName || ""));
+    }));
+    if (!shown.length) rows.append(h("tr", {}, h("td", { colspan: 6, class: "muted" }, people.length ? "Nobody in this list." : "No guests are invited to the reception yet.")));
+  };
+  fill();
+  return h("div", { class: "card", id: "whoCard" },
+    h("h2", {}, "Who sits where"),
+    h("p", { class: "desc" }, `${seated.length} of ${people.length} reception guests have a seat. Click someone to choose or change their table and seat.`),
+    h("div", { class: "filters" },
+      h("input", { type: "search", placeholder: "Search names…", value: whoSearch, oninput: (ev) => { whoSearch = ev.target.value; fill(); } }),
+      h("select", { onchange: (ev) => { whoFilter = ev.target.value; fill(); } },
+        [["unseated", "No seat yet"], ["seated", "Seated"], ["problems", "Seated but declined or uninvited"], ["all", "Everyone"]]
+          .map(([v, label]) => h("option", { value: v, selected: v === whoFilter }, label)))),
+    h("div", { class: "table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, ["Name", "Household", "RSVP", "Table", "Seat", "Room"].map((t) => h("th", {}, t)))), rows)));
+}
+
+/* --------------------------------------------------------------- templates ---- */
+
+function renderTemplates() {
+  const rows = data.templates.map((t) => h("tr", {},
+    h("td", {}, t.name),
+    h("td", {}, t.shape === "round" ? "Round" : "Rectangle"),
+    h("td", {}, t.shape === "round" ? `${ft(t.width_ft)} across` : `${t.width_ft} × ${t.length_ft} ft${t.seat_sides === "both" ? "" : `, ${SIDES_LABEL[t.seat_sides].toLowerCase()}`}`),
+    h("td", { class: "num" }, String(t.seats)),
+    h("td", { class: "num" }, h("button", { class: "small", onclick: () => editTemplate(t) }, "Edit"))));
+  if (!rows.length) rows.push(h("tr", {}, h("td", { colspan: 5, class: "muted" }, "No templates yet.")));
+  document.getElementById("templateRows").replaceChildren(...rows);
+}
+
+function editTemplate(t, from = null) {
+  const v0 = t || from || { name: "", shape: "round", width_ft: 5, length_ft: 5, seats: 8, seat_sides: "both" };
+  openDialog(t ? `Template: ${t.name}` : "New table template", (close) => {
+    const msg = h("p", { class: "msg" });
+    const lengthField = field("Length (ft)", "length_ft", { type: "number", step: 0.5, min: 1, value: v0.length_ft });
+    const sidesField = field("Seats on", "seat_sides", { options: Object.entries(SIDES_LABEL), value: v0.seat_sides });
+    const show = (shape) => { lengthField.hidden = shape === "round"; sidesField.hidden = shape === "round"; };
+    const form = h("form", { onsubmit: async (ev) => {
+      ev.preventDefault();
+      const v = formValues(form);
+      try {
+        await send(t ? `templates/${t.id}` : "templates", t ? "PUT" : "POST", v);
+        close(true);
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    } },
+    h("div", { class: "fields" },
+      field("Name", "name", { value: v0.name, placeholder: "8 ft round, 6 seats", required: true }),
+      field("Shape", "shape", { options: [["round", "Round"], ["rect", "Rectangle"]], value: v0.shape, onchange: (ev) => show(ev.target.value) }),
+      field("Width or diameter (ft)", "width_ft", { type: "number", step: 0.5, min: 1, value: v0.width_ft }),
+      lengthField,
+      field("Seats", "seats", { type: "number", min: 0, value: v0.seats }),
+      sidesField),
+    h("div", { class: "row" },
+      h("button", { class: "primary" }, t ? "Save" : "Add template"),
+      t ? h("button", { type: "button", class: "danger", onclick: async () => {
+        if (!confirm(`Delete the template ${t.name}? Tables already placed stay as they are.`)) return;
+        try {
+          await send(`templates/${t.id}`, "DELETE");
+          close(true);
+        } catch (error) {
+          setMsg(msg, error.message, "err");
+        }
+      } }, "Delete") : null),
+    msg);
+    show(v0.shape);
+    return form;
+  });
+}
+
+document.getElementById("addRoom").addEventListener("click", () => editRoom(null));
+document.getElementById("addTemplate").addEventListener("click", () => editTemplate(null));
+await load();
+</script>
+</body>
+</html>

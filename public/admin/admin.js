@@ -70,6 +70,7 @@ const PAGES = [
   ["index.html", "Dashboard"],
   ["expenses.html", "Expenses"],
   ["guests.html", "Guests"],
+  ["seating.html", "Seating"],
   ["settings.html", "Settings"],
 ];
 

@@ -22,6 +22,7 @@
  *   POST   basis                       { basis: "confirmed" | "weighted" }
  *   GET    form-link                   the expense form's address (PUBLIC_URL/submit)
  *   POST   import                      the original spreadsheet (multipart)
+ *   *      seating/*                   rooms, tables, templates and seats (src/seating.js)
  *   GET    site/status                 the Zola copy: address, last check, pages, warnings
  *   POST   site/refresh                fetch the Zola site now ("Refresh from Zola")
  *   GET    drive/status, GET drive/connect, GET drive/folders?parent=,
@@ -62,6 +63,7 @@ import {
 import { syncToDrive } from "./sync.js";
 import { importWorkbook } from "./importer.js";
 import { refreshSite, requestGithubRefresh, siteSlug } from "./site.js";
+import { handleSeating, seatsByGuest } from "./seating.js";
 
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
@@ -125,8 +127,12 @@ function cleanGuest(input) {
 async function listGuests(env) {
   const households = await all(env, "SELECT * FROM households ORDER BY id");
   const guests = await all(env, "SELECT * FROM guests ORDER BY household_id, sort_order, id");
+  const seats = await seatsByGuest(env);
   const byHousehold = new Map(households.map((h) => [h.id, { ...h, guests: [] }]));
-  for (const g of guests) byHousehold.get(g.household_id)?.guests.push(g);
+  for (const g of guests) {
+    const seat = seats.get(g.id) || {};
+    byHousehold.get(g.household_id)?.guests.push({ ...g, seat: seat.guest || null, plus_one_seat: seat.plus_one || null });
+  }
   return [...byHousehold.values()];
 }
 
@@ -455,6 +461,9 @@ export async function handleAdminApi(route, request, env) {
         return json({ ok: true });
       }
     }
+
+    // ---- seating chart -----------------------------------------------------------
+    if (parts[0] === "seating") return await handleSeating(parts, method, request, env, body);
 
     // ---- settings ----------------------------------------------------------------
     if (route === "settings" && method === "GET") {

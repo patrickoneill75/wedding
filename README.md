@@ -32,6 +32,10 @@ A Cloudflare Worker with two sides:
     guest when they RSVP), save-the-date / invite / gift / thank-you tracking, RSVPs,
     dietary needs and tables. Bulk edits and filters, and a Reset RSVP to un-answer a
     household.
+  - **Seating**: rooms (ceremony, reception) drawn to size in feet, with round or
+    rectangular tables, single chairs and text notes ("North end", "DJ booth") you drag
+    into place. Table templates (size and seats) for the sizes you rent. At the reception
+    each guest and plus-one gets a table number and a seat letter (A, B, C ...).
   - **Settings**: wedding details, 7% tax, budget, priority weights, the drinks
     calculator, the expense-form link, Google Drive, and the spreadsheet import.
 
@@ -70,6 +74,7 @@ src/intake.js      the expense form's conversation with Claude
 src/store.js       expense/payment writes with history and status moves
 src/calc.js        the budget math (pure; most tests live here)
 src/google.js      Google Drive: tokens, folder picker, uploads
+src/seating.js     the seating chart: rooms, tables, templates, who sits where
 src/sync.js        CSV exports and the Drive sync (cron every 5 minutes)
 src/site.js        the Zola website copy: fetch, clean, store, serve
 scripts/zola_refresh.mjs  runs src/site.js on GitHub and sends the pages to the site
