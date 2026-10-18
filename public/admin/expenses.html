@@ -70,7 +70,10 @@ async function load() {
   catFilter.replaceChildren(h("option", { value: "" }, "All categories"), ...cats.map((c) => h("option", { value: c, selected: c === keep }, c)));
   const statusFilter = document.getElementById("statusFilter");
   if (statusFilter.options.length === 1) {
-    for (const s of data.statuses) statusFilter.append(h("option", { value: s }, data.status_labels[s]));
+    // In progress is only ever an item's stage worked out from its line items.
+    const stages = [...data.statuses];
+    stages.splice(stages.indexOf("partially_paid"), 0, "in_progress");
+    for (const s of stages) statusFilter.append(h("option", { value: s }, data.status_labels[s]));
   }
   const basisText = data.basis === "confirmed" ? `${data.basis_count} confirmed guests` : `${data.basis_count} weighted invites`;
   document.getElementById("subtitle").textContent =

@@ -287,8 +287,13 @@ export async function updateExpense(env, id, input, ctx, by) {
   }
   if (Object.prototype.hasOwnProperty.call(patch, "vendor")) await rememberVendor(env, patch.vendor);
   await settleIfPaid(env, id, ctx, by, input);
+  // Money already paid on it (a deposit) moves a Quote or Booked item on to Partially
+  // paid, whichever stage it was saved at. An item with line items is left alone.
+  if (["estimate", "quote", "booked"].includes(updated.status) && !(await first(env, "SELECT id FROM expenses WHERE parent_id = ? LIMIT 1", id))) {
+    await advanceAfterPayment(env, id, ctx, by, "Has payments already");
+  }
   await markDirty(env);
-  return updated;
+  return await first(env, "SELECT * FROM expenses WHERE id = ?", id);
 }
 
 /** Record a payment, then move the expense forward to Partially paid / Paid if it's due. */

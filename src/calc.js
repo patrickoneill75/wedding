@@ -47,10 +47,14 @@
  *   projected  the larger of the budget and what's spent, since more may be bought --
  *              until the item is marked done buying (stored as Paid), when it's exactly
  *              what was spent
- *   status     worked out from the line items: Partially paid once anything is paid,
- *              Paid once it's done buying and nothing is owed, otherwise the furthest
- *              stage a line item reached (Booked at most). `done` says whether it's
- *              marked done buying.
+ *   status     worked out from the line items. Once anything is paid: Partially paid
+ *              while a booked line item still owes money (the venue's deposit is in,
+ *              the rest is due), In progress while everything bought so far is paid
+ *              but more is to come (place settings bought a few at a time), and Paid
+ *              once it's done buying and nothing is owed. Before anything is paid, the
+ *              furthest stage a line item reached (Booked at most). `done` says
+ *              whether it's marked done buying. In progress only ever comes from line
+ *              items, so it's a label, not one of the STATUSES an expense is saved at.
  * Totals, the category table and the pie use top-level rows only, so line items are
  * never counted twice; payments due and stages come from the line items themselves.
  */
@@ -60,6 +64,7 @@ export const STATUS_LABELS = {
   estimate: "Estimate",
   quote: "Quote",
   booked: "Booked",
+  in_progress: "In progress",
   partially_paid: "Partially paid",
   paid: "Paid",
   cancelled: "Cancelled",
@@ -309,10 +314,12 @@ export function rollupPurchases(expenses) {
     else if (done) projected = spent;
     else projected = Math.max(e.current, spent);
     const owed = cents(Math.max(projected - paid, 0));
+    // A line item that's committed to (past Quote) and not fully paid yet.
+    const committedOwing = list.some((k) => k.owed > 0.004 && !["estimate", "quote", "cancelled"].includes(k.status));
     let status;
     if (e.status === "cancelled") status = "cancelled";
     else if (done && owed === 0) status = "paid";
-    else if (paid > 0) status = "partially_paid";
+    else if (paid > 0) status = done || committedOwing ? "partially_paid" : "in_progress";
     else {
       const furthest = Math.max(0, ...list.filter((k) => k.status !== "cancelled").map((k) => STATUSES.indexOf(k.status)));
       status = STATUSES[Math.min(furthest, STATUSES.indexOf("booked"))];

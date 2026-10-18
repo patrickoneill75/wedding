@@ -19,8 +19,11 @@ A Cloudflare Worker with two sides:
   - **Expenses**: every budget line moving through
     Estimate → Quote → Booked → Partially paid → Paid (stages can be skipped, or an item
     cancelled), with price history, payments, who paid, due dates, and contracts and
-    receipts in Drive. An item bought in pieces gets line items: the item keeps its
-    price as the budget, and each line item has its own vendor, stage and payments.
+    receipts in Drive. Anything with a deposit paid and more to pay is Partially paid.
+    An item bought in pieces gets line items: the item keeps its price as the budget,
+    and each line item has its own vendor, stage and payments. The item reads In
+    progress while everything bought so far is paid and more is to come, and Paid once
+    it's marked done buying.
   - **Guests**: households and guests like a small CRM. Address, side, priority, separate
     ceremony and reception invitations, family and wedding-party flags, plus-ones (named by the
     guest when they RSVP), save-the-date / invite / gift / thank-you tracking, RSVPs,

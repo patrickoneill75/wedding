@@ -188,6 +188,14 @@ const MIGRATIONS = [
     `UPDATE expenses SET payer = 'Kaitlyn' WHERE payer = 'Partner'`,
     `UPDATE payments SET payer = 'Kaitlyn' WHERE payer = 'Partner'`,
   ],
+  // 7: an item at Quote or Booked with money paid on it is Partially paid (a deposit is
+  // in, the rest is still to pay). Items with line items take their stage from those.
+  [
+    `UPDATE expenses SET status = 'partially_paid', updated_at = datetime('now')
+       WHERE status IN ('quote', 'booked')
+         AND EXISTS (SELECT 1 FROM payments p WHERE p.expense_id = expenses.id)
+         AND NOT EXISTS (SELECT 1 FROM expenses c WHERE c.parent_id = expenses.id)`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
