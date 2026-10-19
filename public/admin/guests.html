@@ -14,6 +14,7 @@
           background: var(--wash); color: var(--text-secondary); white-space: nowrap; }
   .step.std, .step.invite { color: var(--accent); border-color: rgba(42, 120, 214, .35); background: rgba(42, 120, 214, .08); }
   .step.yes, .step.gift { color: var(--good); border-color: rgba(12, 163, 12, .3); background: rgba(12, 163, 12, .1); }
+  .step.call { color: #6a3fb5; border-color: rgba(106, 63, 181, .35); background: rgba(106, 63, 181, .08); }
   .step.thanks { color: #fff; border-color: #087008; background: #087008; }
   .step.no { color: var(--bad); border-color: rgba(208, 59, 59, .3); background: rgba(208, 59, 59, .08); }
   .bulk .sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
@@ -129,6 +130,7 @@ async function load() {
     item(people((g) => g.invite_rehearsal && g.rehearsal_rsvp === "yes", (g) => g.invite_rehearsal && g.plus_one_rehearsal_rsvp === "yes"), "coming to the rehearsal dinner"),
     item(people((g) => g.out_of_town), "out of town"),
     item(people((g) => g.international), "international"),
+    item(people((g) => g.post_wedding_call, () => false), "asked for a post-wedding call"),
   );
   render();
 }
@@ -151,6 +153,7 @@ const MORE = [
   ["Family and party", "family", [["Wedding party", (g) => g.wedding_party], ["Immediate family", (g) => g.immediate_family], ["Extended family", (g) => g.extended_family]]],
   ["Travel", "travel", [["Out of town", (g) => g.out_of_town], ["International", (g) => g.international]]],
   ["Plus-ones", "plusone", [["Has a plus-one", (g) => g.plus_one_allowed]]],
+  ["Follow-up", "followup", [["Post-wedding call", (g) => g.post_wedding_call]]],
 ];
 const HOUSEHOLD_MORE = ["Household", "household", [
   ["Save-the-date not sent", (hh) => !hh.save_the_date_sent],
@@ -225,7 +228,8 @@ function render() {
         hh.rsvp_at ? h("div", { class: "muted", style: "font-size:12px" }, `RSVP'd ${fmtDate(hh.rsvp_at)}`) : null),
       h("td", {}, hh.guests.map((g) => {
         const step = funnelStep(hh, g);
-        return h("div", { class: "guest" }, h("span", {}, `${g.first_name} ${g.last_name}`), h("span", { class: `step ${step.key}` }, step.label));
+        return h("div", { class: "guest" }, h("span", {}, `${g.first_name} ${g.last_name}`), h("span", { class: `step ${step.key}` }, step.label),
+          g.post_wedding_call ? h("span", { class: "step call", title: "Asked for a video call after the wedding" }, "Post-wedding call") : null);
       })),
       box("save_the_date_sent"),
       box("invite_sent"),
@@ -311,6 +315,7 @@ function guestCard(g, onRemove) {
       check("Invited to the rehearsal dinner", "invite_rehearsal", g.invite_rehearsal, (ev) => { rehearsalField.hidden = plusOneDinnerField.hidden = !ev.target.checked; }),
       check("Out of town", "out_of_town", g.out_of_town),
       check("International", "international", g.international),
+      check("Post-wedding call", "post_wedding_call", g.post_wedding_call),
     ),
     h("div", { class: "flags" },
       check("Wedding party", "wedding_party", g.wedding_party),

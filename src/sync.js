@@ -89,6 +89,7 @@ export async function buildExports(env) {
       country: g.country,
       out_of_town: yesNo(g.out_of_town),
       international: yesNo(g.international),
+      post_wedding_call: yesNo(g.post_wedding_call),
       email: g.email,
       phone: g.phone,
       save_the_date_sent: yesNo(g.save_the_date_sent),

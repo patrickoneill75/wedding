@@ -53,7 +53,11 @@ A Cloudflare Worker with two sides:
     any guest who gave their own email). Write them with fill-ins like {greeting}, pick
     who gets them with the guest tags, then send now, schedule, or send automatically
     after each RSVP. Also the calendar invite guests download after they RSVP (and
-    emails can attach), and the RSVP page's wording.
+    emails can attach), and the RSVP page's wording. The {call_link} fill-in is a
+    "click here" link to a hidden page (`/call/`) where a guest who can't come asks for
+    a video call after the wedding: their names are filled in, they hit submit, and they
+    get a "post-wedding call" tag (a guest filter and an email audience) and a button to
+    the registry (its link is in Settings).
   - **Settings**: wedding details, 7% tax, budget, priority weights, the drinks
     calculator, the expense-form link, Google Drive, the spreadsheet import, and Users:
     the owners in `ADMIN_EMAILS` plus anyone you add, each an admin (everything) or a
@@ -112,7 +116,8 @@ src/importer.js    one-time import of Wedding_Data.xlsx
 src/xlsx.js        a minimal .xlsx reader (no dependencies)
 src/db.js          D1 schema (self-migrating) and query helpers
 public/            static pages: RSVP page (/rsvp/), expense form, control panel,
-                   the coordinator's day-of view (/dayof/)
+                   the coordinator's day-of view (/dayof/), the post-wedding call
+                   page (/call/)
 tests/             node tests/worker_test.mjs
 ```
 

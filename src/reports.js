@@ -41,6 +41,7 @@ export const SOURCES = {
       ["side", "Side", T], ["priority", "Priority", T],
       ["invited_to", "Invited to", T], ["ceremony", "Ceremony", B], ["reception", "Reception", B],
       ["rehearsal", "Rehearsal dinner", B], ["rehearsal_rsvp", "Rehearsal dinner RSVP", T], ["out_of_town", "Out of town", B], ["international", "International", B],
+      ["post_wedding_call", "Post-wedding call", B],
       ["rsvp", "RSVP", T], ["dietary", "Dietary needs", T],
       ["table", "Table", T], ["seat", "Seat", T], ["table_seat", "Table and seat", T],
       ["wedding_party", "Wedding party", B], ["immediate_family", "Immediate family", B], ["extended_family", "Extended family", B],
@@ -56,6 +57,7 @@ export const SOURCES = {
       ["address1", "Address", T], ["address2", "Address line 2", T], ["city", "City", T], ["state", "State", T],
       ["zip", "ZIP", T], ["country", "Country", T], ["has_address", "Has an address", B],
       ["out_of_town", "Out of town", B], ["international", "International", B],
+      ["post_wedding_call", "Post-wedding call", B],
       ["email", "Email", T], ["phone", "Phone", T],
       ["people", "People invited", N], ["rehearsal", "Invited to the rehearsal dinner", N], ["rehearsal_coming", "Coming to the rehearsal dinner", N], ["coming", "Coming", N], ["awaiting", "Awaiting reply", N], ["declined", "Not coming", N], ["expected", "Coming or awaiting", N],
       ["awaiting_names", "Who hasn't replied", T], ["names", "Everyone in it", T],
@@ -189,6 +191,7 @@ async function householdRows(env) {
       // A household is out of town or international when anyone in it is.
       out_of_town: mine.some((p) => p.out_of_town),
       international: mine.some((p) => p.international),
+      post_wedding_call: mine.some((p) => p.post_wedding_call),
       rehearsal: mine.filter((p) => p.rehearsal).length,
       rehearsal_coming: mine.filter((p) => p.rehearsal_rsvp_code === "yes").length,
       email: h.email || "",

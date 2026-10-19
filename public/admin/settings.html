@@ -179,6 +179,7 @@ function fill(only = null) {
     field("Wedding date", "wedding_date", { type: "date", value: s.wedding_date }),
     field("Venue", "venue", { value: s.venue }),
     field("Contact email (the Contact us link at the bottom of the website and RSVP page)", "contact_email", { type: "email", value: s.contact_email, placeholder: "Leave blank for no link" }),
+    field("Registry link (the See our registry button after a guest asks for a post-wedding call)", "registry_url", { type: "url", value: s.registry_url, placeholder: "https://… (leave blank to hide the button)" }),
   );
   if (draw("budgetForm")) document.getElementById("budgetFields").replaceChildren(
     field("Sales tax %", "tax_percent", { type: "number", step: "any", value: Math.round(s.tax_rate * 10000) / 100 }),

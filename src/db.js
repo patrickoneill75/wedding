@@ -430,6 +430,11 @@ const MIGRATIONS = [
   [
     `ALTER TABLE comm_messages ADD COLUMN title TEXT NOT NULL DEFAULT ''`,
   ],
+  // 21: a tag on each guest who asked for a video call after the wedding, from the
+  // personal link in an email (public/call, {call_link} in src/comms.js).
+  [
+    `ALTER TABLE guests ADD COLUMN post_wedding_call INTEGER NOT NULL DEFAULT 0`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

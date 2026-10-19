@@ -2983,6 +2983,55 @@ test("emails: a title names an email for admins only; it never goes to guests, a
   assert.deepEqual([after.title, after.subject], ["Renamed", "Hello"]);
 });
 
+test("post-wedding call: {call_link} is a personal \"click here\" link; the page names only that household's decliners and tags them", async () => {
+  const { env, api } = await commsSetup();
+  env.DB.db.prepare("UPDATE guests SET rsvp = 'no' WHERE first_name = 'Guest2'").run();
+  const guestId = (first) => env.DB.db.prepare("SELECT id FROM guests WHERE first_name = ?").get(first).id;
+  const tagged = () => env.DB.db.prepare("SELECT first_name FROM guests WHERE post_wedding_call = 1 ORDER BY id").all().map((g) => g.first_name);
+
+  const id = (await api("/api/admin/comms/messages", { method: "POST", body: {
+    subject: "We'll miss you", format: "html", audience: { ticks: ["rsvp:Not coming"] },
+    body: '<p>To find a time, {call_link}.</p><p><a href="{call_link}">Or this</a></p>',
+  } })).data.id;
+  const { sent } = await withGmail(() => api(`/api/admin/comms/messages/${id}/send`, { method: "POST", body: {} }));
+  assert.equal(sent.length, 1, "only the household that said no");
+  const [text, html] = decodeParts(sent[0]);
+  const link = html.match(/To find a time, <a href="(https:\/\/www\.example-wedding\.com\/call\/\?t=[^"]+)">click here<\/a>\./)?.[1];
+  assert.ok(link, "an HTML email gets a \"click here\" link");
+  assert.ok(html.includes(`<a href="${link}">Or this</a>`), "text linked to {call_link} in the editor links to the page");
+  assert.match(text, /To find a time, click here \(https:\/\/www\.example-wedding\.com\/call\/\?t=/, "the plain-text part shows the address");
+  const t = new URL(link.replace(/&amp;/g, "&")).searchParams.get("t");
+
+  await api("/api/admin/settings", { method: "PUT", body: { registry_url: "https://example.com/registry" } });
+  assert.equal((await api("/api/admin/settings", { method: "PUT", body: { registry_url: "javascript:alert(1)" } })).status, 400);
+  const page = await call(env, `/api/public/call?t=${encodeURIComponent(t)}`);
+  assert.equal(page.status, 200, JSON.stringify(page.data));
+  assert.deepEqual(page.data.guests, [{ id: guestId("Guest2"), name: "Guest2 Test", requested: false }], "names only, and only who said no");
+  assert.equal(page.data.registry_url, "https://example.com/registry");
+  assert.ok(!JSON.stringify(page.data).includes("h2@example.com"), "no email addresses");
+
+  // Another household's guest id in the form is ignored; on its own it's refused.
+  assert.equal((await call(env, "/api/public/call", { method: "POST", body: { t, guests: [guestId("Guest1")] } })).status, 400);
+  const asked = await call(env, "/api/public/call", { method: "POST", body: { t, guests: [guestId("Guest2"), guestId("Guest1")] } });
+  assert.equal(asked.status, 200, JSON.stringify(asked.data));
+  assert.equal(asked.data.registry_url, "https://example.com/registry");
+  assert.deepEqual(tagged(), ["Guest2"]);
+  assert.equal((await call(env, `/api/public/call?t=${encodeURIComponent(t)}`)).data.guests[0].requested, true);
+  const who = (await api("/api/admin/comms/audience", { method: "POST", body: { audience: { ticks: ["followup:Post-wedding call"] } } })).data.households;
+  assert.deepEqual(who.map((x) => x.to), ["h2@example.com"], "emails can go to everyone who asked");
+
+  // A calendar link's token doesn't open the page; a test email's link opens a sample that saves nothing.
+  const cal = await sign(env, { kind: "cal", h: 1 }, 600);
+  assert.equal((await call(env, `/api/public/call?t=${encodeURIComponent(cal)}`)).status, 400);
+  assert.equal((await call(env, "/api/public/call?t=nope")).status, 400);
+  const sample = await sign(env, { kind: "call", test: true }, 600);
+  const preview = await call(env, `/api/public/call?t=${encodeURIComponent(sample)}`);
+  assert.equal(preview.data.sample, true);
+  assert.equal((await call(env, "/api/public/call", { method: "POST", body: { t: sample, guests: [preview.data.guests[0].id] } })).data.sample, true);
+  assert.deepEqual(tagged(), ["Guest2"], "the sample saved nothing");
+  assert.ok(RESERVED.has("call"), "the website copy never takes over /call");
+});
+
 // Bug guard: a test email that went through left an old Gmail error on the banner, so a
 // fixed problem (the Gmail API turned on) still looked broken.
 test("emails: a test email that goes through clears an old Gmail error", async () => {

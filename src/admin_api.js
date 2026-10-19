@@ -105,7 +105,7 @@ const textOrNull = (v) => {
 const HOUSEHOLD_TEXT = ["code", "display_name", "greeting", "address1", "address2", "city", "state", "zip", "country", "email", "phone", "gift", "rsvp_message", "notes"];
 const HOUSEHOLD_FLAGS = ["save_the_date_sent", "invite_sent", "gift_received", "thank_you_sent"];
 const GUEST_TEXT = ["first_name", "last_name", "plus_one_name", "dietary", "plus_one_dietary", "table_name", "notes", "email"];
-const GUEST_FLAGS = ["wedding_party", "immediate_family", "extended_family", "plus_one_allowed", "invite_ceremony", "invite_reception", "invite_rehearsal", "out_of_town", "international"];
+const GUEST_FLAGS = ["wedding_party", "immediate_family", "extended_family", "plus_one_allowed", "invite_ceremony", "invite_reception", "invite_rehearsal", "out_of_town", "international", "post_wedding_call"];
 // The per-guest switches the Guests page can flip for whole households at once.
 const INVITE_FLAGS = ["invite_ceremony", "invite_reception", "invite_rehearsal", "out_of_town", "international"];
 
@@ -213,6 +213,11 @@ function cleanSettings(input) {
     const url = String(input.zola_url || "").trim().replace(/\/+$/, "");
     if (url && !siteSlug(url)) throw new Error("The Zola address should look like https://www.zola.com/wedding/your-site.");
     patch.zola_url = url;
+  }
+  if (has(input, "registry_url")) {
+    const url = String(input.registry_url || "").trim();
+    if (url && !/^https?:\/\/[^\s"<>]+$/i.test(url)) throw new Error("The registry link should start with https://.");
+    patch.registry_url = url;
   }
   if (has(input, "contact_email")) {
     const email = String(input.contact_email || "").trim();

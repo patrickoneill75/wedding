@@ -28,7 +28,9 @@
    (`maskEmail`), and a blank email on submit keeps the one on file. While RSVPs are closed, the RSVP routes answer only a
    signed-in admin, as a preview: submit runs every check but saves nothing and sends no email. The coordinator's day-of view (`/api/dayof`,
    a key in the link instead of a sign-in) gets steps, names, tables and vendor contacts
-   only: no budgets, addresses or RSVP details, also checked by a test.
+   only: no budgets, addresses or RSVP details, also checked by a test. The post-wedding
+   call page (`/call/`, a signed link from `{call_link}`) gets the names of that one
+   household's guests who said no and the registry link, and only tags that household.
 
 9. The home page copies the Zola site (`src/site.js`). Zola's class names are generated
    and change on every Zola deploy, so the clean-up never relies on them: it finds the
