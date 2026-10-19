@@ -16,14 +16,16 @@
  *   DELETE runofshow/link             turn the link off
  *
  * Day-of view, under /api/dayof/* for /dayof/ (the coordinator's iPad): the key from the
- * link in the X-Dayof-Key header, or an admin's sign-in. The coordinator sees the steps,
- * names and tables of the people in them, and vendor contacts -- never budgets,
- * addresses or RSVP details.
+ * link in the X-Dayof-Key header, or the sign-in of someone with the Run of show page.
+ * The coordinator sees the steps, names and tables of the people in them, and vendor
+ * contacts -- never budgets, addresses or RSVP details.
  *   GET    dayof                      the run of show
  *   POST   dayof/status               { item_id, status }
  *
  * A link is to a vendor, a guest (or their plus-one), a named group of guests, a table
- * (whoever sits at it), or a preset set like the wedding party.
+ * (whoever sits at it), or a guest cohort: a built-in set like the wedding party or the
+ * out-of-town guests (kind "preset"). A vendor link leads the step (ref_key "lead", one
+ * per step) or supports it (ref_key "support").
  */
 
 import { currentUser, json, randomToken, sameSecret } from "./auth.js";
@@ -46,6 +48,9 @@ export const PRESETS = {
   groom_side: { label: "Groom's side", test: (p) => p.side === "Groom" },
   ceremony_guests: { label: "Ceremony guests", test: (p) => p.ceremony },
   reception_guests: { label: "Reception guests", test: (p) => p.reception },
+  rehearsal_dinner: { label: "Rehearsal dinner guests", test: (p) => p.rehearsal },
+  out_of_town: { label: "Out-of-town guests", test: (p) => p.out_of_town },
+  international: { label: "International guests", test: (p) => p.international },
 };
 
 function cleanItem(input) {
@@ -95,7 +100,7 @@ async function cleanLinks(env, input) {
     if (!kind) throw new Error("Unknown kind of link.");
     const refId = Number(link.ref_id);
     const plusOne = link.plus_one ? 1 : 0;
-    const refKey = kind === "preset" ? String(link.ref_key || "") : null;
+    const refKey = kind === "preset" ? String(link.ref_key || "") : kind === "vendor" ? (link.ref_key === "lead" ? "lead" : "support") : null;
     if (kind === "vendor" && !vendors.has(refId)) throw new Error("That vendor no longer exists.");
     if (kind === "group" && !groups.has(refId)) throw new Error("That group no longer exists.");
     if (kind === "table" && !tables.has(refId)) throw new Error("That table no longer exists.");
@@ -103,6 +108,9 @@ async function cleanLinks(env, input) {
     if (kind === "preset" && !has(PRESETS, refKey)) throw new Error("Unknown preset group.");
     const id = kind === "preset" ? refKey : `${refId}:${plusOne}`;
     if (seen.has(`${kind}:${id}`)) continue;
+    if (kind === "vendor" && refKey === "lead" && out.some((l) => l.kind === "vendor" && l.ref_key === "lead")) {
+      throw new Error("A step has one lead vendor. Make the others supporting vendors.");
+    }
     seen.add(`${kind}:${id}`);
     out.push({ kind, ref_id: kind === "preset" ? null : refId, ref_key: refKey, plus_one: kind === "guest" ? plusOne : 0, role: String(link.role || "").trim().slice(0, 200) || null });
   }
@@ -143,6 +151,8 @@ async function saveMembers(env, groupId, members) {
       .join(", ")}`
   );
 }
+
+const linkRank = (l) => (l.kind === "vendor" ? (l.lead ? 0 : 1) : l.kind === "preset" ? 2 : 3);
 
 const sortItems = (a, b) =>
   (a.day || "9999").localeCompare(b.day || "9999") ||
@@ -192,7 +202,7 @@ export async function loadRunOfShow(env, { forDayOf = false } = {}) {
     const base = { kind: link.kind, ref_id: link.ref_id, ref_key: link.ref_key, plus_one: link.plus_one, role: link.role || "" };
     if (link.kind === "vendor") {
       const v = vendorById.get(link.ref_id);
-      return v ? { ...base, label: v.name, vendor: vendorCard(v), people: [] } : null;
+      return v ? { ...base, lead: link.ref_key === "lead", label: v.name, vendor: vendorCard(v), people: [] } : null;
     }
     if (link.kind === "guest") {
       const p = byKey.get(`${link.ref_id}:${link.plus_one}`);
@@ -233,7 +243,8 @@ export async function loadRunOfShow(env, { forDayOf = false } = {}) {
     status_at: i.status_at,
     status_by: forDayOf ? null : i.status_by,
     sort_order: i.sort_order,
-    links: linksByItem.get(i.id) || [],
+    // The lead vendor first, then supporting vendors, cohorts, and everyone else.
+    links: (linksByItem.get(i.id) || []).sort((a, b) => linkRank(a) - linkRank(b)),
   }));
   const settings = await loadSettings(env);
   const out = {
@@ -263,6 +274,7 @@ export async function runOfShowRows(env) {
     return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
   };
   const statusText = { todo: "Not started", in_progress: "Happening now", done: "Done" };
+  const names = (links) => links.map((l) => l.label + (l.role ? ` (${l.role})` : "")).join("; ");
   return steps.map((s) => ({
     day: s.day,
     start_time: s.start_time,
@@ -272,8 +284,12 @@ export async function runOfShowRows(env) {
     location: s.location,
     details: s.details,
     status: statusText[s.status] || s.status,
-    vendors: s.links.filter((l) => l.kind === "vendor").map((l) => l.label + (l.role ? ` (${l.role})` : "")).join("; "),
-    people: s.links.filter((l) => l.kind !== "vendor").map((l) => l.label + (l.role ? ` (${l.role})` : "")).join("; "),
+    lead_vendor: names(s.links.filter((l) => l.kind === "vendor" && l.lead)),
+    supporting_vendors: names(s.links.filter((l) => l.kind === "vendor" && !l.lead)),
+    vendors: names(s.links.filter((l) => l.kind === "vendor")),
+    cohorts: names(s.links.filter((l) => l.kind === "preset")),
+    others: names(s.links.filter((l) => l.kind !== "vendor" && l.kind !== "preset")),
+    people: names(s.links.filter((l) => l.kind !== "vendor")),
     headcount: new Set(s.links.flatMap((l) => l.people.map((p) => p.key))).size,
   }));
 }
@@ -377,7 +393,7 @@ export async function handleRunOfShow(parts, method, request, env, body, user) {
   return json({ error: "Not found." }, 404);
 }
 
-/** /api/dayof/*: the coordinator's key, or an admin who is signed in. */
+/** /api/dayof/*: the coordinator's key, or a sign-in with the Run of show page. */
 export async function handleDayOf(route, request, env) {
   const method = request.method.toUpperCase();
   const saved = await getSetting(env, "_dayof_key");
@@ -386,8 +402,9 @@ export async function handleDayOf(route, request, env) {
   if (given && saved?.key && sameSecret(given, saved.key)) by = "coordinator";
   else {
     const user = await currentUser(request, env);
-    // The custom header doubles as the CSRF check for a signed-in admin's POST.
-    if (user && (method === "GET" || request.headers.get("x-wedding") === "1")) by = user.email;
+    const allowed = user && (user.role === "admin" || user.pages.includes("runofshow"));
+    // The custom header doubles as the CSRF check for a signed-in user's POST.
+    if (allowed && (method === "GET" || request.headers.get("x-wedding") === "1")) by = user.email;
   }
   if (!by) return json({ error: given ? "This day-of link has been turned off or replaced. Ask for the new one." : "Open the day-of link you were sent." }, 401);
 

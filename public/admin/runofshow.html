@@ -23,6 +23,9 @@
   .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
   .chip { font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px; background: var(--wash); color: var(--text-secondary); }
   .chip.vendor { border-color: rgba(250, 178, 25, .55); background: rgba(250, 178, 25, .12); }
+  .chip.lead { border-color: #c98500; background: rgba(250, 178, 25, .28); }
+  h3.part { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 16px 0 8px; }
+  .cohorts { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px 14px; }
   .chip b { color: var(--text-primary); font-weight: 600; }
   .status { font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 1px 8px; }
   .status.in_progress { background: var(--accent); color: #fff; }
@@ -57,8 +60,9 @@
   <div class="grid2" style="margin-top:16px">
     <div class="card" id="groupsCard">
       <div class="row"><h2>Guest groups</h2><span class="spacer"></span><button class="small" id="addGroup">+ New group</button></div>
-      <p class="desc">Named sets of guests to link to steps, like "Family photos: Smith side" or "Readers". The wedding party,
-        families, each side, and each table are ready-made and don't need a group.</p>
+      <p class="desc">Named sets of guests to link to steps, like "Family photos: Smith side" or "Readers". Guest cohorts
+        (the wedding party, families, each side, ceremony, reception and rehearsal dinner guests, out-of-town and
+        international guests) and each table are ready-made and don't need a group.</p>
       <div class="list" id="groups"></div>
     </div>
     <div class="card" id="linkCard"></div>
@@ -72,7 +76,7 @@ await initPage("runofshow.html");
 let data;
 let day = null;
 const STATUS_TEXT = { todo: "Not started", in_progress: "Happening now", done: "Done" };
-const KIND_TEXT = { vendor: "Vendor", guest: "Guest", group: "Group", table: "Table", preset: "Everyone in" };
+const KIND_TEXT = { vendor: "Vendor", guest: "Guest", group: "Group", table: "Table", preset: "Cohort" };
 
 function clock(t) {
   if (!t) return "";
@@ -117,17 +121,15 @@ function stepCard(s) {
       h("div", { class: "row", style: "gap:8px" }, h("span", { class: "title" }, s.title),
         s.status !== "todo" ? h("span", { class: `status ${s.status}` }, STATUS_TEXT[s.status]) : null),
       s.location ? h("div", { class: "where" }, s.location) : null,
-      s.links.length ? h("div", { class: "chips" }, s.links.map((l) => h("span", { class: `chip${l.kind === "vendor" ? " vendor" : ""}` },
-        h("b", {}, l.label), l.kind !== "vendor" && l.kind !== "guest" ? ` · ${l.people.length}` : "", l.role ? ` · ${l.role}` : ""))) : null,
+      s.links.length ? h("div", { class: "chips" }, s.links.map((l) => h("span", { class: `chip${l.kind === "vendor" ? " vendor" : ""}${l.lead ? " lead" : ""}` },
+        l.lead ? "Lead: " : "", h("b", {}, l.label), l.kind !== "vendor" && l.kind !== "guest" ? ` · ${l.people.length}` : "", l.role ? ` · ${l.role}` : ""))) : null,
       people ? h("div", { class: "where", style: "margin-top:4px" }, `${people} ${people === 1 ? "person" : "people"}`) : null,
       s.details ? h("div", { class: "details" }, s.details) : null));
 }
 
-/** Everything a step can link to, for the search box. */
+/** The guests, groups and tables a step can link to, for the search box. */
 function linkOptions() {
   return [
-    ...data.vendors.map((v) => ({ kind: "vendor", ref_id: v.id, label: v.name, detail: [v.category, v.day_of ? "day-of" : ""].filter(Boolean).join(" · ") })),
-    ...data.presets.map((p) => ({ kind: "preset", ref_key: p.key, label: p.label, detail: "ready-made" })),
     ...data.groups.map((g) => ({ kind: "group", ref_id: g.id, label: g.name, detail: `${g.members.length} people` })),
     ...data.tables.map((t) => ({ kind: "table", ref_id: t.id, label: `Table ${t.label}`, detail: t.room })),
     ...data.people.filter((p) => p.rsvp !== "no").map((p) => {
@@ -141,12 +143,46 @@ const sameLink = (a, b) => a.kind === b.kind && (a.kind === "preset" ? a.ref_key
 /** Edit `step`, or with `copyOf` start a new step filled in from another one. */
 function editStep(step, copyOf = null) {
   const v = step || copyOf || {};
-  const links = (v.links || []).map((l) => ({ kind: l.kind, ref_id: l.ref_id, ref_key: l.ref_key, plus_one: l.plus_one, role: l.role, label: l.label }));
+  const from = v.links || [];
+  // Four separate fields: one lead vendor, supporting vendors, guest cohorts, and
+  // anyone else (guests, named groups, tables).
+  const leadLink = from.find((l) => l.kind === "vendor" && l.lead);
+  let lead = leadLink ? { ref_id: leadLink.ref_id, role: leadLink.role || "" } : null;
+  const supports = from.filter((l) => l.kind === "vendor" && !l.lead).map((l) => ({ ref_id: l.ref_id, role: l.role || "", label: l.label }));
+  const cohorts = new Set(from.filter((l) => l.kind === "preset").map((l) => l.ref_key));
+  const links = from.filter((l) => !["vendor", "preset"].includes(l.kind)).map((l) => ({ kind: l.kind, ref_id: l.ref_id, ref_key: l.ref_key, plus_one: l.plus_one, role: l.role, label: l.label }));
   openDialog(step ? step.title : copyOf ? "Copy of a step" : "New step", (close) => {
     const msg = h("p", { class: "msg" });
     const linkList = h("div", {});
     const picker = h("div", { class: "picker", hidden: true });
-    const search = h("input", { type: "search", placeholder: "Add a vendor, group, table or guest…", oninput: () => fillPicker(), onfocus: () => fillPicker() });
+    const search = h("input", { type: "search", placeholder: "Add a guest, a group or a table…", oninput: () => fillPicker(), onfocus: () => fillPicker() });
+    const vendorName = (id) => data.vendors.find((x) => x.id === id)?.name || "";
+
+    const leadRole = h("input", { value: lead?.role || "", placeholder: "Their part (optional)", oninput: (e) => { if (lead) lead.role = e.target.value; } });
+    const leadSelect = h("select", { onchange: (e) => {
+      const id = Number(e.target.value) || null;
+      lead = id ? { ref_id: id, role: leadRole.value } : null;
+      // A vendor can't lead and support the same step.
+      const i = supports.findIndex((x) => x.ref_id === id);
+      if (i >= 0) supports.splice(i, 1);
+      drawSupports();
+    } }, h("option", { value: "" }, "No lead vendor"), data.vendors.map((x) => h("option", { value: x.id, selected: lead?.ref_id === x.id }, x.name)));
+    const supportList = h("div", {});
+    const drawSupports = () => {
+      const free = data.vendors.filter((x) => x.id !== lead?.ref_id && !supports.some((y) => y.ref_id === x.id));
+      supportList.replaceChildren(...[
+        ...supports.map((x, i) => h("div", { class: "link-row" },
+          h("div", {}, vendorName(x.ref_id)),
+          h("input", { value: x.role, placeholder: "Their part (optional)", oninput: (e) => { x.role = e.target.value; } }),
+          h("button", { type: "button", class: "small", onclick: () => { supports.splice(i, 1); drawSupports(); } }, "Remove"))),
+        free.length ? h("select", { onchange: (e) => { const id = Number(e.target.value); if (id) { supports.push({ ref_id: id, role: "" }); drawSupports(); } } },
+          h("option", { value: "" }, "+ Add a supporting vendor…"), free.map((x) => h("option", { value: x.id }, x.name)))
+          : data.vendors.length ? null : h("p", { class: "muted", style: "margin:0" }, "Add vendors on the Vendors page first."),
+      ].filter(Boolean));
+    };
+    drawSupports();
+    const cohortBoxes = h("div", { class: "cohorts" }, data.presets.map((p) => h("label", { class: "check" },
+      h("input", { type: "checkbox", checked: cohorts.has(p.key), onchange: (e) => { e.target.checked ? cohorts.add(p.key) : cohorts.delete(p.key); } }), p.label)));
     const drawLinks = () => {
       linkList.replaceChildren(...links.map((l, i) => {
         const role = h("input", { value: l.role || "", placeholder: "Their part (optional)", oninput: (e) => { l.role = e.target.value; } });
@@ -155,7 +191,7 @@ function editStep(step, copyOf = null) {
           role,
           h("button", { type: "button", class: "small", onclick: () => { links.splice(i, 1); drawLinks(); } }, "Remove"));
       }));
-      if (!links.length) linkList.append(h("p", { class: "muted", style: "margin:0 0 6px" }, "Nobody linked yet."));
+      if (!links.length) linkList.append(h("p", { class: "muted", style: "margin:0 0 6px" }, "Nobody else linked."));
     };
     const fillPicker = () => {
       const q = search.value.trim().toLowerCase();
@@ -169,7 +205,12 @@ function editStep(step, copyOf = null) {
 
     const form = h("form", { onsubmit: async (ev) => {
       ev.preventDefault();
-      const body = { ...formValues(form), links: links.map(({ label, ...l }) => l) };
+      const body = { ...formValues(form), links: [
+        ...(lead ? [{ kind: "vendor", ref_id: lead.ref_id, ref_key: "lead", role: lead.role }] : []),
+        ...supports.map((x) => ({ kind: "vendor", ref_id: x.ref_id, ref_key: "support", role: x.role })),
+        ...data.presets.filter((p) => cohorts.has(p.key)).map((p) => ({ kind: "preset", ref_key: p.key })),
+        ...links.map(({ label, ...l }) => l),
+      ] };
       try {
         const reply = step
           ? await api(`/api/admin/runofshow/items/${step.id}`, { method: "PUT", body })
@@ -189,7 +230,13 @@ function editStep(step, copyOf = null) {
       field("Where", "location", { value: v.location || "", placeholder: "Garden terrace" })),
     h("div", { class: "fields" }, field("Details for the coordinator", "details", { type: "textarea", value: v.details || "", wide: true,
       placeholder: "Cue the DJ for the entrance song. Rings are with the best man." })),
-    h("h3", { style: "font-size:13.5px; margin:6px 0 8px" }, "Who's involved"),
+    h("h3", { class: "part" }, "Lead vendor"),
+    h("div", { class: "link-row" }, leadSelect, leadRole, h("span")),
+    h("h3", { class: "part" }, "Supporting vendors"),
+    supportList,
+    h("h3", { class: "part" }, "Guest cohorts"),
+    cohortBoxes,
+    h("h3", { class: "part" }, "Other guests, groups and tables"),
     linkList, search, picker,
     step ? h("div", { class: "fields", style: "margin-top:12px" }, field("Status", "status_view", { options: Object.entries(STATUS_TEXT), value: step.status,
       onchange: async (ev) => {

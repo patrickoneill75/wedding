@@ -43,7 +43,7 @@ export async function buildExports(env) {
   const guests = await all(
     env,
     `SELECT g.*, h.code AS household_code, h.display_name, h.greeting, h.address1, h.address2, h.city, h.state,
-            h.zip, h.country, h.email, h.phone, h.save_the_date_sent, h.invite_sent, h.gift, h.gift_received,
+            h.zip, h.country, h.out_of_town, h.international, h.email, h.phone, h.save_the_date_sent, h.invite_sent, h.gift, h.gift_received,
             h.thank_you_sent, h.rsvp_message, h.rsvp_at, h.notes AS household_notes
        FROM guests g JOIN households h ON h.id = g.household_id
       ORDER BY h.id, g.sort_order, g.id`
@@ -62,6 +62,7 @@ export async function buildExports(env) {
       extended_family: yesNo(g.extended_family),
       ceremony: yesNo(g.invite_ceremony),
       reception: yesNo(g.invite_reception),
+      rehearsal_dinner: yesNo(g.invite_rehearsal),
       rsvp: g.rsvp,
       dietary: g.dietary,
       plus_one_allowed: yesNo(g.plus_one_allowed),
@@ -81,6 +82,8 @@ export async function buildExports(env) {
       state: g.state,
       zip: g.zip,
       country: g.country,
+      out_of_town: yesNo(g.out_of_town),
+      international: yesNo(g.international),
       email: g.email,
       phone: g.phone,
       save_the_date_sent: yesNo(g.save_the_date_sent),

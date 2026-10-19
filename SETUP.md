@@ -146,8 +146,8 @@ npm test                # the test suite (Node 22.5+)
 
 ## Troubleshooting
 
-- **"isn't on the control panel's list of admins"**: the Google account you picked isn't in
-  `ADMIN_EMAILS`. Check the spelling, then redeploy or wait a minute after editing secrets.
+- **"isn't on the control panel's list of people who can sign in"**: the Google account
+  you picked isn't in `ADMIN_EMAILS` or on the Users page. Check the spelling, then redeploy or wait a minute after editing secrets.
 - **Drive sync says "token refresh failed"**: the app is probably still in Testing mode
   (step 3). Publish it, then disconnect and reconnect Drive in Settings.
 - **Settings says the Zola refresh failed**: the last good copy stays up. Open the latest

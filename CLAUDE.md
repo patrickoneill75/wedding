@@ -37,6 +37,12 @@
    the Worker only stores what `/api/site/ingest` receives. Keep `buildSite()` free of
    database and Worker-only APIs so it keeps running in plain Node.
 
+10. **Who signs in**: the owners in `ADMIN_EMAILS` (always admins), plus the `users` table
+    (admin, or user with a list of pages). Every `/api/admin/*` route belongs to a page in
+    `ROUTE_PAGES` (`src/admin_api.js`); a route left out of it is admin-only, so add new
+    routes there. Page access is a convenience, not a wall: a page's API returns what
+    that page shows.
+
 ## Tests
 
 `npm test` (`node tests/worker_test.mjs`, Node 22.5+) drives the real Worker `fetch()`

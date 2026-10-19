@@ -186,6 +186,7 @@ function stepView(s) {
     h("div", { class: "head", onclick: () => { open.has(s.id) ? open.delete(s.id) : open.add(s.id); render(); } },
       h("div", { class: "time" }, s.start_time ? clock(s.start_time) : "—", end ? h("small", {}, `to ${clock(end)}`) : null),
       h("div", {}, h("div", { class: "title" }, s.title), s.location ? h("div", { class: "where" }, s.location) : null,
+        vendors.some((l) => l.lead) ? h("div", { class: "where" }, `Lead: ${vendors.find((l) => l.lead).label}`) : null,
         s.status === "done" && s.status_at ? h("div", { class: "who-by" }, `Done at ${new Date(s.status_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`) : null),
       h("div", { class: "acts", onclick: (e) => e.stopPropagation() },
         s.status === "todo" ? h("button", { class: "go", onclick: () => setStatus(s, "in_progress") }, "Start") : null,
@@ -193,7 +194,8 @@ function stepView(s) {
         s.status !== "todo" ? h("button", { onclick: () => setStatus(s, s.status === "done" ? "in_progress" : "todo") }, "Undo") : null)),
     expanded ? h("div", { class: "body" },
       s.details ? h("p", { class: "details" }, s.details) : null,
-      vendors.length ? h("div", { class: "group" }, h("h3", {}, "Vendors"), vendors.map((l) => vendorCard(l.vendor, l.role))) : null,
+      vendors.some((l) => l.lead) ? h("div", { class: "group" }, h("h3", {}, "Lead vendor"), vendors.filter((l) => l.lead).map((l) => vendorCard(l.vendor, l.role))) : null,
+      vendors.some((l) => !l.lead) ? h("div", { class: "group" }, h("h3", {}, "Supporting vendors"), vendors.filter((l) => !l.lead).map((l) => vendorCard(l.vendor, l.role))) : null,
       people.map((l) => h("div", { class: "group" },
         h("h3", {}, l.label, ` (${l.people.length})`, l.role ? h("span", { class: "role" }, ` · ${l.role}`) : null),
         l.people.length ? h("div", { class: "names" }, l.people.map((p) => h("span", {}, p.name, p.table_seat ? h("small", {}, `table ${p.table_seat}`) : null)))

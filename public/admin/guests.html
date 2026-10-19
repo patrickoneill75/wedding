@@ -42,6 +42,8 @@
       <option value="ceremony:0">Not invited to the ceremony</option>
       <option value="reception:1">Invited to the reception</option>
       <option value="reception:0">Not invited to the reception</option>
+      <option value="rehearsal:1">Invited to the rehearsal dinner</option>
+      <option value="rehearsal:0">Not invited to the rehearsal dinner</option>
     </select>
     <select id="rsvp"><option value="">Any RSVP</option><option value="pending">Awaiting reply</option><option value="yes">Coming</option><option value="no">Not coming</option></select>
     <select id="track">
@@ -51,6 +53,8 @@
       <option value="thanks">Gift received, no thank-you yet</option>
       <option value="plusone">Has a plus-one</option>
       <option value="noaddress">Missing an address</option>
+      <option value="outoftown">Out of town</option>
+      <option value="international">International</option>
     </select>
   </div>
 
@@ -64,6 +68,11 @@
     <button class="small" data-invite="invite_ceremony" data-on="0">Ceremony off</button>
     <button class="small" data-invite="invite_reception" data-on="1">Reception on</button>
     <button class="small" data-invite="invite_reception" data-on="0">Reception off</button>
+    <button class="small" data-invite="invite_rehearsal" data-on="1">Rehearsal dinner on</button>
+    <button class="small" data-invite="invite_rehearsal" data-on="0">Rehearsal dinner off</button>
+    <span class="sep"></span>
+    <button class="small" data-field="out_of_town" data-value="1">Mark out of town</button>
+    <button class="small" data-field="international" data-value="1">Mark international</button>
     <span class="sep"></span>
     <button class="small danger" id="resetRsvp">Reset RSVP</button>
     <button class="small link" id="clearSel">Clear selection</button>
@@ -96,6 +105,9 @@ async function load() {
     item(c.invited, "invited"), item(c.weighted, "weighted"), item(c.confirmed, "coming"), item(c.declined, "not coming"),
     item(c.pending, "awaiting reply"), item(c.households, "households"), item(c.plus_ones_allowed, "plus-ones offered"),
     item(c.invites.ceremony, "invited to the ceremony"), item(c.invites.reception, "invited to the reception"),
+    item(data.households.flatMap((hh) => hh.guests).filter((g) => g.invite_rehearsal).length, "invited to the rehearsal dinner"),
+    item(data.households.filter((hh) => hh.out_of_town).length, "out-of-town households"),
+    item(data.households.filter((hh) => hh.international).length, "international households"),
   );
   render();
 }
@@ -124,6 +136,8 @@ function matches(hh) {
   if (track === "thanks" && !(hh.gift_received && !hh.thank_you_sent)) return false;
   if (track === "plusone" && !hh.guests.some((g) => g.plus_one_allowed)) return false;
   if (track === "noaddress" && hh.address1) return false;
+  if (track === "outoftown" && !hh.out_of_town) return false;
+  if (track === "international" && !hh.international) return false;
   return true;
 }
 
@@ -141,6 +155,9 @@ function render() {
       h("td", {}, h("input", { type: "checkbox", checked: selected.has(hh.id), onchange: (ev) => { ev.target.checked ? selected.add(hh.id) : selected.delete(hh.id); updateBulk(); } })),
       h("td", {}, h("button", { class: "link", onclick: () => openHousehold(hh) }, hh.display_name || "(no name)"),
         h("div", { class: "muted", style: "font-size:12px" }, [hh.code, [hh.city, hh.state].filter(Boolean).join(", ")].filter(Boolean).join(" · ")),
+        hh.out_of_town || hh.international ? h("div", { class: "guest" },
+          hh.out_of_town ? h("span", { class: "tag" }, "out of town") : null,
+          hh.international ? h("span", { class: "tag" }, "international") : null) : null,
         hh.rsvp_at ? h("div", { class: "muted", style: "font-size:12px" }, `RSVP'd ${fmtDate(hh.rsvp_at)}`) : null),
       h("td", {}, hh.guests.map((g) => h("div", { class: "guest" },
         h("span", {}, `${g.first_name} ${g.last_name}`),
@@ -154,6 +171,7 @@ function render() {
           return h("button", { class: `invite ${on ? "on" : "off"}`, title: `${on ? "Invited to" : "Not invited to"} the ${event}. Click to change.`,
             onclick: () => toggleInvite(g, `invite_${event}`) }, event === "ceremony" ? "Ceremony" : "Reception");
         }),
+        g.invite_rehearsal ? h("span", { class: "tag" }, "rehearsal dinner") : null,
         g.seat ? h("span", { class: "tag" }, `table ${g.seat.table}, seat ${g.seat.seat}`) : g.table_name ? h("span", { class: "tag" }, `table ${g.table_name}`) : null,
         g.plus_one_allowed ? h("span", { class: `pill ${g.plus_one_rsvp}` }, `+1${g.plus_one_name ? ` ${g.plus_one_name}` : ""}: ${RSVP_LABEL[g.plus_one_rsvp]}`) : null,
         g.plus_one_seat ? h("span", { class: "tag" }, `+1 at table ${g.plus_one_seat.table}, seat ${g.plus_one_seat.seat}`) : null,
@@ -233,6 +251,7 @@ function guestCard(g, onRemove) {
     h("div", { class: "flags" },
       check("Invited to the ceremony", "invite_ceremony", g.invite_ceremony),
       check("Invited to the reception", "invite_reception", g.invite_reception ?? 1),
+      check("Invited to the rehearsal dinner", "invite_rehearsal", g.invite_rehearsal),
     ),
     h("div", { class: "flags" },
       check("Wedding party", "wedding_party", g.wedding_party),
@@ -292,6 +311,10 @@ async function openHousehold(hh) {
         check("Invite sent", "invite_sent", hh?.invite_sent),
         check("Gift received", "gift_received", hh?.gift_received),
         check("Thank-you sent", "thank_you_sent", hh?.thank_you_sent),
+      ),
+      h("div", { class: "row", style: "gap:18px; margin-bottom:12px" },
+        check("Out of town", "out_of_town", hh?.out_of_town),
+        check("International", "international", hh?.international),
       ),
       h("div", { class: "fields" },
         field("Gift", "gift", { value: hh?.gift || "" }),

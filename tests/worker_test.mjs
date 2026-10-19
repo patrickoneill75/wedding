@@ -437,7 +437,8 @@ const OLD_GUEST_COLUMNS = `id INTEGER PRIMARY KEY, household_id INTEGER, first_n
 // The other tables later migrations alter, in their oldest shape.
 const OLD_OTHER_TABLES = `
   CREATE TABLE expenses (id INTEGER PRIMARY KEY, vendor TEXT, payer TEXT, status TEXT NOT NULL DEFAULT 'estimate', updated_at TEXT, category TEXT, subcategory TEXT, item TEXT, pricing TEXT, unit_cost REAL, units REAL, quantity_source TEXT, quantity_factor REAL, round_up INTEGER, taxable INTEGER, gratuity_rate REAL, notes TEXT, source TEXT, baseline_total REAL);
-  CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER, payer TEXT);`;
+  CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER, payer TEXT);
+  CREATE TABLE households (id INTEGER PRIMARY KEY);`;
 
 test("upgrading from the first schema carries the spreadsheet's ceremony flag all the way through", async () => {
   const env = makeEnv();
@@ -734,6 +735,8 @@ test("upgrading moves Booked items with payments on them to Partially paid", asy
   env.DB.db.exec(`
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO settings VALUES ('_schema_version', '6');
+    CREATE TABLE households (id INTEGER PRIMARY KEY);
+    CREATE TABLE guests (id INTEGER PRIMARY KEY, household_id INTEGER);
     CREATE TABLE vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at TEXT);
     CREATE TABLE expenses (id INTEGER PRIMARY KEY, parent_id INTEGER, status TEXT NOT NULL, updated_at TEXT, category TEXT, subcategory TEXT, item TEXT, pricing TEXT, unit_cost REAL, units REAL, quantity_source TEXT, quantity_factor REAL, round_up INTEGER, taxable INTEGER, gratuity_rate REAL, notes TEXT, source TEXT, baseline_total REAL);
     CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER);
@@ -763,6 +766,8 @@ test("upgrading turns an item's leftover budget into an estimate line item and c
   env.DB.db.exec(`
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO settings VALUES ('_schema_version', '7');
+    CREATE TABLE households (id INTEGER PRIMARY KEY);
+    CREATE TABLE guests (id INTEGER PRIMARY KEY, household_id INTEGER);
     CREATE TABLE vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at TEXT);
     CREATE TABLE expenses (id INTEGER PRIMARY KEY, parent_id INTEGER, status TEXT NOT NULL, updated_at TEXT, category TEXT, subcategory TEXT,
       item TEXT, pricing TEXT, unit_cost REAL, units REAL, quantity_source TEXT, quantity_factor REAL, round_up INTEGER, taxable INTEGER,
@@ -986,6 +991,8 @@ test("upgrading renames Partner to Kaitlyn in settings and payments, and seeds t
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO settings VALUES ('_schema_version', '5');
     INSERT INTO settings VALUES ('payers', '["Patrick","Partner","Joint"]');
+    CREATE TABLE households (id INTEGER PRIMARY KEY);
+    CREATE TABLE guests (id INTEGER PRIMARY KEY, household_id INTEGER);
     CREATE TABLE expenses (id INTEGER PRIMARY KEY, vendor TEXT, payer TEXT, status TEXT NOT NULL DEFAULT 'estimate', updated_at TEXT, category TEXT, subcategory TEXT, item TEXT, pricing TEXT, unit_cost REAL, units REAL, quantity_source TEXT, quantity_factor REAL, round_up INTEGER, taxable INTEGER, gratuity_rate REAL, notes TEXT, source TEXT, baseline_total REAL);
     CREATE TABLE payments (id INTEGER PRIMARY KEY, expense_id INTEGER, payer TEXT);
     INSERT INTO expenses (id, vendor, payer) VALUES (1, ' Goodwill ', 'Partner'), (2, 'goodwill', NULL), (3, NULL, 'Patrick');
@@ -1903,7 +1910,9 @@ test("run of show: links resolve to the people in them, declined guests drop out
   const after = (await api("/api/admin/runofshow")).data.steps[0];
   assert.deepEqual(after.links.map((l) => l.kind).sort(), ["preset", "vendor"], "the deleted group's link is gone");
   const rows = await runReport(api, { id: "run-of-show" });
-  assert.deepEqual([rows[0].Start, rows[0].End, rows[0].Vendors], ["15:30", "16:00", "Lens Co (shoots)"]);
+  assert.deepEqual([rows[0].Start, rows[0].End, rows[0]["Supporting vendors"], rows[0]["Guest cohorts"]], ["15:30", "16:00", "Lens Co (shoots)", "Wedding party"],
+    "a vendor linked without a lead or support choice supports");
+
 });
 
 test("day-of view: the coordinator's key reads and checks off steps, never budgets or addresses; a replaced key stops working", async () => {
@@ -1931,6 +1940,91 @@ test("day-of view: the coordinator's key reads and checks off steps, never budge
   assert.equal((await call(env, "/api/dayof", { cookie })).status, 200, "a signed-in admin needs no key");
   assert.equal((await call(env, "/api/dayof/status", { method: "POST", cookie, body: { item_id: stepId, status: "todo" } })).status, 401,
     "an admin's POST without the X-Wedding header is refused (CSRF)");
+});
+
+test("run of show: one lead vendor per step, listed first, then supporting vendors and guest cohorts", async () => {
+  const { api } = await reportSetup();
+  const mk = async (name) => (await api("/api/admin/vendors", { method: "POST", body: { name } })).data.vendor.id;
+  const [dj, photo, florist] = [await mk("Spin City"), await mk("Lens Co"), await mk("Petals")];
+  const two = await api("/api/admin/runofshow/items", { method: "POST", body: { title: "Entrance",
+    links: [{ kind: "vendor", ref_id: dj, ref_key: "lead" }, { kind: "vendor", ref_id: photo, ref_key: "lead" }] } });
+  assert.equal(two.status, 400, "two leads on one step");
+  const ok = await api("/api/admin/runofshow/items", { method: "POST", body: { title: "Entrance", links: [
+    { kind: "preset", ref_key: "wedding_party" }, { kind: "vendor", ref_id: photo, ref_key: "support" },
+    { kind: "vendor", ref_id: dj, ref_key: "lead", role: "plays the song" }, { kind: "vendor", ref_id: florist, ref_key: "constructor" },
+    { kind: "preset", ref_key: "rehearsal_dinner" }] } });
+  assert.equal(ok.status, 201, JSON.stringify(ok.data));
+  const links = ok.data.steps[0].links;
+  assert.deepEqual(links.map((l) => [l.label, l.kind, Boolean(l.lead)]),
+    [["Spin City", "vendor", true], ["Lens Co", "vendor", false], ["Petals", "vendor", false], ["Wedding party", "preset", false], ["Rehearsal dinner guests", "preset", false]],
+    "lead first; anything but \"lead\" supports");
+  const rows = await runReport(api, { id: "run-of-show" });
+  assert.deepEqual([rows[0]["Lead vendor"], rows[0]["Supporting vendors"]], ["Spin City (plays the song)", "Lens Co; Petals"]);
+});
+
+/* ------------------------------------------------------------- tags and reports -- */
+
+test("contacts: out-of-town and international households and rehearsal dinner guests have their own reports", async () => {
+  const { api } = await reportSetup();
+  const households = (await api("/api/admin/guests")).data.households;
+  const smiths = households.find((h) => h.display_name === "The Smiths");
+  const lee = households.find((h) => h.display_name === "Dana Lee");
+  await api(`/api/admin/households/${smiths.id}`, { method: "PUT", body: { out_of_town: true } });
+  await api(`/api/admin/households/${lee.id}`, { method: "PUT", body: { out_of_town: true, international: true, country: "Canada" } });
+  await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: [smiths.id], field: "invite_rehearsal", value: true } });
+
+  const rehearsal = await runReport(api, { id: "rehearsal-dinner" });
+  assert.deepEqual(rehearsal.map((r) => r.Name), ["Avery Smith", "Blake Smith", "Guest of Blake Smith"], "a plus-one goes where their guest goes");
+  const head = await runReport(api, { id: "headcount" });
+  assert.deepEqual(["Rehearsal dinner", "Out of town", "International"].map((e) => head.find((r) => r.Event === e).Invited), [3, 4, 1]);
+  assert.deepEqual((await runReport(api, { id: "international" })).map((r) => [r.Name, r.Country]), [["Dana Lee", "Canada"]]);
+  assert.deepEqual((await runReport(api, { id: "welcome-bags" })).map((r) => r["Name on the envelope"]), ["Dana Lee", "The Smiths"]);
+  assert.equal((await api("/api/admin/households/bulk", { method: "POST", body: { ids: [smiths.id], field: "international", value: true } })).status, 200);
+  const ros = (await api("/api/admin/runofshow")).data;
+  assert.ok(["out_of_town", "international", "rehearsal_dinner"].every((k) => ros.presets.some((p) => p.key === k)), "each tag is a guest cohort too");
+});
+
+/* ------------------------------------------------------------------------ users -- */
+
+test("users: a user sees only their pages, an admin sees everything, and removing someone signs them out", async () => {
+  const env = makeEnv();
+  const owner = await adminClient(env);
+  const add = await owner("/api/admin/users", { method: "POST", body: { email: "Coordinator@Example.com", name: "Jo", role: "user", pages: ["runofshow", "seating", "settings", "constructor"] } });
+  assert.equal(add.status, 201, JSON.stringify(add.data));
+  assert.deepEqual(add.data.users[0].pages, ["runofshow", "seating"], "only real, grantable pages; Settings is admin-only");
+  assert.equal((await owner("/api/admin/users", { method: "POST", body: { email: "admin@example.com" } })).status, 400, "owners come from ADMIN_EMAILS");
+
+  const jo = `wedding_session=${await sign(env, { kind: "session", email: "coordinator@example.com", name: "Jo" }, 3600)}`;
+  const as = (path, opts = {}) => call(env, path, { ...opts, cookie: jo, headers: { "x-wedding": "1" } });
+  const me = (await as("/api/auth/me")).data.user;
+  assert.deepEqual([me.role, me.pages], ["user", ["runofshow", "seating"]]);
+  assert.equal((await as("/api/admin/runofshow")).status, 200);
+  assert.equal((await as("/api/admin/seating")).status, 200);
+  for (const path of ["/api/admin/summary", "/api/admin/expenses", "/api/admin/guests", "/api/admin/reports", "/api/admin/vendors", "/api/admin/settings", "/api/admin/users", "/api/admin/drive/status"]) {
+    assert.equal((await as(path)).status, 403, `${path} is off limits`);
+  }
+  assert.equal((await as("/api/public/expense/options")).status, 403, "the expense form needs Expenses");
+  assert.equal((await as("/api/dayof")).status, 200, "Run of show opens the day-of view");
+  assert.equal((await as("/api/admin/users", { method: "POST", body: { email: "x@example.com" } })).status, 403, "a user can't add people");
+
+  await owner("/api/admin/users/coordinator%40example.com", { method: "PUT", body: { role: "admin" } });
+  assert.equal((await as("/api/admin/settings")).status, 200, "an admin gets everything");
+  await owner("/api/admin/users/coordinator%40example.com", { method: "DELETE" });
+  assert.equal((await as("/api/admin/runofshow")).status, 401, "removed: the old session no longer works");
+  assert.equal((await owner("/api/admin/users/admin%40example.com", { method: "DELETE" })).status, 400, "an owner can't be removed here");
+});
+
+test("users: Google sign-in lets in someone added on the Users page, and nobody else", async () => {
+  const env = makeEnv();
+  const owner = await adminClient(env);
+  await owner("/api/admin/users", { method: "POST", body: { email: "jo@example.com", role: "user", pages: ["runofshow"] } });
+  const state = await sign(env, { kind: "oauth", purpose: "login", nonce: "n1" }, 600);
+  const signIn = (email) => withFetch(
+    (url) => (url.startsWith("https://oauth2.googleapis.com/token") ? okJson({ access_token: "at", expires_in: 3600 }) : okJson({ email, email_verified: true, name: "X" })),
+    () => call(env, `/api/auth/callback?code=c&state=${encodeURIComponent(state)}`, { cookie: "wedding_oauth=n1" })
+  );
+  assert.match((await signIn("Jo@Example.com")).headers.get("set-cookie") || "", /wedding_session=[^;]/, "Jo is on the list, whatever the case");
+  assert.doesNotMatch((await signIn("stranger@example.com")).headers.get("set-cookie") || "", /wedding_session=[^;]/);
 });
 
 /* ------------------------------------------------------------------------- runner -- */

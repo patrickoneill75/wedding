@@ -22,7 +22,7 @@ import { handleDayOf } from "./runofshow.js";
  *   /api/admin/*         control panel (src/admin_api.js), admins only
  *   /api/public/*        RSVP and the unlisted expense form (src/public_api.js)
  *   /api/dayof/*         the coordinator's run of show for /dayof/ (src/runofshow.js):
- *                        the day-of link's key, or an admin's sign-in
+ *                        the day-of link's key, or a sign-in with Run of show
  *   /api/site/config     GET, and /api/site/ingest POST: for the GitHub Action that
  *                        copies the Zola site (scripts/zola_refresh.mjs). Both need
  *                        "Authorization: Bearer <ZOLA_INGEST_SECRET>".

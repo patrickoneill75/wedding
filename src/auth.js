@@ -1,8 +1,15 @@
 /**
  * Control-panel sign-in with Google, plus the signing helpers everything else uses.
  *
- * Who may sign in: the comma-separated ADMIN_EMAILS secret. Google proves the email;
- * this list decides whether that email gets in. Nothing else is stored per user.
+ * Who may sign in: the owners in the comma-separated ADMIN_EMAILS secret, who are always
+ * admins, and anyone an admin adds on the Users page (the users table, src/users.js),
+ * each an admin or a user limited to some pages. Google proves the email; these lists
+ * decide whether it gets in, and both are re-checked on every request, so removing
+ * someone locks them out at once.
+ *
+ * Page access is checked per API route (requirePage), matching the control panel's
+ * pages. A user sees only their pages' data; Settings, Drive, the import and Users are
+ * admin-only.
  *
  * Sessions are a signed cookie (HMAC-SHA256), HttpOnly and SameSite=Lax, valid for 30
  * days. The signing key is generated on first use and kept in D1 (_session_secret), so
@@ -20,7 +27,7 @@
  * URL can't be replayed into someone else's browser.
  */
 
-import { getSetting, setSetting } from "./db.js";
+import { first, getSetting, setSetting } from "./db.js";
 
 const encoder = new TextEncoder();
 const SESSION_COOKIE = "wedding_session";
@@ -124,18 +131,56 @@ export function adminEmails(env) {
     .filter(Boolean);
 }
 
-/** The signed-in admin, or null. Re-checks the allowlist so removing an email locks it out. */
+/** The control panel's pages a user can be given. Settings and Users are admin-only. */
+export const PAGES = ["dashboard", "expenses", "vendors", "guests", "seating", "runofshow", "reports"];
+
+/**
+ * Who this email is: { role: "admin" | "user", pages, owner } or null if they may not
+ * sign in. Owners (ADMIN_EMAILS) are always admins and can't be locked out from the Users
+ * page.
+ */
+export async function accessFor(env, email) {
+  const clean = String(email || "").trim().toLowerCase();
+  if (!clean) return null;
+  if (adminEmails(env).includes(clean)) return { role: "admin", pages: [...PAGES], owner: true };
+  const row = await first(env, "SELECT role, pages FROM users WHERE email = ?", clean);
+  if (!row) return null;
+  if (row.role === "admin") return { role: "admin", pages: [...PAGES], owner: false };
+  let pages = [];
+  try {
+    pages = JSON.parse(row.pages);
+  } catch {}
+  return { role: "user", pages: (Array.isArray(pages) ? pages : []).filter((p) => PAGES.includes(p)), owner: false };
+}
+
+/** The signed-in person, or null. Re-checks access on every request, so removing someone locks them out. */
 export async function currentUser(request, env) {
   const payload = await verify(env, readCookie(request, SESSION_COOKIE));
   if (!payload || payload.kind !== "session") return null;
-  if (!adminEmails(env).includes(String(payload.email).toLowerCase())) return null;
-  return { email: payload.email, name: payload.name || payload.email };
+  const access = await accessFor(env, payload.email);
+  if (!access) return null;
+  return { email: payload.email, name: payload.name || payload.email, ...access };
 }
 
-/** Returns [user, null] or [null, errorResponse]. */
-export async function requireAdmin(request, env) {
+/**
+ * Returns [user, null] or [null, errorResponse]. With `page`, a user needs that page;
+ * with page "admin", only an admin gets through. Admins get through everything.
+ */
+export async function requirePage(request, env, page) {
+  const [user, denied] = await requireAdmin(request, env, { anyone: true });
+  if (denied) return [null, denied];
+  if (user.role === "admin") return [user, null];
+  if (page === "admin" || !user.pages.includes(page)) {
+    return [null, json({ error: "You don't have access to this. Ask Patrick or Kaitlyn to add it on the Users page." }, 403)];
+  }
+  return [user, null];
+}
+
+/** Returns [user, null] or [null, errorResponse]: an admin, unless `anyone` lets a user through. */
+export async function requireAdmin(request, env, { anyone = false } = {}) {
   const user = await currentUser(request, env);
   if (!user) return [null, json({ error: "Not signed in." }, 401)];
+  if (!anyone && user.role !== "admin") return [null, json({ error: "Only an admin can do that." }, 403)];
   const method = request.method.toUpperCase();
   if (method !== "GET" && method !== "HEAD" && request.headers.get("x-wedding") !== "1") {
     return [null, json({ error: "Missing X-Wedding header." }, 403)];
@@ -257,8 +302,8 @@ export async function handleOAuthCallback(request, env, onDriveTokens) {
     return redirect("/admin/settings.html?drive=connected#drive", [clearState]);
   }
 
-  if (!info.email_verified || !adminEmails(env).includes(email)) {
-    return fail("/admin/login.html", `${email || "That account"} isn't on the control panel's list of admins.`);
+  if (!info.email_verified || !(await accessFor(env, email))) {
+    return fail("/admin/login.html", `${email || "That account"} isn't on the control panel's list of people who can sign in.`);
   }
   const session = await sign(env, { kind: "session", email, name: info.name || email }, SESSION_TTL);
   return redirect(safeNext(state.next) || "/admin/index.html", [clearState, cookie(SESSION_COOKIE, session, SESSION_TTL)]);

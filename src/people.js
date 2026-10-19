@@ -22,7 +22,7 @@ export async function loadPeople(env) {
   const guests = await all(
     env,
     `SELECT g.*, h.code AS household_code, h.display_name AS household, h.greeting, h.address1, h.address2, h.city,
-            h.state, h.zip, h.country, h.email, h.phone
+            h.state, h.zip, h.country, h.email, h.phone, h.out_of_town, h.international
        FROM guests g JOIN households h ON h.id = g.household_id
       ORDER BY g.last_name COLLATE NOCASE, g.first_name COLLATE NOCASE, g.id`
   );
@@ -42,6 +42,9 @@ export async function loadPeople(env) {
       ceremony: Boolean(g.invite_ceremony),
       reception: Boolean(g.invite_reception),
       invited_to: invitedTo(g),
+      rehearsal: Boolean(g.invite_rehearsal),
+      out_of_town: Boolean(g.out_of_town),
+      international: Boolean(g.international),
       email: g.email || "",
       phone: g.phone || "",
       address1: g.address1 || "",
