@@ -83,13 +83,16 @@ export function cleanEvents(input) {
   });
 }
 
-/** The events this household gets: everyone's, and those for a part someone in it is invited to. */
+/**
+ * The events this household gets: everyone's, and those for a part someone in it is
+ * invited to. The rehearsal dinner drops off once everyone invited to it has declined it.
+ */
 export function eventsFor(events, guests) {
   const invited = {
     everyone: true,
     ceremony: guests.some((g) => g.invite_ceremony),
     reception: guests.some((g) => g.invite_reception),
-    rehearsal: guests.some((g) => g.invite_rehearsal),
+    rehearsal: guests.some((g) => g.invite_rehearsal && g.rehearsal_rsvp !== "no"),
   };
   return events.filter((e) => invited[e.for] ?? false);
 }

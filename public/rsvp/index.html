@@ -49,7 +49,10 @@
   .msg { min-height: 1.4em; margin: 12px 0 0; font-size: 14px; color: var(--bad); }
   .person { border-top: 1px solid var(--line); padding: 18px 0 4px; }
   .person:first-of-type { border-top: 0; padding-top: 4px; }
-  .person .name { font-weight: 600; margin-bottom: 10px; }
+  .person .name { font-weight: 600; margin-bottom: 2px; }
+  .person .invited { font-size: 14px; color: var(--soft); margin-bottom: 10px; }
+  .plus .lead { font-size: 14px; color: var(--soft); margin-bottom: 8px; }
+  .plus .lead b { color: var(--ink); font-weight: 600; }
   .choice { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
   .choice label { margin: 0; }
   .choice input { position: absolute; opacity: 0; pointer-events: none; }
@@ -130,7 +133,12 @@ let current = null;
 // The page's wording, edited in the control panel's Communications tab.
 let page = {
   accept_label: "Joyfully accepts", decline_label: "Regretfully declines", guest_email_label: "Their own email (optional)",
-  reply_help: "Let us know who's coming.", thanks_yes: "We can't wait to celebrate with you.",
+  reply_help: "Let us know who's coming.",
+  invited_both: "Invited to the ceremony and the reception", invited_ceremony: "Invited to the ceremony",
+  invited_reception: "Invited to the reception", rehearsal_invite: "you're also invited to the rehearsal dinner.",
+  rehearsal_accept: "Will be there", rehearsal_decline: "Can't make it",
+  plus_one_rehearsal: "Will your guest join you at the rehearsal dinner?",
+  thanks_yes: "We can't wait to celebrate with you.",
   thanks_no: "We'll miss you, and thank you for letting us know.",
 };
 
@@ -156,6 +164,20 @@ async function post(path, body) {
 function fmtDate(iso) {
   if (!iso) return "";
   return new Date(`${iso}T12:00:00`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+}
+
+function fmtTime(hhmm) {
+  const [hour, minute] = String(hhmm || "").split(":").map(Number);
+  if (!Number.isFinite(hour)) return "";
+  return new Date(2000, 0, 1, hour, minute || 0).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
+/** What a guest is invited to, from their record in the control panel. */
+function invitedLine(g) {
+  if (g.ceremony && g.reception) return page.invited_both;
+  if (g.ceremony) return page.invited_ceremony;
+  if (g.reception) return page.invited_reception;
+  return "";
 }
 
 fetch("/api/public/info").then((r) => r.json()).then((info) => {
@@ -313,16 +335,39 @@ function openReply(household) {
   $("people").replaceChildren(...household.guests.map((g) => {
     const box = el("div", { class: "person" },
       el("div", { class: "name" }, `${g.first_name} ${g.last_name}`),
+      invitedLine(g) ? el("div", { class: "invited" }, invitedLine(g)) : null,
       choice(`rsvp_${g.id}`, [page.accept_label, page.decline_label], g.rsvp),
       el("label", {}, "Dietary needs (optional)", el("input", { type: "text", name: `dietary_${g.id}`, value: g.dietary || "" })),
       // Only for households of more than one: a single guest's email is the household's.
       household.guests.length > 1
         ? el("label", {}, page.guest_email_label, el("input", { type: "email", name: `email_${g.id}`, value: g.email || "", autocomplete: "off" }))
         : null);
+    // The rehearsal dinner question, for guests invited to it, once they've said yes.
+    if (g.rehearsal) {
+      const r = household.rehearsal;
+      const when = r ? [fmtDate(r.date), fmtTime(r.start), r.location].filter(Boolean).join(" · ") : "";
+      const dinner = el("div", { class: "plus" },
+        el("div", { class: "lead" }, el("b", {}, `${g.first_name}, ${page.rehearsal_invite}`), when ? el("div", {}, when) : null),
+        choice(`rehearsal_${g.id}`, [page.rehearsal_accept, page.rehearsal_decline], g.rehearsal_rsvp === "pending" ? null : g.rehearsal_rsvp));
+      const sync = () => {
+        const coming = form.querySelector(`input[name="rsvp_${g.id}"]:checked`)?.value === "yes";
+        dinner.hidden = !coming;
+        for (const radio of dinner.querySelectorAll("input")) radio.required = coming;
+      };
+      box.addEventListener("change", sync);
+      box.append(dinner);
+      queueMicrotask(sync);
+    }
     if (g.plus_one_allowed) {
       const details = el("div", {},
         el("label", {}, "Guest's name", el("input", { type: "text", name: `plus_name_${g.id}`, value: g.plus_one_name || "" })),
         el("label", {}, "Their dietary needs (optional)", el("input", { type: "text", name: `plus_dietary_${g.id}`, value: g.plus_one_dietary || "" })));
+      // A host coming to the rehearsal dinner with a guest says whether the guest comes too.
+      const plusDinner = g.rehearsal
+        ? el("div", {}, el("div", { class: "lead" }, page.plus_one_rehearsal),
+            choice(`plus_rehearsal_${g.id}`, [page.rehearsal_accept, page.rehearsal_decline], g.plus_one_rehearsal_rsvp === "pending" ? null : g.plus_one_rehearsal_rsvp))
+        : null;
+      if (plusDinner) details.append(plusDinner);
       const plus = el("div", { class: "plus" },
         el("div", { style: "font-size:14px;color:var(--soft);margin-bottom:8px" }, `${g.first_name}, you're welcome to bring a guest.`),
         choice(`plus_${g.id}`, ["Bringing a guest", "Coming alone"], g.plus_one_rsvp === "yes" ? "yes" : g.plus_one_rsvp === "no" ? "no" : null),
@@ -334,6 +379,11 @@ function openReply(household) {
         details.hidden = !bringing;
         for (const r of plus.querySelectorAll(`input[name="plus_${g.id}"]`)) r.required = coming;
         form.querySelector(`[name="plus_name_${g.id}"]`).required = coming && bringing;
+        if (plusDinner) {
+          const dinner = form.querySelector(`input[name="rehearsal_${g.id}"]:checked`)?.value === "yes";
+          plusDinner.hidden = !dinner;
+          for (const radio of plusDinner.querySelectorAll("input")) radio.required = coming && bringing && dinner;
+        }
       };
       box.addEventListener("change", sync);
       box.append(plus);
@@ -354,10 +404,12 @@ $("reply").addEventListener("submit", async (ev) => {
     rsvp: picked(`rsvp_${g.id}`),
     dietary: value(`dietary_${g.id}`).value,
     email: value(`email_${g.id}`)?.value || "",
+    ...(g.rehearsal ? { rehearsal_rsvp: picked(`rehearsal_${g.id}`) || "no" } : {}),
     ...(g.plus_one_allowed ? {
       plus_one_rsvp: picked(`plus_${g.id}`) || "no",
       plus_one_name: value(`plus_name_${g.id}`).value,
       plus_one_dietary: value(`plus_dietary_${g.id}`).value,
+      ...(g.rehearsal ? { plus_one_rehearsal_rsvp: picked(`plus_rehearsal_${g.id}`) || "no" } : {}),
     } : {}),
   }));
   const button = form.querySelector("button.primary");
@@ -373,7 +425,10 @@ $("reply").addEventListener("submit", async (ev) => {
     if (calendar_url) $("calendar").href = calendar_url;
     $("doneList").replaceChildren(...household.guests.flatMap((g) => [
       el("li", {}, `${g.first_name} ${g.last_name}: ${g.rsvp === "yes" ? "attending" : "not attending"}`),
+      g.rehearsal && g.rsvp === "yes" ? el("li", {}, `${g.first_name} ${g.last_name}: ${g.rehearsal_rsvp === "yes" ? "attending" : "not attending"} the rehearsal dinner`) : null,
       g.plus_one_allowed && g.plus_one_rsvp === "yes" ? el("li", {}, `${g.plus_one_name}: attending`) : null,
+      g.rehearsal && g.plus_one_allowed && g.plus_one_rsvp === "yes" && g.rehearsal_rsvp === "yes"
+        ? el("li", {}, `${g.plus_one_name}: ${g.plus_one_rehearsal_rsvp === "yes" ? "attending" : "not attending"} the rehearsal dinner`) : null,
     ].filter(Boolean)));
     show("done");
   } catch (error) {

@@ -11,11 +11,14 @@
  *                          full name and a signed "pick" token per guest -- never an id,
  *                          an address or anything else.
  *   POST rsvp/lookup       { pick } (from search) or { first, last } -> the household:
- *                          first names, current answers, and who may bring a plus-one,
- *                          plus a signed token good for two hours.
+ *                          first names, current answers, who may bring a plus-one, what
+ *                          each guest is invited to (ceremony, reception, rehearsal
+ *                          dinner) and, for a household with a rehearsal dinner guest,
+ *                          when and where it is, plus a signed token good for two hours.
  *   POST rsvp/submit       { token, guests: [...], email, message }
  *   A guest can only answer for their own household (the token names it), and a
- *   plus-one is only accepted for a guest who was given one.
+ *   plus-one is only accepted for a guest who was given one, and a rehearsal dinner
+ *   answer only from a guest invited to it.
  *
  * Expense form (/submit, for the two of us): every route needs the control panel's
  * Google sign-in (and the X-Wedding header on POSTs), and knows who is signed in.
@@ -75,31 +78,47 @@ function firstNameMatches(stored, typed) {
   return shorter.length >= 3 && longer.startsWith(shorter);
 }
 
-async function householdForRsvp(env, householdId) {
+/** When and where the rehearsal dinner is, from its calendar invite entry, if there is one. */
+function rehearsalDetails(settings) {
+  const event = (settings.calendar_events || []).find((e) => e.for === "rehearsal");
+  return event ? { date: event.date || "", start: event.start || "", location: event.location || "" } : null;
+}
+
+async function householdForRsvp(env, householdId, settings) {
   const household = await first(env, "SELECT id, greeting, display_name, email, rsvp_message, rsvp_at FROM households WHERE id = ?", householdId);
   if (!household) return null;
   const guests = await all(
     env,
-    `SELECT id, first_name, last_name, email, rsvp, dietary, plus_one_allowed, plus_one_name, plus_one_rsvp, plus_one_dietary
+    `SELECT id, first_name, last_name, email, rsvp, dietary, plus_one_allowed, plus_one_name, plus_one_rsvp, plus_one_dietary,
+            invite_ceremony, invite_reception, invite_rehearsal, rehearsal_rsvp, plus_one_rehearsal_rsvp
        FROM guests WHERE household_id = ? ORDER BY sort_order, id`,
     householdId
   );
+  const rehearsal = guests.some((g) => g.invite_rehearsal) ? rehearsalDetails(settings) : null;
   return {
     greeting: household.greeting || household.display_name,
     email: household.email || "",
     message: household.rsvp_message || "",
     responded: Boolean(household.rsvp_at),
+    // Only a household with someone invited to the rehearsal dinner hears when it is.
+    ...(rehearsal ? { rehearsal } : {}),
     guests: guests.map((g) => ({
       id: g.id,
       first_name: g.first_name,
       last_name: g.last_name,
       email: g.email || "",
+      // What each guest is invited to, so the page can say so under their name.
+      ceremony: Boolean(g.invite_ceremony),
+      reception: Boolean(g.invite_reception),
+      rehearsal: Boolean(g.invite_rehearsal),
       rsvp: g.rsvp,
       dietary: g.dietary || "",
+      ...(g.invite_rehearsal ? { rehearsal_rsvp: g.rehearsal_rsvp } : {}),
       plus_one_allowed: Boolean(g.plus_one_allowed),
       // Only a guest who was given a plus-one sees anything about one.
       ...(g.plus_one_allowed
-        ? { plus_one_name: g.plus_one_name || "", plus_one_rsvp: g.plus_one_rsvp, plus_one_dietary: g.plus_one_dietary || "" }
+        ? { plus_one_name: g.plus_one_name || "", plus_one_rsvp: g.plus_one_rsvp, plus_one_dietary: g.plus_one_dietary || "",
+            ...(g.invite_rehearsal ? { plus_one_rehearsal_rsvp: g.plus_one_rehearsal_rsvp } : {}) }
         : {}),
     })),
   };
@@ -157,7 +176,7 @@ async function rsvpLookup(env, input) {
     const pick = await verify(env, input.pick);
     if (!pick || pick.kind !== "pick") return json({ error: "That search expired. Type your name again." }, 400);
     const guest = await first(env, "SELECT household_id FROM guests WHERE id = ?", pick.g);
-    const household = guest ? await householdForRsvp(env, guest.household_id) : null;
+    const household = guest ? await householdForRsvp(env, guest.household_id, await loadSettings(env)) : null;
     if (!household) return json({ error: "We couldn't find that invitation any more. Please contact us." }, 404);
     return json({ matches: [{ token: await sign(env, { kind: "rsvp", h: guest.household_id }, RSVP_TOKEN_TTL), ...household }] });
   }
@@ -179,8 +198,9 @@ async function rsvpLookup(env, input) {
     return json({ error: "We couldn't find that name on the guest list. Try the name on your invitation, or contact us." }, 404);
   }
   const matches = [];
+  const settings = await loadSettings(env);
   for (const householdId of [...householdIds].slice(0, 5)) {
-    const household = await householdForRsvp(env, householdId);
+    const household = await householdForRsvp(env, householdId, settings);
     if (household) matches.push({ token: await sign(env, { kind: "rsvp", h: householdId }, RSVP_TOKEN_TTL), ...household });
   }
   return json({ matches });
@@ -193,7 +213,7 @@ async function rsvpSubmit(env, input) {
   // One email for the household is required: it's where the details and reminders go.
   const email = String(input.email ?? "").trim().slice(0, 200);
   if (!EMAIL.test(email)) return json({ error: email ? "That email address doesn't look right." : "Add an email address so we can send you the details." }, 400);
-  const members = await all(env, "SELECT id, plus_one_allowed FROM guests WHERE household_id = ?", householdId);
+  const members = await all(env, "SELECT id, plus_one_allowed, invite_rehearsal FROM guests WHERE household_id = ?", householdId);
   const byId = new Map(members.map((m) => [m.id, m]));
   const answers = Array.isArray(input.guests) ? input.guests : [];
   const clip = (v, n = 500) => (v == null ? null : String(v).trim().slice(0, n) || null);
@@ -206,24 +226,45 @@ async function rsvpSubmit(env, input) {
     const guestEmail = clip(answer.email, 200);
     if (guestEmail && !EMAIL.test(guestEmail)) return json({ error: `The email for one of your guests doesn't look right.` }, 400);
     if (guestEmail) await run(env, "UPDATE guests SET email = ? WHERE id = ?", guestEmail, guest.id);
+    // Guests invited to the rehearsal dinner answer for it too; declining the wedding
+    // declines the dinner. Anyone else's rehearsal answer is ignored.
+    if (guest.invite_rehearsal && answer.rsvp === "yes" && !["yes", "no"].includes(answer.rehearsal_rsvp)) {
+      return json({ error: "Let us know whether each person invited to the rehearsal dinner is coming to it." }, 400);
+    }
+    const rehearsal = guest.invite_rehearsal ? [answer.rsvp === "yes" ? answer.rehearsal_rsvp : "no"] : [];
+    const rehearsalSet = rehearsal.length ? ", rehearsal_rsvp = ?" : "";
     if (guest.plus_one_allowed) {
       const plusOne = answer.rsvp === "yes" && answer.plus_one_rsvp === "yes" ? "yes" : "no";
       const plusOneName = plusOne === "yes" ? clip(answer.plus_one_name, 200) : null;
       if (plusOne === "yes" && !plusOneName) return json({ error: "Tell us your guest's name." }, 400);
+      // A plus-one comes to the rehearsal dinner only with a host who is coming to it.
+      const plusOneDinner = guest.invite_rehearsal ? [plusOne === "yes" && rehearsal[0] === "yes" ? answer.plus_one_rehearsal_rsvp : "no"] : [];
+      if (plusOneDinner.length && !["yes", "no"].includes(plusOneDinner[0])) {
+        return json({ error: "Let us know whether your guest is joining you at the rehearsal dinner." }, 400);
+      }
       await run(
         env,
         `UPDATE guests SET rsvp = ?, dietary = ?, plus_one_rsvp = ?, plus_one_name = COALESCE(?, plus_one_name),
-                plus_one_dietary = ?, updated_at = datetime('now') WHERE id = ?`,
+                plus_one_dietary = ?${rehearsalSet}${plusOneDinner.length ? ", plus_one_rehearsal_rsvp = ?" : ""}, updated_at = datetime('now') WHERE id = ?`,
         answer.rsvp,
         clip(answer.dietary),
         plusOne,
         plusOneName,
         plusOne === "yes" ? clip(answer.plus_one_dietary) : null,
+        ...rehearsal,
+        ...plusOneDinner,
         guest.id
       );
     } else {
       // Any plus-one fields sent for a guest without one are ignored.
-      await run(env, "UPDATE guests SET rsvp = ?, dietary = ?, updated_at = datetime('now') WHERE id = ?", answer.rsvp, clip(answer.dietary), guest.id);
+      await run(
+        env,
+        `UPDATE guests SET rsvp = ?, dietary = ?${rehearsalSet}, updated_at = datetime('now') WHERE id = ?`,
+        answer.rsvp,
+        clip(answer.dietary),
+        ...rehearsal,
+        guest.id
+      );
     }
     answered++;
   }
@@ -242,7 +283,7 @@ async function rsvpSubmit(env, input) {
   const hasEvents = Boolean(await householdIcs(env, settings, householdId));
   return json({
     ok: true,
-    household: await householdForRsvp(env, householdId),
+    household: await householdForRsvp(env, householdId, settings),
     calendar_url: hasEvents ? `/api/public/calendar?t=${encodeURIComponent(await sign(env, { kind: "cal", h: householdId }, CALENDAR_TOKEN_TTL))}` : null,
   });
 }

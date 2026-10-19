@@ -134,7 +134,7 @@ function cleanGuest(input) {
     if (!PRIORITIES.includes(input.priority)) throw new Error(`Priority must be ${PRIORITIES.join(", ")}.`);
     patch.priority = input.priority;
   }
-  for (const key of ["rsvp", "plus_one_rsvp"]) {
+  for (const key of ["rsvp", "plus_one_rsvp", "rehearsal_rsvp", "plus_one_rehearsal_rsvp"]) {
     if (has(input, key)) {
       if (!RSVP_VALUES.includes(input[key])) throw new Error(`RSVP must be ${RSVP_VALUES.join(", ")}.`);
       patch[key] = input[key];
@@ -383,7 +383,7 @@ export async function handleAdminApi(route, request, env) {
         const marks = ids.map(() => "?").join(",");
         await run(
           env,
-          `UPDATE guests SET rsvp = 'pending', plus_one_rsvp = 'pending', plus_one_name = NULL, dietary = NULL,
+          `UPDATE guests SET rsvp = 'pending', plus_one_rsvp = 'pending', rehearsal_rsvp = 'pending', plus_one_rehearsal_rsvp = 'pending', plus_one_name = NULL, dietary = NULL,
                   plus_one_dietary = NULL, updated_at = datetime('now') WHERE household_id IN (${marks})`,
           ...ids
         );
@@ -489,7 +489,7 @@ export async function handleAdminApi(route, request, env) {
           if (!target) return json({ error: "No such household." }, 400);
           patch.household_id = target.id;
         }
-        const { sql, values } = updateClause(patch, [...GUEST_TEXT, ...GUEST_FLAGS, "side", "priority", "rsvp", "plus_one_rsvp", "sort_order", "household_id"]);
+        const { sql, values } = updateClause(patch, [...GUEST_TEXT, ...GUEST_FLAGS, "side", "priority", "rsvp", "plus_one_rsvp", "rehearsal_rsvp", "plus_one_rehearsal_rsvp", "sort_order", "household_id"]);
         if (sql) await run(env, `UPDATE guests SET ${sql}, updated_at = datetime('now') WHERE id = ?`, ...values, id);
         await markDirty(env);
         return json({ guest: await first(env, "SELECT * FROM guests WHERE id = ?", id) });

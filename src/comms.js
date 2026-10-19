@@ -52,6 +52,10 @@ const EMAIL = /^[^\s@<>"]+@[^\s@<>"]+\.[a-z]{2,}$/i;
 // box; every other ticked box must hold. Mirrors More filters on the Guests page.
 export const AUDIENCE = [
   ["rsvp", "RSVP", true, [["Coming", (g) => g.rsvp === "yes"], ["Awaiting reply", (g) => g.rsvp === "pending"], ["Not coming", (g) => g.rsvp === "no"]]],
+  ["rehearsal_rsvp", "Rehearsal dinner RSVP", true, [
+    ["Coming", (g) => g.invite_rehearsal && g.rehearsal_rsvp === "yes"],
+    ["Awaiting reply", (g) => g.invite_rehearsal && g.rehearsal_rsvp === "pending"],
+    ["Not coming", (g) => g.invite_rehearsal && g.rehearsal_rsvp === "no"]]],
   ["side", "Side", true, [["Bride", (g) => g.side === "Bride"], ["Groom", (g) => g.side === "Groom"], ["No side yet", (g) => !g.side]]],
   ["priority", "Priority", true, [["High", (g) => g.priority === "High"], ["Medium", (g) => g.priority === "Medium"], ["Low", (g) => g.priority === "Low"]]],
   ["invites", "Invited to", false, [["Ceremony", (g) => g.invite_ceremony], ["Reception", (g) => g.invite_reception], ["Rehearsal dinner", (g) => g.invite_rehearsal]]],

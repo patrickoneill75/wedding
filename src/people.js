@@ -17,6 +17,12 @@ function invitedTo(g) {
   return "Neither";
 }
 
+/** The rehearsal dinner RSVP, blank for anyone not invited to it. */
+function rehearsalAnswer(invited, code) {
+  if (!invited) return { rehearsal_rsvp: "", rehearsal_rsvp_code: "" };
+  return { rehearsal_rsvp: RSVP_TEXT[code] || code, rehearsal_rsvp_code: code };
+}
+
 /** People and their households. Two queries plus the seat lookup. */
 export async function loadPeople(env) {
   const guests = await all(
@@ -71,6 +77,7 @@ export async function loadPeople(env) {
       extended_family: Boolean(g.extended_family),
       notes: g.notes || "",
       guest_email: g.guest_email || "",
+      ...rehearsalAnswer(g.invite_rehearsal, g.rehearsal_rsvp),
       ...at(seat.guest),
     });
     if (g.plus_one_allowed) {
@@ -92,6 +99,7 @@ export async function loadPeople(env) {
         extended_family: false,
         notes: "",
         guest_email: "",
+        ...rehearsalAnswer(g.invite_rehearsal, g.plus_one_rehearsal_rsvp),
         ...at(seat.plus_one),
       });
     }
