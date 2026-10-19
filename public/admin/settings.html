@@ -21,6 +21,9 @@
   .basis-row .text { flex: 1 1 320px; font-size: 13px; color: var(--text-secondary); }
   .basis-row .text b { color: var(--text-primary); }
   #guest-count:target { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #users .tag { font-size: 11.5px; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 0 6px; margin: 0 4px 4px 0; display: inline-block; }
+  #users .tag.admin { color: var(--accent); border-color: var(--accent); }
+  .pages { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 14px; }
   h3.part { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 14px 0 8px; }
 </style>
 </head>
@@ -122,12 +125,25 @@
     <button type="submit" class="primary">Import</button>
     <p class="msg"></p>
   </form>
+
+  <div class="card" id="users">
+    <div class="row"><h2>Users</h2><span class="spacer"></span><button class="small" id="addUser">+ Add person</button></div>
+    <p class="desc">Who can sign in to the control panel with Google. An admin sees everything. A user sees only the pages
+      ticked for them, like a coordinator with Run of show, Seating and Reports. Page access keeps things tidy; it isn't a
+      vault, so only add people you trust with what those pages show.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Person</th><th>Type</th><th>Pages</th><th></th></tr></thead>
+        <tbody id="userRows"></tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <script type="module">
-import { api, initPage, h, field, check, formValues, setMsg, fmtDate } from "/admin/admin.js";
+import { api, initPage, h, field, check, formValues, setMsg, fmtDate, openDialog } from "/admin/admin.js";
 
-await initPage("settings.html");
+const me = await initPage("settings.html");
 let state = await api("/api/admin/settings");
 
 const DRINK_LABELS = {
@@ -479,6 +495,80 @@ const params = new URLSearchParams(location.search);
 if (params.get("error")) setMsg(driveMsg, params.get("error"), "err");
 if (params.get("drive") === "connected") setMsg(driveMsg, "Google Drive connected. Now pick a folder.", "ok");
 if (location.hash === "#drive") document.getElementById("drive").scrollIntoView();
+
+/* ------------------------------------------------------------------- users ---- */
+
+let usersData;
+
+async function loadUsers() {
+  usersData = await api("/api/admin/users");
+  const label = Object.fromEntries(usersData.pages.map((p) => [p.key, p.label.replace(/ \(.*\)$/, "")]));
+  const rows = [
+    ...usersData.owners.map((email) => h("tr", {},
+      h("td", {}, email, email === me.email.toLowerCase() ? h("span", { class: "muted" }, " (you)") : null),
+      h("td", {}, h("span", { class: "tag admin" }, "Owner")),
+      h("td", { class: "muted" }, "Everything"),
+      h("td", { class: "muted", style: "font-size:12px" }, "Set by the ADMIN_EMAILS secret"))),
+    ...usersData.users.map((u) => h("tr", { class: "clickable", onclick: () => editUser(u) },
+      h("td", {}, u.name ? h("div", {}, u.name) : null, h("div", { class: u.name ? "muted" : "" }, u.email)),
+      h("td", {}, h("span", { class: `tag${u.role === "admin" ? " admin" : ""}` }, u.role === "admin" ? "Admin" : "User")),
+      h("td", {}, u.role === "admin" ? h("span", { class: "muted" }, "Everything")
+        : u.pages.length ? u.pages.map((p) => h("span", { class: "tag" }, label[p] || p)) : h("span", { class: "muted" }, "No pages yet")),
+      h("td", { class: "num" }, h("button", { class: "small" }, "Edit")))),
+  ];
+  document.getElementById("userRows").replaceChildren(...rows);
+}
+
+function editUser(user) {
+  openDialog(user ? user.name || user.email : "Add a person", (close) => {
+    const msg = h("p", { class: "msg" });
+    const role = h("select", { onchange: () => { pageBox.hidden = role.value === "admin"; } },
+      h("option", { value: "user", selected: user?.role !== "admin" }, "User: only the pages ticked below"),
+      h("option", { value: "admin", selected: user?.role === "admin" }, "Admin: everything, including Settings and Users"));
+    const boxes = usersData.pages.map((p) => check(p.label, p.key, user?.pages?.includes(p.key)));
+    const pageBox = h("div", {}, h("h3", { style: "font-size:13.5px; margin:14px 0 4px" }, "Pages they can open"), h("div", { class: "pages" }, boxes));
+    pageBox.hidden = user?.role === "admin";
+    const emailField = field("Google account email", "email", { type: "email", value: user?.email || "", required: true, placeholder: "coordinator@gmail.com" });
+    if (user) emailField.querySelector("input").disabled = true;
+    const nameField = field("Name", "name", { value: user?.name || "", placeholder: "Jordan (coordinator)" });
+    const save = async () => {
+      const body = {
+        name: nameField.querySelector("input").value,
+        role: role.value,
+        pages: boxes.filter((b) => b.querySelector("input").checked).map((b) => b.querySelector("input").name),
+      };
+      try {
+        if (user) await api(`/api/admin/users/${encodeURIComponent(user.email)}`, { method: "PUT", body });
+        else await api("/api/admin/users", { method: "POST", body: { ...body, email: emailField.querySelector("input").value } });
+        close(true);
+        await loadUsers();
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    };
+    return h("div", {},
+      h("div", { class: "fields" }, emailField, nameField, h("label", { class: "field", style: "grid-column: 1 / -1" }, "Type", role)),
+      pageBox,
+      h("p", { class: "desc" }, "They sign in at this site's /admin/ with that Google account. Changes apply on their next click; removing them signs them out."),
+      h("div", { class: "row" },
+        h("button", { class: "primary", onclick: save }, user ? "Save" : "Add"),
+        user ? h("button", { class: "danger", onclick: async () => {
+          if (!confirm(`Remove ${user.email}? They can't sign in any more.`)) return;
+          try {
+            await api(`/api/admin/users/${encodeURIComponent(user.email)}`, { method: "DELETE" });
+            close(true);
+            await loadUsers();
+          } catch (error) {
+            setMsg(msg, error.message, "err");
+          }
+        } }, "Remove") : null),
+      msg);
+  });
+}
+
+document.getElementById("addUser").addEventListener("click", () => editUser(null));
+await loadUsers();
+if (location.hash === "#users") document.getElementById("users").scrollIntoView();
 </script>
 </body>
 </html>
