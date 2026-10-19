@@ -90,6 +90,9 @@ async function body(request) {
 
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const idList = (v) => (Array.isArray(v) ? v : []).map(Number).filter(Number.isInteger);
+// Ids go into the SQL as literals (they're integers): D1 allows only 100 bound
+// parameters a statement, and a bulk action can pick more households than that.
+const idSql = (ids) => ids.map((n) => String(Math.trunc(n))).join(",") || "0";
 const bool = (v) => (v === true || v === 1 || v === "1" || v === "true" || v === "on" ? 1 : 0);
 const textOrNull = (v) => {
   if (v === null || v === undefined) return null;
@@ -119,6 +122,9 @@ function cleanHousehold(input) {
   for (const key of HOUSEHOLD_FLAGS) if (has(input, key)) patch[key] = bool(input[key]);
   return patch;
 }
+
+/** A guest needs a first or last name: a blank one would still count in the budget. */
+const named = (g) => Boolean(String(g.first_name || "").trim() || String(g.last_name || "").trim());
 
 function cleanGuest(input) {
   const patch = Object.create(null);
@@ -381,17 +387,15 @@ export async function handleAdminApi(route, request, env) {
       if (parts[1] === "reset-rsvp" && method === "POST") {
         const ids = idList((await body(request)).ids);
         if (!ids.length) return json({ error: "Pick at least one household." }, 400);
-        const marks = ids.map(() => "?").join(",");
+        const marks = idSql(ids);
         await run(
           env,
           `UPDATE guests SET rsvp = 'pending', plus_one_rsvp = 'pending', rehearsal_rsvp = 'pending', plus_one_rehearsal_rsvp = 'pending', plus_one_name = NULL, dietary = NULL,
-                  plus_one_dietary = NULL, updated_at = datetime('now') WHERE household_id IN (${marks})`,
-          ...ids
+                  plus_one_dietary = NULL, updated_at = datetime('now') WHERE household_id IN (${marks})`
         );
         await run(
           env,
-          `UPDATE households SET rsvp_at = NULL, rsvp_message = NULL, updated_at = datetime('now') WHERE id IN (${marks})`,
-          ...ids
+          `UPDATE households SET rsvp_at = NULL, rsvp_message = NULL, updated_at = datetime('now') WHERE id IN (${marks})`
         );
         await markDirty(env);
         return json({ ok: true, reset: ids.length });
@@ -403,9 +407,8 @@ export async function handleAdminApi(route, request, env) {
         if (!ids.length) return json({ error: "Pick at least one household." }, 400);
         await run(
           env,
-          `UPDATE households SET ${input.field} = ?, updated_at = datetime('now') WHERE id IN (${ids.map(() => "?").join(",")})`,
-          bool(input.value),
-          ...ids
+          `UPDATE households SET ${input.field} = ?, updated_at = datetime('now') WHERE id IN (${idSql(ids)})`,
+          bool(input.value)
         );
         await markDirty(env);
         return json({ ok: true, updated: ids.length });
@@ -421,8 +424,10 @@ export async function handleAdminApi(route, request, env) {
           ...columns.map((c) => patch[c])
         );
         const householdId = result.meta.last_row_id;
-        for (const guest of Array.isArray(input.guests) ? input.guests : []) {
+        for (const [i, guest] of (Array.isArray(input.guests) ? input.guests : []).entries()) {
           const g = cleanGuest(guest);
+          if (!named(g)) continue; // a blank card left in the editor adds nobody
+          if (!has(g, "sort_order")) g.sort_order = i;
           const cols = Object.keys(g);
           await run(
             env,
@@ -458,9 +463,8 @@ export async function handleAdminApi(route, request, env) {
         if (!ids.length) return json({ error: "Pick at least one household." }, 400);
         const result = await run(
           env,
-          `UPDATE guests SET ${input.field} = ?, updated_at = datetime('now') WHERE household_id IN (${ids.map(() => "?").join(",")})`,
-          input.value ? 1 : 0,
-          ...ids
+          `UPDATE guests SET ${input.field} = ?, updated_at = datetime('now') WHERE household_id IN (${idSql(ids)})`,
+          input.value ? 1 : 0
         );
         await markDirty(env);
         return json({ ok: true, updated: result.meta.changes });
@@ -472,6 +476,12 @@ export async function handleAdminApi(route, request, env) {
           return json({ error: "Pick the household this guest belongs to." }, 400);
         }
         const g = cleanGuest(input);
+        if (!named(g)) return json({ error: "Give the guest a first or last name." }, 400);
+        // A guest added later goes after the household's others (imported guests are
+        // numbered across the whole sheet).
+        if (!has(g, "sort_order")) {
+          g.sort_order = (await first(env, "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM guests WHERE household_id = ?", householdId)).next;
+        }
         const cols = Object.keys(g);
         const result = await run(
           env,

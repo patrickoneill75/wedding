@@ -68,9 +68,11 @@ export async function buildExports(env) {
       rsvp: g.rsvp,
       dietary: g.dietary,
       plus_one_allowed: yesNo(g.plus_one_allowed),
-      plus_one_name: g.plus_one_name,
+      // A plus-one taken away keeps what was typed (it comes back if ticked again), but
+      // the export leaves it out.
+      plus_one_name: g.plus_one_allowed ? g.plus_one_name : "",
       plus_one_rsvp: g.plus_one_allowed ? g.plus_one_rsvp : "",
-      plus_one_dietary: g.plus_one_dietary,
+      plus_one_dietary: g.plus_one_allowed ? g.plus_one_dietary : "",
       table: seat.guest?.table ?? g.table_name,
       seat: seat.guest?.seat,
       plus_one_table: seat.plus_one?.table,

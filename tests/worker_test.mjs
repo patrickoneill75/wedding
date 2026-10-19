@@ -320,7 +320,7 @@ test("spreadsheet import brings in households, guests, budget lines and constant
   assert.equal(jordan.guests.length, 1, 'the "Guest Guest Jordan Sample" placeholder row is not imported as a person');
   assert.equal(jordan.guests[0].plus_one_allowed, 1, "the placeholder becomes a plus-one on its host");
   assert.equal(jordan.guests[0].plus_one_name, null, "with no name, so the guest types it in when they RSVP");
-  assert.deepEqual(guests.counts.invites, { ceremony: 2, reception: 4 });
+  assert.deepEqual(guests.counts.invites, { ceremony: 2, reception: 5 }, "Jordan's plus-one counts for the reception, as in Head count");
   assert.equal(guests.counts.weighted, 4); // ceil(0.9*3 + 0.6)
 
   const { expenses } = (await api("/api/admin/expenses")).data;
@@ -495,6 +495,59 @@ test('upgrading a database turns "Guest Guest <host>" rows into a nameless plus-
   assert.ok(rows.every((r) => r.plus_one_name === null));
 });
 
+// Bug guard: bulk actions bound one SQL parameter per household, and D1 refuses more
+// than 100, so selecting 100+ households failed.
+test("bulk actions work on more than 100 households", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const prepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => {
+    const statement = prepare(sql);
+    const bind = statement.bind.bind(statement);
+    statement.bind = (...params) => {
+      if (params.length > 100) throw new Error("too many SQL variables");
+      return bind(...params);
+    };
+    return statement;
+  };
+  const rows = Array.from({ length: 120 }, (_, i) => `('H-${i + 1}', 'Household ${i + 1}')`).join(", ");
+  await call(env, "/api/auth/me");
+  env.DB.db.exec(`INSERT INTO households (code, display_name) VALUES ${rows}`);
+  env.DB.db.exec("INSERT INTO guests (household_id, first_name, last_name) SELECT id, 'G', 'Test' FROM households");
+  const ids = env.DB.db.prepare("SELECT id FROM households").all().map((r) => r.id);
+  assert.equal((await api("/api/admin/households/bulk", { method: "POST", body: { ids, field: "invite_sent", value: true } })).status, 200);
+  assert.equal((await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: ids, field: "invite_ceremony", value: true } })).status, 200);
+  assert.equal((await api("/api/admin/households/reset-rsvp", { method: "POST", body: { ids } })).status, 200);
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM households WHERE invite_sent = 1").get().n, 120);
+});
+
+// Bug guards: a blank guest card saved a nameless guest who counted in the budget; a
+// guest added later jumped ahead of imported ones; the import put a row with no
+// Household ID into another family's household, lost a US ZIP's leading zero when the
+// country was filled in, and dropped "groom" or "low" typed in lower case.
+test("guests: no nameless guests, added guests go last, and the import keeps households, ZIPs and case straight", async () => {
+  const { parseGuests } = await import("../src/importer.js");
+  const env = makeEnv();
+  const api = await adminClient(env);
+  await api("/api/admin/import", { method: "POST", form: fixtureForm({ guests: 1 }) });
+  const h3 = (await api("/api/admin/guests")).data.households.find((h) => h.code === "H-003");
+  assert.equal((await api("/api/admin/guests", { method: "POST", body: { household_id: h3.id, first_name: " ", last_name: "" } })).status, 400);
+  await api("/api/admin/guests", { method: "POST", body: { household_id: h3.id, first_name: "Newer", last_name: "Test" } });
+  const names = (await api("/api/admin/guests")).data.households.find((h) => h.code === "H-003").guests.map((g) => g.first_name);
+  assert.equal(names[names.length - 1], "Newer");
+  const made = await api("/api/admin/households", { method: "POST", body: { display_name: "Blank card", guests: [{ first_name: "Ann" }, { first_name: "", last_name: "" }] } });
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM guests WHERE household_id = ?").get(made.data.id).n, 1);
+
+  const sheet = new Map(Object.entries({
+    A1: { v: "Household ID" }, B1: { v: "First" }, C1: { v: "Last" }, D1: { v: "Full Name(s)" }, E1: { v: "Zip" }, F1: { v: "Country" }, G1: { v: "Priority" }, H1: { v: "Bride/Groom" },
+    B2: { v: "Ann" }, C2: { v: "Blank" }, D2: { v: "Ann Blank" }, E2: { v: 2134 }, F2: { v: "USA" }, G2: { v: "low" }, H2: { v: "groom" },
+    A3: { v: "H-001" }, B3: { v: "Bo" }, C3: { v: "Typed" }, D3: { v: "Bo Typed" },
+  }));
+  const parsed = parseGuests(sheet);
+  assert.deepEqual(parsed.guests.map((g) => [g.first_name, g.household_code, g.priority, g.side]), [["Ann", "H-002", "Low", "Groom"], ["Bo", "H-001", "High", null]]);
+  assert.equal(parsed.households.find((h) => h.code === "H-002").zip, "02134");
+});
+
 test("bulk ceremony/reception switches change every guest in the chosen households, and nothing else", async () => {
   const env = makeEnv();
   const api = await adminClient(env);
@@ -505,10 +558,10 @@ test("bulk ceremony/reception switches change every guest in the chosen househol
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal(r.data.updated, 3);
   let counts = (await api("/api/admin/guests")).data.counts;
-  assert.deepEqual(counts.invites, { ceremony: 3, reception: 4 });
+  assert.deepEqual(counts.invites, { ceremony: 4, reception: 5 }, "plus-ones included");
   await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: ids, field: "invite_reception", value: false } });
   counts = (await api("/api/admin/guests")).data.counts;
-  assert.deepEqual(counts.invites, { ceremony: 3, reception: 1 }, "ceremony and reception switch independently");
+  assert.deepEqual(counts.invites, { ceremony: 4, reception: 1 }, "ceremony and reception switch independently");
   const bad = await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: ids, field: "invite_ceremony", value: "yes" } });
   assert.equal(bad.status, 400, "value must be a real true/false");
   const badField = await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: ids, field: "rsvp", value: true } });

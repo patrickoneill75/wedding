@@ -61,7 +61,7 @@ A Cloudflare Worker with two sides:
     and Seating.
 
 Everything syncs to a Google Drive folder as CSV files (guests, expenses, payments,
-price history, planning numbers).
+price history, planning numbers, vendors).
 
 ## How costs work
 

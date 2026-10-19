@@ -70,6 +70,10 @@ const CONSTANT_SOURCES = {
   C33: "guests",
 };
 
+const US = /^(us|usa|u\.s\.a?\.?|united states( of america)?|america)$/i;
+/** "groom" -> "Groom": the spelling the app uses, whatever the case typed. */
+const canonical = (value, options) => options.find((o) => o.toLowerCase() === String(value || "").trim().toLowerCase());
+
 export function parseGuests(sheet) {
   const rows = sheetRows(sheet);
   if (!rows.length) return { households: [], guests: [] };
@@ -81,11 +85,21 @@ export function parseGuests(sheet) {
   const households = new Map();
   const guests = [];
   let order = 0;
+  // A row with no Household ID gets a code of its own that no row uses, never another
+  // family's (counting households could land on one that's typed further down).
+  const taken = new Set(rows.slice(1).map(([, row]) => text(get(row, "household id"))).filter(Boolean));
+  let nextCode = 0;
+  const freshCode = () => {
+    let code;
+    do code = `H-${String(++nextCode).padStart(3, "0")}`; while (taken.has(code));
+    taken.add(code);
+    return code;
+  };
   for (const [, row] of rows.slice(1)) {
     const firstName = text(get(row, "first"));
     const lastName = text(get(row, "last"));
     if (!firstName && !lastName) continue;
-    const code = text(get(row, "household id")) || `H-${String(households.size + 1).padStart(3, "0")}`;
+    const code = text(get(row, "household id")) || freshCode();
     if (!households.has(code)) households.set(code, { code });
     const household = households.get(code);
     const display = text(get(row, "full name(s)"));
@@ -95,7 +109,8 @@ export function parseGuests(sheet) {
       const country = text(get(row, "country"));
       if (typeof zip?.v === "number") {
         zipText = String(Math.round(zip.v));
-        if (!country && zipText.length < 5) zipText = zipText.padStart(5, "0");
+        // A US ZIP that a spreadsheet stored as a number lost its leading zero.
+        if ((!country || US.test(country)) && zipText.length < 5) zipText = zipText.padStart(5, "0");
       }
       Object.assign(household, {
         display_name: display,
@@ -116,8 +131,8 @@ export function parseGuests(sheet) {
       household_code: code,
       first_name: firstName,
       last_name: lastName,
-      side: ["Bride", "Groom"].includes(side) ? side : null,
-      priority: ["High", "Medium", "Low"].includes(priority) ? priority : "High",
+      side: canonical(side, ["Bride", "Groom"]) || null,
+      priority: canonical(priority, ["High", "Medium", "Low"]) || "High",
       wedding_party: flag(get(row, "wedding party?")),
       immediate_family: flag(get(row, "immediate family")),
       extended_family: flag(get(row, "extended")),

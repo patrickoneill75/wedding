@@ -223,6 +223,9 @@ export function guestCounts(guests, settings) {
     if (guest.plus_one_allowed) {
       plusOnesAllowed++;
       invited++;
+      // A plus-one goes where their guest goes, as in the Head count report.
+      if (guest.invite_ceremony) invites.ceremony++;
+      if (guest.invite_reception) invites.reception++;
       weightedSum += weightOf(guest.priority);
       tally(guest.plus_one_rsvp);
     }
