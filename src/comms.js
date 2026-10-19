@@ -5,11 +5,19 @@
  *
  *   GET    comms                     emails with their send counts, Gmail status, the
  *                                    audience choices, fill-ins, calendar events, RSVP page
- *   POST   comms/messages            { subject, body, audience, attach_ics } -> a draft
+ *   POST   comms/messages            { subject, body, format, design, audience, attach_ics } -> a
+ *                                    draft. format "html" is the rich-text editor's (cleaned
+ *                                    by src/email_html.js), "text" the older plain text;
+ *                                    design "wedding" or "plain"
  *   PUT    comms/messages/:id        change a draft, scheduled or automatic email
  *   DELETE comms/messages/:id
  *   POST   comms/audience            { audience } -> who would get it, and who has no email
- *   POST   comms/messages/:id/test   { to? } send it now to one address (default: you)
+ *   POST   comms/messages/:id/test   { to?, as? } send it now to one address (default: you),
+ *                                    filled in as a made-up guest (TEST_GUESTS) or the first
+ *                                    household in the audience
+ *   POST   comms/preview             { subject, body, format, design, attach_ics, as } -> the
+ *                                    email's HTML, without sending
+ *   PUT    comms/email-design        { header_image, footer_note } for the wedding design
  *   POST   comms/messages/:id/send   send to everyone in the audience now
  *   POST   comms/messages/:id/schedule  { send_at: "YYYY-MM-DDTHH:MM" } in the wedding's time zone
  *   POST   comms/messages/:id/automate  { on } send to each household after it RSVPs
@@ -38,6 +46,8 @@ import { loadSettings } from "./store.js";
 import { DEFAULT_SETTINGS } from "./calc.js";
 import { sqlValue } from "./importer.js";
 import { buildIcs, cleanEvents, eventsFor, validTimeZone, zonedTime } from "./calendar.js";
+import { DESIGNS, htmlToText, renderEmail, safeHref, sanitizeHtml, textToContent, themeFrom } from "./email_html.js";
+import { RSVP_COLOR } from "./site.js";
 import { disconnectGmail, gmailStatus, GmailConnectionError, openGmail, sendGmail } from "./gmail.js";
 
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
@@ -145,7 +155,10 @@ async function fillInsFor(env, origin, settings, household, guests) {
     g.rsvp === "yes" ? `${g.first_name} ${g.last_name}`.trim() : null,
     g.plus_one_allowed && g.plus_one_rsvp === "yes" && g.plus_one_name ? g.plus_one_name : null,
   ]).filter(Boolean);
-  const token = household.id ? await sign(env, { kind: "cal", h: household.id }, CALENDAR_TOKEN_TTL) : "sample";
+  // A test email's made-up household downloads the invite its kind of guest would get.
+  const token = household.id
+    ? await sign(env, { kind: "cal", h: household.id }, CALENDAR_TOKEN_TTL)
+    : await sign(env, { kind: "cal", test: household.test || "both" }, CALENDAR_TOKEN_TTL);
   return {
     greeting: household.greeting || household.display_name || "friends",
     household: household.display_name || "",
@@ -161,43 +174,99 @@ async function fillInsFor(env, origin, settings, household, guests) {
 }
 
 /** {name} becomes its value; anything in braces that isn't a fill-in is left as typed. */
-export function fillIn(template, values) {
-  return String(template).replace(/\{([a-z_]+)\}/g, (whole, name) => (has(values, name) ? values[name] : whole));
+export function fillIn(template, values, { html = false } = {}) {
+  const put = html ? (v) => String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") : String;
+  return String(template).replace(/\{([a-z_]+)\}/g, (whole, name) => (has(values, name) ? put(values[name]) : whole));
+}
+
+/* ---------------------------------------------------------------- test guests ---- */
+
+// Made-up households for test emails and previews, one per kind of guest: what they're
+// invited to and how they answered decide their calendar invite and fill-ins.
+const testGuest = (first, flags) => ({ first_name: first, last_name: "Sample", rsvp: "yes", invite_ceremony: 0, invite_reception: 0, invite_rehearsal: 0, rehearsal_rsvp: "pending", ...flags });
+export const TEST_GUESTS = {
+  both: { label: "RSVP'd yes: ceremony and reception", flags: { invite_ceremony: 1, invite_reception: 1 } },
+  ceremony: { label: "RSVP'd yes: ceremony", flags: { invite_ceremony: 1 } },
+  reception: { label: "RSVP'd yes: reception", flags: { invite_reception: 1 } },
+  rehearsal: { label: "RSVP'd yes: reception and rehearsal dinner", flags: { invite_reception: 1, invite_rehearsal: 1, rehearsal_rsvp: "yes" } },
+  declined: { label: "RSVP'd no", flags: { invite_ceremony: 1, invite_reception: 1, rsvp: "no" } },
+};
+export function testHousehold(kind) {
+  const flags = (has(TEST_GUESTS, kind) ? TEST_GUESTS[kind] : TEST_GUESTS.both).flags;
+  return {
+    household: { id: 0, test: has(TEST_GUESTS, kind) ? kind : "both", greeting: "Jane and John", display_name: "Jane and John Sample", email: "jane@example.com" },
+    guests: [testGuest("Jane", flags), testGuest("John", flags)],
+  };
+}
+
+/** The wedding website's colors and font, for the wedding design. One query. */
+async function emailTheme(env, settings) {
+  const page = await first(env, "SELECT html FROM site_pages WHERE path = '/'");
+  return themeFrom(page?.html, settings.rsvp_button_color || RSVP_COLOR);
 }
 
 const originOf = (env, request) => env.PUBLIC_URL || (request ? new URL(request.url).origin : "");
 
-/** The .ics for a household, or null when it gets no events. */
-export async function householdIcs(env, settings, householdId) {
-  const [entry] = await loadHouseholds(env, [householdId]);
-  if (!entry) return null;
-  const events = eventsFor(settings.calendar_events, entry.guests);
+/** The .ics for these guests, or null when they get no events. */
+export function icsFor(env, settings, guests) {
+  const events = eventsFor(settings.calendar_events, guests);
   if (!events.length) return null;
   return buildIcs(events, { timeZone: settings.time_zone, host: hostOf(env), name: settings.couple_names || "Our wedding" });
 }
+
+/** The .ics for a household, or null when it gets no events. */
+export async function householdIcs(env, settings, householdId) {
+  const [entry] = await loadHouseholds(env, [householdId]);
+  return entry ? icsFor(env, settings, entry.guests) : null;
+}
 const hostOf = (env) => (env.PUBLIC_URL ? new URL(env.PUBLIC_URL).hostname : "wedding.local");
 
-/** One email for one household, ready for sendGmail. */
-async function compose(env, origin, settings, message, household, guests, recipients) {
+/**
+ * One email for one household, ready for sendGmail. `events` lists the calendar
+ * invite's events when one is attached. `theme` is from emailTheme (wedding design).
+ */
+async function compose(env, origin, settings, message, household, guests, recipients, theme) {
   const values = await fillInsFor(env, origin, settings, household, guests);
   const attachments = [];
-  if (message.attach_ics) {
-    const events = eventsFor(settings.calendar_events, guests);
-    if (events.length) {
-      attachments.push({
-        filename: "wedding.ics",
-        type: "text/calendar; charset=UTF-8; method=PUBLISH",
-        content: buildIcs(events, { timeZone: settings.time_zone, host: hostOf(env), name: settings.couple_names || "Our wedding" }),
-      });
-    }
+  const events = message.attach_ics ? eventsFor(settings.calendar_events, guests) : [];
+  if (events.length) {
+    // application/ics, not text/calendar: Gmail treats a text/calendar part as an
+    // invitation to answer and doesn't list it as a file the guest can open.
+    attachments.push({
+      filename: "wedding.ics",
+      type: "application/ics",
+      content: buildIcs(events, { timeZone: settings.time_zone, host: hostOf(env), name: settings.couple_names || "Our wedding" }),
+    });
   }
+  const subject = fillIn(message.subject, values);
+  const content = message.format === "html" ? fillIn(message.body, values, { html: true }) : textToContent(fillIn(message.body, values));
+  const html = message.format === "html" || message.design === "wedding"
+    ? renderEmail({
+        design: message.design,
+        subject,
+        content,
+        theme,
+        details: {
+          couple: settings.couple_names,
+          date: longDate(settings.wedding_date),
+          venue: settings.venue,
+          site: origin ? `${origin}/` : "",
+          rsvp: settings.rsvp_open && origin ? `${origin}/rsvp/` : "",
+          headerImage: settings.email_design.header_image,
+          footerNote: settings.email_design.footer_note,
+          calendar: events.length > 0,
+        },
+      })
+    : null;
   return {
     fromName: settings.email_from_name,
     to: recipients.to,
     cc: recipients.cc,
-    subject: fillIn(message.subject, values),
-    text: fillIn(message.body, values),
+    subject,
+    text: message.format === "html" ? htmlToText(content) : fillIn(message.body, values),
+    html,
     attachments,
+    events,
   };
 }
 
@@ -242,7 +311,7 @@ export async function queueAfterRsvp(env, householdId) {
 export async function sendQueued(env, { limit = SEND_BATCH, origin = "" } = {}) {
   const queued = await all(
     env,
-    `SELECT s.id, s.message_id, s.household_id, s.attempts, m.subject, m.body, m.attach_ics
+    `SELECT s.id, s.message_id, s.household_id, s.attempts, m.subject, m.body, m.attach_ics, m.format, m.design
        FROM comm_sends s JOIN comm_messages m ON m.id = s.message_id
       WHERE s.status = 'queued' ORDER BY s.id LIMIT ?`,
     limit
@@ -256,6 +325,7 @@ export async function sendQueued(env, { limit = SEND_BATCH, origin = "" } = {}) 
     throw error;
   }
   const settings = await loadSettings(env);
+  const theme = await emailTheme(env, settings);
   const entries = new Map((await loadHouseholds(env, [...new Set(queued.map((q) => q.household_id))])).map((e) => [e.household.id, e]));
   const sent = [];
   const failed = [];
@@ -268,7 +338,7 @@ export async function sendQueued(env, { limit = SEND_BATCH, origin = "" } = {}) 
       continue;
     }
     try {
-      const email = await compose(env, origin || originOf(env), settings, item, entry.household, entry.guests, recipients);
+      const email = await compose(env, origin || originOf(env), settings, item, entry.household, entry.guests, recipients, theme);
       await sendGmail(env, session, email);
       sent.push(item);
     } catch (error) {
@@ -322,11 +392,26 @@ export async function processComms(env) {
 function cleanMessage(input) {
   const patch = Object.create(null);
   if (has(input, "subject")) patch.subject = String(input.subject ?? "").replace(/[\r\n]+/g, " ").trim().slice(0, 300);
-  if (has(input, "body")) patch.body = String(input.body ?? "").replace(/\r\n/g, "\n").slice(0, 20000);
+  if (has(input, "format")) {
+    if (!["html", "text"].includes(input.format)) throw new Error("Format must be html or text.");
+    patch.format = input.format;
+  }
+  if (has(input, "design")) {
+    if (!DESIGNS.includes(input.design)) throw new Error(`Design must be ${DESIGNS.join(" or ")}.`);
+    patch.design = input.design;
+  }
+  if (has(input, "body")) {
+    const body = String(input.body ?? "").replace(/\r\n/g, "\n").slice(0, 60000);
+    // The rich-text editor's HTML keeps only the tags an email needs (src/email_html.js).
+    patch.body = (patch.format ?? input.current_format) === "html" ? sanitizeHtml(body) : body;
+  }
   if (has(input, "audience")) patch.audience = JSON.stringify(cleanAudience(input.audience));
   if (has(input, "attach_ics")) patch.attach_ics = input.attach_ics ? 1 : 0;
   return patch;
 }
+
+/** A body is empty when it has no words: "<p><br></p>" from a cleared editor counts. */
+const isBlank = (message) => !(message.format === "html" ? htmlToText(message.body) : message.body).trim();
 
 async function listMessages(env) {
   const messages = await all(env, "SELECT * FROM comm_messages ORDER BY CASE status WHEN 'draft' THEN 0 ELSE 1 END, COALESCE(send_at, updated_at) DESC, id DESC");
@@ -351,10 +436,36 @@ async function overview(env) {
     email_from_name: settings.email_from_name,
     rsvp: { rsvp_open: settings.rsvp_open, rsvp_deadline: settings.rsvp_deadline, rsvp_intro: settings.rsvp_intro, page: settings.rsvp_page },
     defaults_page: DEFAULT_SETTINGS.rsvp_page,
+    email_design: settings.email_design,
+    test_guests: Object.entries(TEST_GUESTS).map(([key, t]) => ({ key, label: t.label })),
   };
 }
 
 const EDITABLE = ["draft", "scheduled", "automated"];
+
+/**
+ * Who a test email or preview is filled in as: a made-up guest of the kind picked
+ * (TEST_GUESTS), or by default the first household in the email's audience.
+ */
+async function testSample(env, message, kind) {
+  const audience = cleanAudience(JSON.parse(message.audience || "{}"));
+  if (has(TEST_GUESTS, kind)) {
+    const sample = testHousehold(kind);
+    return { sample, label: `a made-up guest (${TEST_GUESTS[kind].label})`, inAudience: inAudience(sample.household, sample.guests, audience) };
+  }
+  const entry = (await loadHouseholds(env)).find((e) => inAudience(e.household, e.guests, audience));
+  return entry
+    ? { sample: entry, label: entry.household.display_name, inAudience: true }
+    : { sample: testHousehold("both"), label: "a made-up household (nobody is in the audience yet)", inAudience: false };
+}
+
+/** What happened to the calendar invite, in words, for a test or preview. */
+function calendarNote(message, settings, events) {
+  if (!message.attach_ics) return "No calendar invite: the box to attach it isn't ticked.";
+  if (!settings.calendar_events.length) return "No calendar invite: there are no events yet. Add them on the Calendar invite tab.";
+  if (!events.length) return "No calendar invite: this guest gets none of the events (they declined, or aren't invited to any).";
+  return `Calendar invite attached with ${events.map((e) => e.title || "an untitled event").join(", ")}.`;
+}
 
 export async function handleComms(parts, method, request, env, body, user) {
   const [, section, rawId, action] = parts;
@@ -368,9 +479,11 @@ export async function handleComms(parts, method, request, env, body, user) {
     const patch = cleanMessage(await body(request));
     const result = await run(
       env,
-      "INSERT INTO comm_messages (subject, body, audience, attach_ics, created_by) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO comm_messages (subject, body, format, design, audience, attach_ics, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
       patch.subject ?? "",
       patch.body ?? "",
+      patch.format ?? "text",
+      patch.design ?? "plain",
       patch.audience ?? "{}",
       patch.attach_ics ?? 0,
       user.email
@@ -381,7 +494,12 @@ export async function handleComms(parts, method, request, env, body, user) {
   if (section === "messages" && id && !action) {
     if (method === "PUT") {
       if (!EDITABLE.includes(message.status)) throw new Error("This email has been sent; duplicate it to send a new version.");
-      const patch = cleanMessage(await body(request));
+      const input = await body(request);
+      const patch = cleanMessage({ ...input, current_format: message.format });
+      // Switching format without a new body converts the one on file.
+      if (patch.format && patch.format !== message.format && !has(patch, "body")) {
+        patch.body = patch.format === "html" ? textToContent(message.body) : htmlToText(message.body);
+      }
       const columns = Object.keys(patch);
       if (columns.length) await run(env, `UPDATE comm_messages SET ${columns.map((c) => `${c} = ?`).join(", ")}, updated_at = datetime('now') WHERE id = ?`, ...columns.map((c) => patch[c]), id);
       return json(await overview(env));
@@ -419,20 +537,17 @@ export async function handleComms(parts, method, request, env, body, user) {
     const input = await body(request);
     const check = () => {
       if (!message.subject.trim()) throw new Error("Give the email a subject.");
-      if (!message.body.trim()) throw new Error("Write the email first.");
+      if (isBlank(message)) throw new Error("Write the email first.");
     };
     if (action === "test") {
       check();
       const to = String(input.to || user.email).trim();
       if (!EMAIL.test(to)) throw new Error("That test address doesn't look like an email address.");
       const settings = await loadSettings(env);
-      // The fill-ins come from the first household in the audience, or a sample.
-      const audience = cleanAudience(JSON.parse(message.audience || "{}"));
-      const entry = (await loadHouseholds(env)).find((e) => inAudience(e.household, e.guests, audience));
-      const sample = entry || { household: { id: 0, greeting: "Jane and John", display_name: "Jane and John Sample" }, guests: [{ first_name: "Jane", last_name: "Sample", rsvp: "yes", invite_ceremony: 1, invite_reception: 1 }] };
-      const email = await compose(env, originOf(env, request), settings, { ...message, subject: `[Test] ${message.subject}` }, sample.household, sample.guests, { to: [to], cc: [] });
+      const { sample, label, inAudience: matches } = await testSample(env, message, input.as);
+      const email = await compose(env, originOf(env, request), settings, { ...message, subject: `[Test] ${message.subject}` }, sample.household, sample.guests, { to: [to], cc: [] }, await emailTheme(env, settings));
       await sendGmail(env, await openGmail(env), email);
-      return json({ ok: true, to, sample: entry ? entry.household.display_name : "a made-up household" });
+      return json({ ok: true, to, sample: label, in_audience: matches, calendar: calendarNote(message, settings, email.events) });
     }
     if (action === "send") {
       check();
@@ -469,6 +584,25 @@ export async function handleComms(parts, method, request, env, body, user) {
       if (message.status === "scheduled") await run(env, "UPDATE comm_messages SET status = 'draft', send_at = NULL, updated_at = datetime('now') WHERE id = ?", id);
       return json(await overview(env));
     }
+  }
+
+  // The email as it would look, without saving or sending: the editor's Preview.
+  if (section === "preview" && method === "POST") {
+    const input = await body(request);
+    const patch = cleanMessage({ format: "html", design: "wedding", ...input });
+    const draft = { subject: "", body: "", audience: "{}", attach_ics: 0, ...patch };
+    const settings = await loadSettings(env);
+    const { sample, label, inAudience: matches } = await testSample(env, draft, input.as);
+    const email = await compose(env, originOf(env, request), settings, draft, sample.household, sample.guests, { to: [sample.household.email || "guest@example.com"], cc: [] }, await emailTheme(env, settings));
+    return json({ subject: email.subject, html: email.html, text: email.text, sample: label, in_audience: matches, calendar: calendarNote(draft, settings, email.events) });
+  }
+
+  if (section === "email-design" && method === "PUT") {
+    const input = await body(request);
+    const image = String(input.header_image ?? "").trim();
+    if (image && !(safeHref(image) || "").startsWith("https://")) throw new Error("The header photo needs a link that starts with https://.");
+    await setSetting(env, "email_design", { header_image: image.slice(0, 1000), footer_note: String(input.footer_note ?? "").trim().slice(0, 300) });
+    return json(await overview(env));
   }
 
   if (section === "calendar" && method === "PUT") {

@@ -16,6 +16,8 @@
  *                          dinner) and, for a household with a rehearsal dinner guest,
  *                          when and where it is, plus a signed token good for two hours.
  *   POST rsvp/submit       { token, guests: [...], email, message }
+ *   While RSVPs are closed these answer only a signed-in admin, as a preview: submit
+ *   then checks the answers but saves nothing and sends no emails.
  *   A guest can only answer for their own household (the token names it), and a
  *   plus-one is only accepted for a guest who was given one, and a rehearsal dinner
  *   answer only from a guest invited to it.
@@ -33,13 +35,13 @@
  *                             records the payment by itself, so no amount is needed.
  */
 
-import { json, requirePage, sign, verify } from "./auth.js";
+import { currentUser, json, requirePage, sign, verify } from "./auth.js";
 import { all, first, markDirty, run } from "./db.js";
 import { STATUSES, STATUS_LABELS } from "./calc.js";
 import { addPayment, createExpense, loadContext, loadSettings, listExpenses, listVendors, updateExpense } from "./store.js";
 import { uploadReceipt } from "./google.js";
 import { intakeTurn, payerFor } from "./intake.js";
-import { householdIcs, queueAfterRsvp } from "./comms.js";
+import { householdIcs, icsFor, queueAfterRsvp, testHousehold } from "./comms.js";
 
 export { payerFor };
 
@@ -206,7 +208,12 @@ async function rsvpLookup(env, input) {
   return json({ matches });
 }
 
-async function rsvpSubmit(env, input) {
+/**
+ * Saves a household's RSVP. A preview (an admin trying the page while RSVPs are closed)
+ * runs every check but saves nothing and queues no emails; it answers with the
+ * household as it would look.
+ */
+async function rsvpSubmit(env, input, { preview = false } = {}) {
   const token = await verify(env, input.token);
   if (!token || token.kind !== "rsvp") return json({ error: "This RSVP page expired. Look up your name again." }, 400);
   const householdId = token.h;
@@ -217,82 +224,90 @@ async function rsvpSubmit(env, input) {
   const byId = new Map(members.map((m) => [m.id, m]));
   const answers = Array.isArray(input.guests) ? input.guests : [];
   const clip = (v, n = 500) => (v == null ? null : String(v).trim().slice(0, n) || null);
-  let answered = 0;
+  // Each guest's new values, checked in full before anything is written.
+  const changes = new Map();
   for (const answer of answers) {
     const guest = byId.get(Number(answer?.id));
     if (!guest) continue;
     if (!["yes", "no"].includes(answer.rsvp)) return json({ error: "Let us know whether each person is coming." }, 400);
+    const set = { rsvp: answer.rsvp, dietary: clip(answer.dietary) };
     // A guest's own email is optional; a blank one leaves what's on file.
     const guestEmail = clip(answer.email, 200);
     if (guestEmail && !EMAIL.test(guestEmail)) return json({ error: `The email for one of your guests doesn't look right.` }, 400);
-    if (guestEmail) await run(env, "UPDATE guests SET email = ? WHERE id = ?", guestEmail, guest.id);
+    if (guestEmail) set.email = guestEmail;
     // Guests invited to the rehearsal dinner answer for it too; declining the wedding
     // declines the dinner. Anyone else's rehearsal answer is ignored.
-    if (guest.invite_rehearsal && answer.rsvp === "yes" && !["yes", "no"].includes(answer.rehearsal_rsvp)) {
-      return json({ error: "Let us know whether each person invited to the rehearsal dinner is coming to it." }, 400);
+    if (guest.invite_rehearsal) {
+      if (answer.rsvp === "yes" && !["yes", "no"].includes(answer.rehearsal_rsvp)) {
+        return json({ error: "Let us know whether each person invited to the rehearsal dinner is coming to it." }, 400);
+      }
+      set.rehearsal_rsvp = answer.rsvp === "yes" ? answer.rehearsal_rsvp : "no";
     }
-    const rehearsal = guest.invite_rehearsal ? [answer.rsvp === "yes" ? answer.rehearsal_rsvp : "no"] : [];
-    const rehearsalSet = rehearsal.length ? ", rehearsal_rsvp = ?" : "";
+    // Any plus-one fields sent for a guest without one are ignored.
     if (guest.plus_one_allowed) {
       const plusOne = answer.rsvp === "yes" && answer.plus_one_rsvp === "yes" ? "yes" : "no";
       const plusOneName = plusOne === "yes" ? clip(answer.plus_one_name, 200) : null;
       if (plusOne === "yes" && !plusOneName) return json({ error: "Tell us your guest's name." }, 400);
+      set.plus_one_rsvp = plusOne;
+      // A blank name leaves a preloaded one in place.
+      if (plusOneName) set.plus_one_name = plusOneName;
+      set.plus_one_dietary = plusOne === "yes" ? clip(answer.plus_one_dietary) : null;
       // A plus-one comes to the rehearsal dinner only with a host who is coming to it.
-      const plusOneDinner = guest.invite_rehearsal ? [plusOne === "yes" && rehearsal[0] === "yes" ? answer.plus_one_rehearsal_rsvp : "no"] : [];
-      if (plusOneDinner.length && !["yes", "no"].includes(plusOneDinner[0])) {
-        return json({ error: "Let us know whether your guest is joining you at the rehearsal dinner." }, 400);
+      if (guest.invite_rehearsal) {
+        const dinner = plusOne === "yes" && set.rehearsal_rsvp === "yes" ? answer.plus_one_rehearsal_rsvp : "no";
+        if (!["yes", "no"].includes(dinner)) return json({ error: "Let us know whether your guest is joining you at the rehearsal dinner." }, 400);
+        set.plus_one_rehearsal_rsvp = dinner;
       }
-      await run(
-        env,
-        `UPDATE guests SET rsvp = ?, dietary = ?, plus_one_rsvp = ?, plus_one_name = COALESCE(?, plus_one_name),
-                plus_one_dietary = ?${rehearsalSet}${plusOneDinner.length ? ", plus_one_rehearsal_rsvp = ?" : ""}, updated_at = datetime('now') WHERE id = ?`,
-        answer.rsvp,
-        clip(answer.dietary),
-        plusOne,
-        plusOneName,
-        plusOne === "yes" ? clip(answer.plus_one_dietary) : null,
-        ...rehearsal,
-        ...plusOneDinner,
-        guest.id
-      );
-    } else {
-      // Any plus-one fields sent for a guest without one are ignored.
-      await run(
-        env,
-        `UPDATE guests SET rsvp = ?, dietary = ?${rehearsalSet}, updated_at = datetime('now') WHERE id = ?`,
-        answer.rsvp,
-        clip(answer.dietary),
-        ...rehearsal,
-        guest.id
-      );
     }
-    answered++;
+    changes.set(guest.id, set);
   }
-  if (!answered) return json({ error: "Let us know whether each person is coming." }, 400);
+  if (!changes.size) return json({ error: "Let us know whether each person is coming." }, 400);
+  const message = clip(input.message, 2000);
+  const settings = await loadSettings(env);
+  const calendarUrl = async () => ((await householdIcs(env, settings, householdId))
+    ? `/api/public/calendar?t=${encodeURIComponent(await sign(env, { kind: "cal", h: householdId }, CALENDAR_TOKEN_TTL))}`
+    : null);
+
+  if (preview) {
+    const household = await householdForRsvp(env, householdId, settings);
+    return json({
+      ok: true,
+      preview: true,
+      household: {
+        ...household,
+        email,
+        message: message || "",
+        responded: true,
+        guests: household.guests.map((g) => ({ ...g, ...Object.fromEntries(Object.entries(changes.get(g.id) || {}).map(([k, v]) => [k, v ?? ""])) })),
+      },
+      calendar_url: await calendarUrl(),
+    });
+  }
+
+  for (const [id, set] of changes) {
+    const columns = Object.keys(set);
+    await run(env, `UPDATE guests SET ${columns.map((c) => `${c} = ?`).join(", ")}, updated_at = datetime('now') WHERE id = ?`, ...columns.map((c) => set[c]), id);
+  }
   await run(
     env,
     "UPDATE households SET email = ?, rsvp_message = ?, rsvp_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
     email,
-    clip(input.message, 2000),
+    message,
     householdId
   );
   await markDirty(env);
   // Emails set to go out after an RSVP are queued; the cron sends them within minutes.
   await queueAfterRsvp(env, householdId);
-  const settings = await loadSettings(env);
-  const hasEvents = Boolean(await householdIcs(env, settings, householdId));
-  return json({
-    ok: true,
-    household: await householdForRsvp(env, householdId, settings),
-    calendar_url: hasEvents ? `/api/public/calendar?t=${encodeURIComponent(await sign(env, { kind: "cal", h: householdId }, CALENDAR_TOKEN_TTL))}` : null,
-  });
+  return json({ ok: true, household: await householdForRsvp(env, householdId, settings), calendar_url: await calendarUrl() });
 }
 
 /** GET calendar?t=: the household's calendar invite (the token comes from the RSVP or an email). */
 async function calendarDownload(env, request) {
   const token = await verify(env, new URL(request.url).searchParams.get("t"));
   if (!token || token.kind !== "cal") return json({ error: "That calendar link isn't valid. RSVP again to get a new one." }, 400);
-  const ics = await householdIcs(env, await loadSettings(env), token.h);
+  const settings = await loadSettings(env);
+  // A test email's link carries the kind of made-up guest it was filled in as.
+  const ics = token.test ? icsFor(env, settings, testHousehold(token.test).guests) : await householdIcs(env, settings, token.h);
   if (!ics) return json({ error: "There's nothing on the calendar yet." }, 404);
   return new Response(ics, {
     headers: { "content-type": "text/calendar; charset=utf-8", "content-disposition": 'attachment; filename="wedding.ics"', "cache-control": "no-store" },
@@ -462,6 +477,12 @@ async function submitExpense(env, form) {
   return json({ ok: true, expense_id: expenseId, payment_id: paymentId, receipt: receipt ? receipt.name : null, receipt_error: receiptError }, 201);
 }
 
+/** A signed-in admin, who may preview the RSVP page while it's closed to guests. */
+async function previewer(request, env) {
+  const user = await currentUser(request, env);
+  return user?.role === "admin";
+}
+
 export async function handlePublicApi(route, request, env) {
   const method = request.method.toUpperCase();
   try {
@@ -473,6 +494,8 @@ export async function handlePublicApi(route, request, env) {
         venue: s.venue,
         rsvp_deadline: s.rsvp_deadline,
         rsvp_open: Boolean(s.rsvp_open),
+        // While RSVPs are closed, a signed-in admin can still try the page.
+        ...(!s.rsvp_open && (await previewer(request, env)) ? { preview: true } : {}),
         rsvp_intro: s.rsvp_intro,
         rsvp_page: s.rsvp_page,
         contact_email: s.contact_email,
@@ -481,10 +504,11 @@ export async function handlePublicApi(route, request, env) {
     if (route === "calendar" && method === "GET") return calendarDownload(env, request);
     if (route.startsWith("rsvp/")) {
       const s = await loadSettings(env);
-      if (!s.rsvp_open) return json({ error: "RSVPs are closed. Please contact us directly." }, 403);
+      const preview = !s.rsvp_open && (await previewer(request, env));
+      if (!s.rsvp_open && !preview) return json({ error: "RSVPs are closed. Please contact us directly." }, 403);
       if (route === "rsvp/search" && method === "POST") return rsvpSearch(env, await body(request));
       if (route === "rsvp/lookup" && method === "POST") return rsvpLookup(env, await body(request));
-      if (route === "rsvp/submit" && method === "POST") return rsvpSubmit(env, await body(request));
+      if (route === "rsvp/submit" && method === "POST") return rsvpSubmit(env, await body(request), { preview });
     }
     // The expense form takes the control panel's sign-in, with access to Expenses.
     let user = null;

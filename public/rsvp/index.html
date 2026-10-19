@@ -74,6 +74,8 @@
   .done ul { list-style: none; padding: 0; margin: 14px 0 20px; color: var(--soft); }
   a.cal { display: inline-block; text-decoration: none; padding: 12px 20px; border-radius: 999px; margin: 0 0 18px;
           background: var(--accent); border: 1px solid var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .preview { background: #fff4d6; color: #5a4300; border: 1px solid #f0d27a; border-radius: 12px; padding: 12px 16px; margin: 0 0 20px; font-size: 14px; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .preview { background: #3a2f12; color: #f6dc95; border-color: #6b5520; } }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -86,6 +88,8 @@
     <div class="when" id="when"></div>
     <div class="intro" id="intro"></div>
   </header>
+
+  <div class="preview" id="preview" hidden><b>Preview.</b> RSVPs are closed to guests. You can see this page because you're signed in as an admin. Nothing you send here is saved, and no emails go out.</div>
 
   <form class="card" id="lookup">
     <h2>Find your invitation</h2>
@@ -196,7 +200,8 @@ fetch("/api/public/info").then((r) => r.json()).then((info) => {
   $("when").textContent = [fmtDate(info.wedding_date), info.venue].filter(Boolean).join(" · ");
   $("intro").textContent = info.rsvp_intro || "";
   if (info.rsvp_deadline) $("lookupHelp").textContent += ` Please reply by ${fmtDate(info.rsvp_deadline)}.`;
-  if (!info.rsvp_open) show("closed");
+  $("preview").hidden = !info.preview;
+  if (!info.rsvp_open && !info.preview) show("closed");
   if (info.contact_email) {
     $("contact").href = `mailto:${info.contact_email}`;
     $("contact").hidden = false;
@@ -416,10 +421,10 @@ $("reply").addEventListener("submit", async (ev) => {
   button.disabled = true;
   $("replyMsg").textContent = "";
   try {
-    const { household, calendar_url } = await post("/api/public/rsvp/submit", { token: current.token, guests, email: form.email.value, message: form.message.value });
+    const { household, calendar_url, preview } = await post("/api/public/rsvp/submit", { token: current.token, guests, email: form.email.value, message: form.message.value });
     current = { ...household, token: current.token };
     const coming = household.guests.filter((g) => g.rsvp === "yes");
-    $("doneText").textContent = coming.length ? page.thanks_yes : page.thanks_no;
+    $("doneText").textContent = (coming.length ? page.thanks_yes : page.thanks_no) + (preview ? " (Preview: nothing was saved.)" : "");
     // The calendar invite is for people who are coming.
     $("calendar").hidden = !(calendar_url && coming.length);
     if (calendar_url) $("calendar").href = calendar_url;

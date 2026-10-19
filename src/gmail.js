@@ -56,7 +56,7 @@ export class GmailConnectionError extends Error {}
  */
 export async function openGmail(env) {
   const stored = await getSetting(env, "_gmail");
-  if (!stored?.refresh_token) throw new GmailConnectionError("Gmail isn't connected. Connect it in Communications.");
+  if (!stored?.refresh_token) throw new GmailConnectionError("Gmail isn't connected. Connect it in Settings.");
   if (stored.access_token && stored.expires_at - Date.now() > 120000) {
     return { email: stored.email, token: stored.access_token, last_error: stored.last_error || null, stored };
   }
@@ -117,7 +117,7 @@ export function textToHtml(text) {
 }
 
 /** The whole message as MIME text. */
-export function buildMime({ from, to, cc = [], subject, text, attachments = [] }) {
+export function buildMime({ from, to, cc = [], subject, text, html = null, attachments = [] }) {
   const boundary = (tag) => `=_${tag}_${crypto.randomUUID().replace(/-/g, "")}`;
   const alt = boundary("alt");
   const headers = [
@@ -137,7 +137,7 @@ export function buildMime({ from, to, cc = [], subject, text, attachments = [] }
     "Content-Type: text/html; charset=UTF-8",
     "Content-Transfer-Encoding: base64",
     "",
-    base64Lines(textToHtml(text)),
+    base64Lines(html ?? textToHtml(text)),
     `--${alt}--`,
   ];
   if (!attachments.length) {
@@ -172,8 +172,8 @@ export function buildMime({ from, to, cc = [], subject, text, attachments = [] }
  * or the daily limit is the problem (stop the batch), and a plain Error for a problem
  * with this one email.
  */
-export async function sendGmail(env, session, { fromName, to, cc, subject, text, attachments }) {
-  const raw = buildMime({ from: mailbox(fromName, session.email), to, cc, subject, text, attachments });
+export async function sendGmail(env, session, { fromName, to, cc, subject, text, html, attachments }) {
+  const raw = buildMime({ from: mailbox(fromName, session.email), to, cc, subject, text, html, attachments });
   const response = await fetch(SEND_URL, {
     method: "POST",
     headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
@@ -184,7 +184,9 @@ export async function sendGmail(env, session, { fromName, to, cc, subject, text,
   if (response.status === 401 || response.status === 403 || response.status === 429) {
     const message = response.status === 429
       ? "Gmail's sending limit was reached. The rest will go out later."
-      : `Gmail refused to send (${response.status}). Reconnect Gmail in Communications. ${detail}`;
+      : /has not been used|is disabled|SERVICE_DISABLED|accessNotConfigured/i.test(detail)
+        ? `Gmail refused to send (${response.status}): the Gmail API is turned off in Google Cloud. Turn it on in APIs & Services, Library (SETUP.md, section 3), wait a few minutes, and the waiting emails go out. ${detail}`
+        : `Gmail refused to send (${response.status}). Reconnect Gmail in Settings. ${detail}`;
     const latest = (await getSetting(env, "_gmail")) || {};
     await setSetting(env, "_gmail", { ...latest, last_error: message, last_error_at: new Date().toISOString() });
     throw new GmailConnectionError(message);

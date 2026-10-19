@@ -36,6 +36,21 @@
   .who-list div { padding: 5px 9px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 10px; }
   .who-list div:last-child { border-bottom: 0; }
   .wording .fields { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .rte { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-1); margin-top: 5px; }
+  .rte .toolbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px; border-bottom: 1px solid var(--border); background: var(--wash); border-radius: 10px 10px 0 0; }
+  .rte .toolbar button { font-size: 12.5px; padding: 3px 9px; min-width: 30px; }
+  .rte .toolbar .sep { width: 1px; background: var(--border); margin: 2px 3px; }
+  .rte .area { min-height: 260px; max-height: 52vh; overflow: auto; padding: 12px 16px; outline: none; line-height: 1.55; color: var(--text-primary); }
+  .rte .area:focus { box-shadow: inset 0 0 0 2px rgba(42, 120, 214, .25); }
+  .rte .area:empty::before { content: attr(data-placeholder); color: var(--text-muted); white-space: pre-line; }
+  .rte .area p { margin: 0 0 10px; }
+  .rte .area h2 { font-size: 21px; margin: 16px 0 8px; font-weight: 600; }
+  .rte .area h3 { font-size: 12.5px; letter-spacing: .08em; text-transform: uppercase; margin: 14px 0 6px; color: var(--text-secondary); }
+  .rte .area blockquote { margin: 0 0 10px; padding-left: 12px; border-left: 3px solid var(--border); font-style: italic; }
+  .rte .area a { color: var(--accent); }
+  .rte .area a.button { display: inline-block; padding: 6px 18px; border-radius: 999px; background: var(--accent); color: #fff; text-decoration: none; font-weight: 600; }
+  .rte.locked .area { background: var(--wash); }
+  iframe.preview { width: 100%; height: 68vh; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
 </style>
 </head>
 <body>
@@ -111,6 +126,7 @@ function emailsView() {
     h("td", { class: "muted" }, statusLine(m))));
   if (!rows.length) rows.push(h("tr", {}, h("td", { colspan: 4, class: "muted" }, "No emails yet. Write the first one: the details email after someone RSVPs is a good start.")));
   return h("div", {},
+    h("div", { class: "row", style: "margin-bottom:10px" }, h("span", { class: "spacer" }), h("button", { onclick: emailDesign }, "Email design")),
     h("div", { class: "table-wrap" }, h("table", {},
       h("thead", {}, h("tr", {}, ["Subject", "Who gets it", "Status", ""].map((t) => h("th", {}, t)))),
       h("tbody", {}, rows))));
@@ -144,18 +160,154 @@ function audiencePicker(audience, onChange) {
   return h("div", {}, h("p", { class: "desc", style: "margin:0 0 8px" }, "Nothing ticked means every household. Ticks in RSVP, Rehearsal dinner RSVP, Side or Priority match any of them; every other tick must also be true. One email goes to each household, copied to anyone in it who gave their own email."), box, count, who);
 }
 
+/* -------------------------------------------------------- rich-text editor ---- */
+
+const escapeText = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+/** An email written before the editor (plain text) as editor HTML. */
+function textToContent(text) {
+  const linked = (line) => escapeText(line).replace(/https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"]/g, (url) => `<a href="${url}">${url}</a>`);
+  return String(text || "").trim().split(/\n{2,}/).filter(Boolean).map((p) => `<p>${p.split("\n").map(linked).join("<br>")}</p>`).join("");
+}
+
+/**
+ * Bold, italics, headings, lists, links and buttons. The server keeps only these
+ * tags (src/email_html.js), so what's pasted comes in as plain text.
+ */
+function richEditor(html, { disabled = false, placeholder = "" } = {}) {
+  const area = h("div", { class: "area", contenteditable: disabled ? "false" : "true", "data-placeholder": placeholder, role: "textbox", "aria-multiline": "true" });
+  area.innerHTML = html || "";
+  let saved = null;
+  const inArea = (node) => node && area.contains(node.nodeType === 1 ? node : node.parentNode);
+  document.addEventListener("selectionchange", () => {
+    const sel = getSelection();
+    if (sel.rangeCount && inArea(sel.anchorNode)) saved = sel.getRangeAt(0).cloneRange();
+  });
+  const restore = () => {
+    area.focus();
+    if (saved) {
+      const sel = getSelection();
+      sel.removeAllRanges();
+      sel.addRange(saved);
+    }
+  };
+  const run = (command, value = null) => {
+    restore();
+    document.execCommand("defaultParagraphSeparator", false, "p");
+    document.execCommand(command, false, value);
+  };
+  const askLink = (button) => {
+    restore();
+    const sel = getSelection();
+    const current = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement)?.closest("a");
+    const href = prompt("Link address: https://… or a fill-in like {rsvp_link}", current?.getAttribute("href") || "https://");
+    if (!href || href === "https://") return;
+    if (!/^(https?:\/\/|mailto:)\S+$|^\{[a-z_]+\}$/i.test(href.trim())) return alert("Links start with https://, http:// or mailto:, or are a fill-in like {rsvp_link}.");
+    const label = sel.toString() || current?.textContent || (button ? prompt("Button text", "RSVP now") : href.trim());
+    if (!label) return;
+    if (current) current.remove();
+    run("insertHTML", `<a href="${escapeText(href.trim())}"${button ? ' class="button"' : ""}>${escapeText(label)}</a>${button ? "" : ""}`);
+  };
+  const tool = (label, title, fn) => h("button", { type: "button", title, onmousedown: (ev) => ev.preventDefault(), onclick: fn }, label);
+  const toolbar = h("div", { class: "toolbar" },
+    tool(h("b", {}, "B"), "Bold", () => run("bold")),
+    tool(h("i", {}, "I"), "Italic", () => run("italic")),
+    tool(h("u", {}, "U"), "Underline", () => run("underline")),
+    h("span", { class: "sep" }),
+    tool("Heading", "Big heading", () => run("formatBlock", "h2")),
+    tool("Label", "Small capitals heading", () => run("formatBlock", "h3")),
+    tool("Text", "Normal paragraph", () => run("formatBlock", "p")),
+    h("span", { class: "sep" }),
+    tool("• List", "Bulleted list", () => run("insertUnorderedList")),
+    tool("1. List", "Numbered list", () => run("insertOrderedList")),
+    tool("Quote", "Quote", () => run("formatBlock", "blockquote")),
+    tool("Divider", "A line across", () => run("insertHorizontalRule")),
+    h("span", { class: "sep" }),
+    tool("Link", "Link the selected words", () => askLink(false)),
+    tool("Button", "A button that links somewhere", () => askLink(true)),
+    tool("Unlink", "Remove the link", () => run("unlink")),
+    tool("Clear", "Clear formatting", () => { run("removeFormat"); run("formatBlock", "p"); }));
+  area.addEventListener("paste", (ev) => {
+    ev.preventDefault();
+    document.execCommand("insertText", false, ev.clipboardData.getData("text/plain"));
+  });
+  // Clicking a button in the editor shouldn't follow it.
+  area.addEventListener("click", (ev) => { if (ev.target.closest("a")) ev.preventDefault(); });
+  const box = h("div", { class: `rte${disabled ? " locked" : ""}` }, disabled ? null : toolbar, area);
+  return {
+    el: box,
+    html: () => area.innerHTML,
+    insert: (text) => run("insertText", text),
+  };
+}
+
+/** The email as a guest would see it, filled in as the kind of guest picked. */
+function previewEmail(draft) {
+  openDialog("Preview", () => {
+    const frame = h("iframe", { class: "preview", sandbox: "", title: "Email preview" });
+    const note = h("p", { class: "desc", style: "margin:8px 0 0" });
+    const subjectLine = h("p", { style: "margin:0 0 8px" });
+    const as = h("select", { onchange: () => draw() },
+      h("option", { value: "" }, "As the first household in the audience"),
+      data.test_guests.map((t) => h("option", { value: t.key }, `As a guest who ${t.label}`)));
+    const draw = async () => {
+      try {
+        const r = await api("/api/admin/comms/preview", { method: "POST", body: { ...draft, as: as.value } });
+        frame.srcdoc = r.html;
+        subjectLine.replaceChildren(h("b", {}, "Subject: "), r.subject || "(no subject)");
+        note.textContent = `Filled in as ${r.sample}. ${r.calendar}${r.in_audience ? "" : " A guest like this isn't in the audience, so they wouldn't get it."}`;
+      } catch (error) {
+        note.textContent = error.message;
+      }
+    };
+    draw();
+    return h("div", {}, h("div", { class: "row", style: "margin-bottom:10px" }, as), subjectLine, frame, note);
+  });
+}
+
+/** The wedding design's photo across the top and line at the bottom. */
+function emailDesign() {
+  openDialog("Email design", (close) => {
+    const d = data.email_design;
+    const msg = h("p", { class: "msg" });
+    const image = h("input", { value: d.header_image || "", placeholder: "https://… a photo of you two (optional)" });
+    const footer = h("input", { value: d.footer_note || "", placeholder: "You're getting this because you're on our guest list." });
+    return h("div", {},
+      h("p", { class: "desc" }, "The wedding design takes its background, text color and font from your website's home page (Settings, Refresh from Zola), and the RSVP button's color for links and buttons. Your names, the date and the venue come from Settings."),
+      h("label", { class: "field" }, "Photo across the top: a link to an image online, starting with https://", image),
+      h("label", { class: "field", style: "margin-top:10px" }, "Line at the bottom of every email", footer),
+      h("div", { class: "row", style: "margin-top:14px" },
+        h("button", { onclick: () => previewEmail({ subject: "A preview of your email design", design: "wedding", attach_ics: true,
+          body: "<h2>We can't wait to see you</h2><p>Hi {greeting},</p><p>This is how your emails look in the wedding design. Here's a bulleted list:</p><ul><li>The ceremony starts at 4 PM</li><li>Dinner and dancing to follow</li></ul><p><a class=\"button\" href=\"{rsvp_link}\">RSVP now</a></p><p>With love,<br>{couple}</p>" }) }, "Preview the design"),
+        h("span", { class: "spacer" }),
+        h("button", { class: "primary", onclick: async () => {
+          try {
+            accept(await api("/api/admin/comms/email-design", { method: "PUT", body: { header_image: image.value, footer_note: footer.value } }));
+            close(true);
+          } catch (error) {
+            setMsg(msg, error.message, "err");
+          }
+        } }, "Save")),
+      msg);
+  });
+}
+
 function editEmail(message) {
-  const m = message || { subject: "", body: "", audience: { ticks: [] }, attach_ics: false, status: "draft", counts: {} };
+  const m = message || { subject: "", body: "", format: "html", design: "wedding", audience: { ticks: [] }, attach_ics: false, status: "draft", counts: {} };
   const locked = m.status === "sending" || m.status === "sent";
   let audience = { ticks: [...(m.audience?.ticks || [])] };
   openDialog(message ? (m.subject || "Email") : "New email", (close) => {
     const msg = h("p", { class: "msg" });
     const subject = h("input", { value: m.subject, placeholder: "Your RSVP and the details", disabled: locked });
-    const bodyBox = h("textarea", { class: "body", placeholder: "Hi {greeting},\n\nThank you for your RSVP! …", disabled: locked });
-    bodyBox.value = m.body;
+    const editor = richEditor(m.format === "html" ? m.body : textToContent(m.body), { disabled: locked, placeholder: "Hi {greeting},\n\nThank you for your RSVP! …" });
     const attach = h("input", { type: "checkbox", checked: m.attach_ics, disabled: locked });
+    const design = h("select", { disabled: locked },
+      h("option", { value: "wedding", selected: m.design === "wedding" }, "Wedding design: your website's colors, names and date up top"),
+      h("option", { value: "plain", selected: m.design !== "wedding" }, "Plain: just the words, like a personal email"));
+    const testAs = h("select", {},
+      h("option", { value: "" }, "as the first household in the audience"),
+      data.test_guests.map((t) => h("option", { value: t.key }, `as a guest who ${t.label}`)));
     let id = message?.id || null;
-    const values = () => ({ subject: subject.value, body: bodyBox.value, audience, attach_ics: attach.checked });
+    const values = () => ({ subject: subject.value, body: editor.html(), format: "html", design: design.value, audience, attach_ics: attach.checked });
     const save = async () => {
       if (locked) return;
       if (id) accept(await api(`/api/admin/comms/messages/${id}`, { method: "PUT", body: values() }));
@@ -173,12 +325,7 @@ function editEmail(message) {
         setMsg(msg, error.message, "err");
       }
     };
-    const insert = (key) => {
-      const start = bodyBox.selectionStart ?? bodyBox.value.length;
-      bodyBox.value = `${bodyBox.value.slice(0, start)}{${key}}${bodyBox.value.slice(bodyBox.selectionEnd ?? start)}`;
-      bodyBox.focus();
-      bodyBox.selectionStart = bodyBox.selectionEnd = start + key.length + 2;
-    };
+    const insert = (key) => editor.insert(`{${key}}`);
 
     const local = (iso) => {
       // The schedule box shows the wedding's local time; the browser's zone is close enough to prefill.
@@ -242,19 +389,23 @@ function editEmail(message) {
     return h("div", {},
       locked ? h("p", { class: "banner" }, "This email has been sent, so it can't be changed. Duplicate it to send a new version.") : null,
       h("label", { class: "field" }, "Subject", subject),
-      h("label", { class: "field", style: "margin-top:12px" }, "Email", bodyBox),
+      h("div", { class: "field", style: "margin-top:12px" }, "Email", editor.el),
       locked ? null : h("div", { class: "fillins" }, h("span", { class: "muted", style: "font-size:12px; align-self:center" }, "Insert:"),
-        data.fill_ins.map((f) => h("button", { type: "button", title: f.help, onclick: () => insert(f.key) }, `{${f.key}}`))),
-      h("label", { class: "check" }, attach, "Attach the calendar invite (each household gets the events they're invited to)"),
+        data.fill_ins.map((f) => h("button", { type: "button", title: f.help, onmousedown: (ev) => ev.preventDefault(), onclick: () => insert(f.key) }, `{${f.key}}`))),
+      h("div", { class: "row", style: "margin:4px 0 10px" }, h("label", { class: "field", style: "flex:1" }, "Design", design),
+        h("button", { type: "button", style: "align-self:end", onclick: () => previewEmail(values()) }, "Preview")),
+      h("label", { class: "check" }, attach, "Attach the calendar invite (each household gets the events for what they're invited to and haven't declined)"),
+      attach.checked && !data.calendar_events.length ? h("p", { class: "msg err" }, "There are no calendar events yet, so nothing will attach. Add them on the Calendar invite tab.") : null,
       h("h3", { class: "part" }, "Who gets it"),
       locked ? h("p", {}, audienceText(m.audience)) : audiencePicker(audience, (next) => { audience = next; }),
       h("div", { class: "row", style: "margin-top:14px" },
         locked ? null : h("button", { onclick: () => act(save, "Saved.") }, "Save"),
         h("button", { onclick: () => act(async () => {
           if (!locked) await save();
-          const r = await api(`/api/admin/comms/messages/${id}/test`, { method: "POST", body: {} });
-          setMsg(msg, `Test sent to ${r.to}, filled in as ${r.sample}.`, "ok");
+          const r = await api(`/api/admin/comms/messages/${id}/test`, { method: "POST", body: { as: testAs.value } });
+          setMsg(msg, `Test sent to ${r.to}, filled in as ${r.sample}. ${r.calendar}${r.in_audience ? "" : " Note: a guest like this isn't in this email's audience, so they wouldn't get it."}`, "ok");
         }) }, "Send a test to me"),
+        testAs,
         h("button", { onclick: () => act(async () => {
           const reply = await api("/api/admin/comms/messages", { method: "POST", body: { ...values(), subject: `${subject.value} (copy)` } });
           accept(reply);
