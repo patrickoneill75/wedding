@@ -12,6 +12,9 @@
  *                                     count? (chairs in a row), ...fields }
  *   PUT    seating/items/:id / DELETE seating/items/:id
  *   POST   seating/items/lock       { ids, locked } lock or unlock several at once
+ *   POST   seating/items/group      { ids, grouped } group items in one room (taking in
+ *                                   any whole groups they're part of), or ungroup the
+ *                                   groups they're in
  *   POST   seating/items/arrange    { moves: [{ id, x, y }] } several at once (the align
  *                                   and distribute tools, dragging a selection), one query
  *   POST   seating/assign           { item_id, seat_letter, guest_id, plus_one } puts that
@@ -21,7 +24,7 @@
  * A shape is a rectangle or oval of any size (a dance floor, the bar, a stage) with optional
  * text centered in it; nobody sits at one. Sizes and turns keep two decimals (12.75 ft,
  * 22.50°). Anything can be locked: a locked item can't be moved, turned or resized until
- * it's unlocked.
+ * it's unlocked. Grouped items share a group_id, and the page selects and moves them as one.
  *
  * Sizes and positions are in feet. A table's seats are lettered A, B, C ... clockwise
  * from the top (public/admin/seating.html draws them); a single chair has one seat, A. Only reception rooms take seat
@@ -327,6 +330,24 @@ async function updateItem(env, id, input) {
  * Move several items in one UPDATE (with literal values, so a long list stays one
  * query and under D1's bound-parameter limit). Locked items are refused.
  */
+async function groupItems(env, input) {
+  const ids = [...new Set((Array.isArray(input.ids) ? input.ids : []).map(Number).filter(Number.isInteger))];
+  if (ids.length > 300) throw new Error("That's too many at once.");
+  if (!input.grouped) {
+    if (!ids.length) throw new Error("Pick what to ungroup.");
+    await run(env, `UPDATE seating_items SET group_id = NULL WHERE group_id IN (SELECT group_id FROM seating_items WHERE id IN (${ids.join(",")}))`);
+    return;
+  }
+  if (ids.length < 2) throw new Error("Pick two or more to group.");
+  const found = await all(env, `SELECT id, room_id FROM seating_items WHERE id IN (${ids.join(",")})`);
+  if (found.length !== ids.length) throw new Error("Something picked is no longer on the chart. Reload the page.");
+  if (new Set(found.map((i) => i.room_id)).size > 1) throw new Error("Only items in the same room can be grouped.");
+  // A fresh number, so the new group never merges with an old one by accident.
+  await run(env,
+    `UPDATE seating_items SET group_id = (SELECT COALESCE(MAX(group_id), 0) + 1 FROM seating_items)
+     WHERE id IN (${ids.join(",")}) OR group_id IN (SELECT group_id FROM seating_items WHERE id IN (${ids.join(",")}))`);
+}
+
 async function arrange(env, moves) {
   if (!Array.isArray(moves) || !moves.length) throw new Error("Nothing to move.");
   if (moves.length > 300) throw new Error("That's more than 300 at once.");
@@ -455,6 +476,11 @@ export async function handleSeating(parts, method, request, env, body) {
     const ids = (Array.isArray(input.ids) ? input.ids : []).map(Number).filter(Number.isInteger);
     if (!ids.length) throw new Error("Pick what to lock.");
     await run(env, `UPDATE seating_items SET locked = ? WHERE id IN (${ids.join(",")})`, input.locked ? 1 : 0);
+    return json(await overview(env));
+  }
+
+  if (section === "items" && rawId === "group" && method === "POST") {
+    await groupItems(env, await body(request));
     return json(await overview(env));
   }
 

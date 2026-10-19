@@ -2171,6 +2171,30 @@ test("seating: a new shape's text fits itself (size 0) until a size is set, and 
   assert.equal(await size(), 0);
 });
 
+test("seating: grouping takes in whole groups, never merges with an old group, stays in one room, and ungroup clears it", async () => {
+  const { api, roomId } = await seatingSetup();
+  const add = async (room = roomId) => (await api("/api/admin/seating/items", { method: "POST", body: { room_id: room, kind: "shape" } })).data.ids[0];
+  const [a, b, c, d] = [await add(), await add(), await add(), await add()];
+  const groups = async () => Object.fromEntries((await api("/api/admin/seating")).data.items.map((i) => [i.id, i.group_id]));
+  assert.equal((await api("/api/admin/seating/items/group", { method: "POST", body: { ids: [a], grouped: true } })).status, 400, "one is not a group");
+  await api("/api/admin/seating/items/group", { method: "POST", body: { ids: [a, b], grouped: true } });
+  let g = await groups();
+  assert.ok(g[a] && g[a] === g[b] && g[c] === null);
+  await api("/api/admin/seating/items/group", { method: "POST", body: { ids: [c, d], grouped: true } });
+  g = await groups();
+  assert.ok(g[c] === g[d] && g[c] !== g[a], "a second group gets its own number");
+  // Grouping b with c takes in a and d too: the two groups become one.
+  await api("/api/admin/seating/items/group", { method: "POST", body: { ids: [b, c], grouped: true } });
+  g = await groups();
+  assert.equal(new Set([g[a], g[b], g[c], g[d]]).size, 1);
+  const other = (await api("/api/admin/seating/rooms", { method: "POST", body: { name: "Patio", kind: "other", width_ft: 20, length_ft: 20 } })).data.id;
+  const far = await add(other);
+  assert.equal((await api("/api/admin/seating/items/group", { method: "POST", body: { ids: [a, far], grouped: true } })).status, 400, "not across rooms");
+  await api("/api/admin/seating/items/group", { method: "POST", body: { ids: [d], grouped: false } });
+  g = await groups();
+  assert.deepEqual([g[a], g[b], g[c], g[d], g[far]], [null, null, null, null, null]);
+});
+
 test("seating: a person has one seat; seating them again moves them, and taking a seat bumps whoever had it", async () => {
   const { env, api, id, roomId } = await seatingSetup();
   const tableId = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 6 } })).data.ids[0];

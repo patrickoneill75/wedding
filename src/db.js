@@ -422,6 +422,10 @@ const MIGRATIONS = [
   [
     `ALTER TABLE seating_items ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`,
   ],
+  // 19: items on the seating chart can be grouped, so they select and move together.
+  [
+    `ALTER TABLE seating_items ADD COLUMN group_id INTEGER`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
