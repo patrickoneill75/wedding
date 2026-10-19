@@ -20,6 +20,7 @@ import { sqlValue } from "../src/importer.js";
 import { normalizeName, searchGuests } from "../src/public_api.js";
 import { buildIcs, zonedTime } from "../src/calendar.js";
 import { fillIn, processComms } from "../src/comms.js";
+import { htmlToText, sanitizeHtml, themeFrom } from "../src/email_html.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, "fixtures", "sample_wedding.xlsx");
@@ -2247,6 +2248,107 @@ test("emails: one per household to its email with guests copied, filled in, from
   assert.deepEqual([list.status, list.counts.sent, list.counts.skipped], ["sent", 2, 1], "the household with no email is recorded, not dropped silently");
   assert.equal((await api(`/api/admin/comms/messages/${id}/send`, { method: "POST", body: {} })).status, 400, "a sent email can't go again");
   assert.equal((await api(`/api/admin/comms/messages/${id}`, { method: "PUT", body: { subject: "x" } })).status, 400, "or be edited");
+});
+
+test("email editor HTML keeps formatting and links but loses scripts, styles and unsafe links", () => {
+  const dirty = `<div style="color:red" onclick="x()">Hi <b>there</b></div><script>alert(1)</script><style>p{}</style>
+    <ul><li>One<li>Two</ul><a href="javascript:alert(1)">bad</a> <a href="{rsvp_link}" class="button big">RSVP</a>
+    <a href="https://example.com/?a=1&amp;b=2" target="_blank">site</a><img src=x onerror=alert(1)><p>5 < 6 & 7</p><h1>Big</h1><em>open`;
+  const clean = sanitizeHtml(dirty);
+  assert.equal(clean, `<p>Hi <b>there</b></p>
+    <ul><li>One<li>Two</li></li></ul>bad <a href="{rsvp_link}" class="button">RSVP</a>
+    <a href="https://example.com/?a=1&amp;b=2">site</a><p>5 &lt; 6 &amp; 7</p><h2>Big</h2><em>open</em>`);
+  assert.equal(sanitizeHtml("<p>Plan:</p><p><ul><li>A</li></ul><p><b>B</b></p></p>"), "<p>Plan:</p><ul><li>A</li></ul><p><b>B</b></p>",
+    "a list the editor nested in a paragraph comes out after it");
+  assert.equal(htmlToText("<h2>Plans</h2><p>Hi {greeting},</p><ul><li>Ceremony</li><li>Dinner</li></ul><ol><li>Park</li><li>Walk in</li></ol><p><a href=\"https://x.com/r\" class=\"button\">RSVP</a> &amp; more</p>"),
+    "Plans\n\nHi {greeting},\n\n• Ceremony\n• Dinner\n\n1. Park\n2. Walk in\n\nRSVP (https://x.com/r) & more");
+  const theme = themeFrom("<style>html,body{background:#faf6f0}:root{--wm-text:#3b4a3f;--wm-font:'Cormorant Garamond',Georgia,serif}</style>", "#A4727E");
+  assert.deepEqual(theme, { background: "#faf6f0", text: "#3b4a3f", accent: "#A4727E", font: "Cormorant Garamond" });
+  assert.equal(themeFrom("", "nope").accent, "#A4727E", "no site copy yet: the default look");
+});
+
+test("emails: a rich-text email goes out in the wedding design with a plain-text twin, and fill-ins can't inject HTML", async () => {
+  const { env, api } = await commsSetup({ households: 1 });
+  await api("/api/admin/guests").then(async (r) => {
+    const h1 = r.data.households.find((h) => h.display_name === "Household 1");
+    await api(`/api/admin/households/${h1.id}`, { method: "PUT", body: { greeting: "Ann & <b>Bo</b>" } });
+  });
+  await api("/api/admin/settings", { method: "PUT", body: { venue: "The Ritz" } });
+  env.DB.db.prepare("INSERT INTO site_pages (path, title, html, source_url, content_hash, fetched_at, changed_at) VALUES ('/', 'Home', ?, '', '', '', '')")
+    .run("<style>html,body{background:#faf6f0}:root{--wm-text:#3b4a3f;--wm-font:'Cormorant Garamond',Georgia,serif}</style>");
+  await api("/api/admin/comms/email-design", { method: "PUT", body: { header_image: "https://example.com/us.jpg", footer_note: "With love from Indiana" } });
+  assert.equal((await api("/api/admin/comms/email-design", { method: "PUT", body: { header_image: "javascript:alert(1)" } })).status, 400);
+  const id = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Details for {greeting}", format: "html", design: "wedding",
+    body: '<h2>The plan</h2><p>Hi {greeting},</p><ul><li>Ceremony at 4</li></ul><p><a class="button" href="{rsvp_link}">RSVP</a></p><script>x</script>' } })).data.id;
+  const { sent } = await withGmail(() => api(`/api/admin/comms/messages/${id}/send`, { method: "POST", body: {} }));
+  assert.equal(sent.length, 1);
+  const [text, html] = decodeParts(sent[0]);
+  assert.match(text, /^The plan\n\nHi Ann & <b>Bo<\/b>,\n\n• Ceremony at 4\n\nRSVP \(https:\/\/www\.example-wedding\.com\/rsvp\/\)/);
+  assert.ok(html.includes("Hi Ann &amp; &lt;b&gt;Bo&lt;/b&gt;,"), "a fill-in is text, never HTML");
+  assert.ok(!html.includes("<script"));
+  assert.match(html, /<ul style="[^"]+">/);
+  assert.match(html, /<a href="https:\/\/www\.example-wedding\.com\/rsvp\/" class="button" style="[^"]*background:#A4727E/);
+  assert.ok(html.includes("background:#faf6f0") && html.includes("'Cormorant Garamond'") && html.includes("color:#3b4a3f"), "the website's look");
+  assert.ok(html.includes("Kaitlyn &amp; Patrick") && html.includes("Saturday, June 12, 2027") && html.includes("The Ritz"));
+  assert.ok(html.includes('src="https://example.com/us.jpg"') && html.includes("With love from Indiana"));
+
+  // An older plain-text email switched to the editor's format is escaped, not run as HTML.
+  const old = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Old", body: "Hi <script>alert(1)</script>\n\nBye" } })).data.id;
+  await api(`/api/admin/comms/messages/${old}`, { method: "PUT", body: { format: "html" } });
+  const stored = env.DB.db.prepare("SELECT body FROM comm_messages WHERE id = ?").get(old).body;
+  assert.equal(stored, "<p>Hi &lt;script&gt;alert(1)&lt;/script&gt;</p>\n<p>Bye</p>");
+});
+
+// Bug guard: the calendar invite went out as a text/calendar part, which Gmail doesn't
+// list as an attachment, and households that declined still got the events.
+test("emails: the calendar invite attaches as a file, with the events each kind of guest should get", async () => {
+  const { env, api } = await commsSetup({ households: 3 });
+  await api("/api/admin/comms/calendar", { method: "PUT", body: { events: [
+    { title: "Ceremony", date: "2027-06-12", start: "16:00", for: "ceremony" },
+    { title: "Reception", date: "2027-06-12", start: "18:00", for: "reception" },
+    { title: "Rehearsal dinner", date: "2027-06-11", start: "18:30", for: "rehearsal" },
+  ] } });
+  const households = (await api("/api/admin/guests")).data.households;
+  const h3 = households.find((h) => h.display_name === "Household 3");
+  await api(`/api/admin/guests/${h3.guests[0].id}`, { method: "PUT", body: { rsvp: "no" } });
+  const id = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Hi", body: "<p>Hello</p>", format: "html", design: "wedding", attach_ics: true } })).data.id;
+  const { sent } = await withGmail(() => api(`/api/admin/comms/messages/${id}/send`, { method: "POST", body: {} }));
+  const to = (n) => sent.find((m) => m.includes(`To: h${n}@example.com`));
+  assert.match(to(1), /Content-Type: application\/ics; name="wedding\.ics"/);
+  assert.ok(!/text\/calendar/.test(to(1)));
+  const icsOf = (mime) => decodeParts(mime)[2] || "";
+  assert.ok(icsOf(to(1)).includes("SUMMARY:Ceremony") && icsOf(to(1)).includes("SUMMARY:Reception"));
+  assert.ok(!icsOf(to(2)).includes("SUMMARY:Ceremony") && icsOf(to(2)).includes("SUMMARY:Reception"), "reception only");
+  assert.ok(!to(3).includes("wedding.ics"), "a household that declined gets no invite");
+  assert.ok(decodeParts(to(1))[1].includes("Your calendar invite is attached"));
+
+  const test = async (as) => {
+    const r = await withGmail(() => api(`/api/admin/comms/messages/${id}/test`, { method: "POST", body: { as } }));
+    assert.equal(r.result.status, 200, JSON.stringify(r.result.data));
+    return { ...r.result.data, ics: icsOf(r.sent[0]), mime: r.sent[0] };
+  };
+  const titles = (ics) => [...ics.matchAll(/SUMMARY:(.+)\r\n/g)].map((m) => m[1]);
+  assert.deepEqual(titles((await test("ceremony")).ics), ["Ceremony"]);
+  assert.deepEqual(titles((await test("reception")).ics), ["Reception"]);
+  assert.deepEqual(titles((await test("both")).ics), ["Ceremony", "Reception"]);
+  const rehearsal = await test("rehearsal");
+  assert.deepEqual(titles(rehearsal.ics), ["Reception", "Rehearsal dinner"]);
+  assert.equal(rehearsal.calendar, "Calendar invite attached with Reception, Rehearsal dinner.");
+  const declined = await test("declined");
+  assert.ok(!declined.mime.includes("wedding.ics"));
+  assert.match(declined.calendar, /gets none of the events/);
+
+  // A test email's {calendar_link} downloads that kind of guest's invite.
+  const linkId = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Link", body: "<p>{calendar_link}</p>", format: "html" } })).data.id;
+  const linked = await withGmail(() => api(`/api/admin/comms/messages/${linkId}/test`, { method: "POST", body: { as: "rehearsal" } }));
+  const url = decodeParts(linked.sent[0])[0].match(/https:\/\/www\.example-wedding\.com(\/api\/public\/calendar\?t=\S+)/)[1];
+  assert.deepEqual(titles((await call(env, url)).data), ["Reception", "Rehearsal dinner"]);
+
+  const preview = await api("/api/admin/comms/preview", { method: "POST", body: { subject: "S {greeting}", body: "<p>Hi</p>", attach_ics: true, as: "ceremony" } });
+  assert.equal(preview.status, 200, JSON.stringify(preview.data));
+  assert.equal(preview.data.subject, "S Jane and John");
+  assert.match(preview.data.html, /Your calendar invite is attached/);
+  assert.equal(preview.data.calendar, "Calendar invite attached with Ceremony.");
 });
 
 test("emails: a big send goes out in batches, and the cron sends the rest", async () => {

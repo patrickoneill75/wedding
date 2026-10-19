@@ -406,6 +406,13 @@ const MIGRATIONS = [
   [
     `ALTER TABLE guests ADD COLUMN plus_one_rehearsal_rsvp TEXT NOT NULL DEFAULT 'pending'`,
   ],
+  // 16: guest emails written in the rich-text editor (format 'html', cleaned by
+  // src/email_html.js) and sent in a design: 'wedding' (the website's look) or 'plain'.
+  // Emails written before stay plain text in the plain design.
+  [
+    `ALTER TABLE comm_messages ADD COLUMN format TEXT NOT NULL DEFAULT 'text'`,
+    `ALTER TABLE comm_messages ADD COLUMN design TEXT NOT NULL DEFAULT 'plain'`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

@@ -41,7 +41,7 @@ import { STATUSES, STATUS_LABELS } from "./calc.js";
 import { addPayment, createExpense, loadContext, loadSettings, listExpenses, listVendors, updateExpense } from "./store.js";
 import { uploadReceipt } from "./google.js";
 import { intakeTurn, payerFor } from "./intake.js";
-import { householdIcs, queueAfterRsvp } from "./comms.js";
+import { householdIcs, icsFor, queueAfterRsvp, testHousehold } from "./comms.js";
 
 export { payerFor };
 
@@ -305,7 +305,9 @@ async function rsvpSubmit(env, input, { preview = false } = {}) {
 async function calendarDownload(env, request) {
   const token = await verify(env, new URL(request.url).searchParams.get("t"));
   if (!token || token.kind !== "cal") return json({ error: "That calendar link isn't valid. RSVP again to get a new one." }, 400);
-  const ics = await householdIcs(env, await loadSettings(env), token.h);
+  const settings = await loadSettings(env);
+  // A test email's link carries the kind of made-up guest it was filled in as.
+  const ics = token.test ? icsFor(env, settings, testHousehold(token.test).guests) : await householdIcs(env, settings, token.h);
   if (!ics) return json({ error: "There's nothing on the calendar yet." }, 404);
   return new Response(ics, {
     headers: { "content-type": "text/calendar; charset=utf-8", "content-disposition": 'attachment; filename="wedding.ics"', "cache-control": "no-store" },

@@ -49,6 +49,9 @@
     an RSVP can never send the same email twice. Sends go in batches of `SEND_BATCH` with
     one Gmail token read per batch and batched status updates, to stay under the D1
     query limit; the cron leaves the Drive sync to the next run when it sent email.
+    Rich-text bodies are cleaned on save by `sanitizeHtml` (`src/email_html.js`), a short
+    allowlist of tags; fill-ins are escaped into HTML. Calendar invites attach as
+    `application/ics` and go only to guests who haven't declined (`eventsFor`).
 
 ## Tests
 

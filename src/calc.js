@@ -152,6 +152,9 @@ export const DEFAULT_SETTINGS = {
   // The calendar invite guests download after they RSVP (and emails can attach): one
   // entry per event, each for everyone or for the guests invited to one part.
   calendar_events: [],
+  // The wedding email design (src/email_html.js): an optional photo across the top and
+  // the line at the very bottom.
+  email_design: { header_image: "", footer_note: "" },
 };
 
 export const PUBLIC_SETTING_KEYS = Object.keys(DEFAULT_SETTINGS);
@@ -175,6 +178,7 @@ export function mergeSettings(stored) {
   merged.drinks = { ...DEFAULT_SETTINGS.drinks, ...(merged.drinks || {}) };
   merged.rsvp_page = { ...DEFAULT_SETTINGS.rsvp_page, ...(merged.rsvp_page || {}) };
   if (!Array.isArray(merged.calendar_events)) merged.calendar_events = [];
+  merged.email_design = { ...DEFAULT_SETTINGS.email_design, ...(merged.email_design || {}) };
   return merged;
 }
 
