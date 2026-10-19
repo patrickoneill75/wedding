@@ -119,8 +119,10 @@ async function refresh() {
     try { localStorage.setItem(CACHE, JSON.stringify(data)); } catch {}
   } catch (e) {
     if (e.status === 401) {
+      // The link was turned off or replaced: the copy kept for offline use goes too.
       error = e.message;
       data = null;
+      try { localStorage.removeItem(CACHE); } catch {}
     } else {
       offline = true;
       if (!data) try { data = JSON.parse(localStorage.getItem(CACHE) || "null"); } catch {}
@@ -260,7 +262,8 @@ function draw() {
 
 await refresh();
 // Stay in step with everyone else's taps, and keep the clock and "Now" moving.
-setInterval(refresh, 30000);
+// Not while the iPad is asleep or another app is up; coming back refreshes at once.
+setInterval(() => { if (!document.hidden) refresh(); }, 30000);
 setInterval(render, 60000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 </script>

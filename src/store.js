@@ -10,6 +10,7 @@ import {
   buildContext,
   enrichExpense,
   expenseTotals,
+  localToday,
   mergeSettings,
   rollupPurchases,
   statusAfterPayment,
@@ -112,7 +113,7 @@ async function settleIfPaid(env, id, ctx, by, details = {}) {
     env,
     "INSERT INTO payments (expense_id, paid_on, amount, payer, method, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
     id,
-    paidOn && /^\d{4}-\d{2}-\d{2}$/.test(paidOn) ? paidOn : new Date().toISOString().slice(0, 10),
+    paidOn && /^\d{4}-\d{2}-\d{2}$/.test(paidOn) ? paidOn : localToday(ctx.settings.time_zone),
     remaining,
     toText(details.payer) || expense.payer || null,
     toText(details.method),
@@ -120,6 +121,8 @@ async function settleIfPaid(env, id, ctx, by, details = {}) {
     by || null
   );
 }
+
+const isPriced = (e) => e.unit_cost != null && Number(e.unit_cost) !== 0;
 
 const toNumberOrNull = (v) => {
   if (v === null || v === undefined || v === "") return null;
@@ -207,7 +210,12 @@ export async function createExpense(env, input, ctx, by, source = "control-panel
     source
   );
   const id = result.meta.last_row_id;
-  const expense = await first(env, "SELECT * FROM expenses WHERE id = ?", id);
+  let expense = await first(env, "SELECT * FROM expenses WHERE id = ?", id);
+  // Created past Estimate with a price: that price is the original estimate.
+  if (expense.status !== "estimate" && expense.status !== "cancelled" && isPriced(expense)) {
+    await run(env, "UPDATE expenses SET baseline_total = ? WHERE id = ?", expenseTotals(expense, ctx).total, id);
+    expense = { ...expense, baseline_total: expenseTotals(expense, ctx).total };
+  }
   await recordHistory(env, expense, ctx, input.history_note || "Created", by);
   await rememberVendor(env, patch.vendor);
   await settleIfPaid(env, id, ctx, by, input);
@@ -265,8 +273,11 @@ export async function updateExpense(env, id, input, ctx, by) {
   if (!before) return null;
   const patch = cleanExpensePatch(input);
   const after = { ...before, ...patch };
-  if (before.status === "estimate" && after.status !== "estimate" && before.baseline_total == null) {
-    patch.baseline_total = expenseTotals(before, ctx).total;
+  // The original estimate freezes when the item leaves Estimate, or, for an item that
+  // had no price then, when it first gets one. An unpriced item never freezes $0.
+  if (after.status !== "estimate" && after.status !== "cancelled" && before.baseline_total == null) {
+    if (before.status === "estimate" && isPriced(before)) patch.baseline_total = expenseTotals(before, ctx).total;
+    else if (isPriced(after)) patch.baseline_total = expenseTotals(after, ctx).total;
   }
   // Moving an item back to Estimate re-opens its estimate.
   if (after.status === "estimate" && before.status !== "estimate") patch.baseline_total = null;
@@ -286,10 +297,17 @@ export async function updateExpense(env, id, input, ctx, by) {
     await recordHistory(env, updated, ctx, parts.join(". "), by);
   }
   if (Object.prototype.hasOwnProperty.call(patch, "vendor")) await rememberVendor(env, patch.vendor);
-  await settleIfPaid(env, id, ctx, by, input);
+  // Line items file under their item's category.
+  if (["category", "subcategory"].some((k) => Object.prototype.hasOwnProperty.call(patch, k)) && !updated.parent_id) {
+    await run(env, "UPDATE expenses SET category = ?, subcategory = ? WHERE parent_id = ?", updated.category, updated.subcategory, id);
+  }
+  // Only a move to Paid records the rest as paid: editing an item that's already Paid
+  // (after deleting a payment, say) doesn't put a payment back.
+  if (before.status !== "paid") await settleIfPaid(env, id, ctx, by, input);
   // Money already paid on it (a deposit) moves a Quote or Booked item on to Partially
-  // paid, whichever stage it was saved at. An item with line items is left alone.
-  if (["estimate", "quote", "booked"].includes(updated.status) && !(await first(env, "SELECT id FROM expenses WHERE parent_id = ? LIMIT 1", id))) {
+  // paid, and an item paid up moves on to Paid, whichever stage it was saved at. An
+  // item with line items is left alone.
+  if (["estimate", "quote", "booked", "partially_paid"].includes(updated.status) && !(await first(env, "SELECT id FROM expenses WHERE parent_id = ? LIMIT 1", id))) {
     await advanceAfterPayment(env, id, ctx, by, "Has payments already");
   }
   await markDirty(env);
@@ -305,7 +323,7 @@ export async function addPayment(env, expenseId, input, ctx, by) {
   }
   const amount = toNumberOrNull(input.amount);
   if (amount == null || amount <= 0) throw new Error("Payment amount must be more than zero.");
-  const paidOn = toText(input.paid_on) || new Date().toISOString().slice(0, 10);
+  const paidOn = toText(input.paid_on) || localToday(ctx.settings.time_zone);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(paidOn)) throw new Error("Payment date must be YYYY-MM-DD.");
   const result = await run(
     env,
@@ -318,6 +336,16 @@ export async function addPayment(env, expenseId, input, ctx, by) {
     toText(input.note),
     by || null
   );
+  // A payment that covers what was due clears the due date, so it stops reading overdue.
+  // With no amount set, the due date is for the rest, so it clears once that's paid.
+  if (expense.due_date) {
+    const due = toNumberOrNull(expense.due_amount);
+    const paid = await first(env, "SELECT COALESCE(SUM(amount), 0) AS paid FROM payments WHERE expense_id = ?", expenseId);
+    const covered = due != null && due > 0 ? amount + 0.005 >= due : paid.paid + 0.005 >= expenseTotals(expense, ctx).total;
+    if (covered) {
+      await run(env, "UPDATE expenses SET due_date = NULL, due_amount = NULL, updated_at = datetime('now') WHERE id = ?", expenseId);
+    }
+  }
   await advanceAfterPayment(env, expenseId, ctx, by, `Payment of ${amount.toFixed(2)}`);
   await markDirty(env);
   return result.meta.last_row_id;

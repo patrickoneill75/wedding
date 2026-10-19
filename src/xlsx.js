@@ -84,6 +84,12 @@ function parseSharedStrings(xml) {
   return [...xml.matchAll(/<si>([\s\S]*?)<\/si>/g)].map((m) => textRuns(m[1]));
 }
 
+/** True when a formula has a cell reference that isn't fully absolute ($F$43 is; F43 isn't). */
+function hasRelativeRef(formula) {
+  if (!formula) return false;
+  return [...String(formula).matchAll(/(\$?)\b([A-Z]{1,3})(\$?)(\d+)\b/g)].some((m) => !m[1] || !m[3]);
+}
+
 function parseSheet(xml, shared) {
   const cells = new Map();
   const sharedFormulas = new Map();
@@ -100,7 +106,10 @@ function parseSheet(xml, shared) {
       formula = fm[2] ? decodeXml(fm[2]) : null;
       if (si != null) {
         if (formula) sharedFormulas.set(si, formula);
-        else formula = sharedFormulas.get(si) || null;
+        // A filled-down formula's other cells shift its relative references (F43 in the
+        // first row is F44 in the next). Rather than shift them, a child of a formula
+        // with any relative reference has no formula: the importer uses its value.
+        else formula = hasRelativeRef(sharedFormulas.get(si)) ? null : sharedFormulas.get(si) || null;
       }
     }
     // An empty <v></v> (a formula never calculated) is "no value", not zero.

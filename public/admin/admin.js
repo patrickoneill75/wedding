@@ -34,10 +34,18 @@ export const compactMoney = (n) => {
 export const pct = (n) => `${Math.round((Number(n) || 0) * 1000) / 10}%`;
 export function fmtDate(iso) {
   if (!iso) return "—";
-  const d = new Date(`${String(iso).slice(0, 10)}T12:00:00`);
+  // A timestamp ("2026-10-19 23:30:00", stored in UTC) shows its day here, not UTC's;
+  // a plain date is that day.
+  const text = String(iso);
+  const stamp = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(text);
+  const d = stamp ? new Date(`${text.replace(" ", "T")}${/Z|[+-]\d{2}:?\d{2}$/.test(text) ? "" : "Z"}`) : new Date(`${text.slice(0, 10)}T12:00:00`);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
-export const today = () => new Date().toISOString().slice(0, 10);
+/** Today's date on this device (YYYY-MM-DD), not in UTC: an evening entry is today's. */
+export const today = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 
 /** h("div", { class: "x", onclick }, child, "text", [children]) -> Element */
 export function h(tag, attrs = {}, ...children) {
@@ -89,6 +97,10 @@ export const canSee = (user, key) => user.role === "admin" || (key !== "admin" &
  * without access to this page is sent to the first page they have.
  */
 export async function initPage(active) {
+  // Any action that fails without its own message says so, rather than look stuck.
+  addEventListener("unhandledrejection", (ev) => {
+    if (ev.reason?.message && ev.reason.message !== "Not signed in.") alert(ev.reason.message);
+  });
   const bar = document.getElementById("topbar");
   const me = await api("/api/auth/me");
   const mine = PAGES.filter(([, , key]) => canSee(me.user, key));
@@ -96,7 +108,11 @@ export async function initPage(active) {
   if (here && !canSee(me.user, here[2])) {
     if (mine.length) location.replace(`/admin/${mine[0][0]}`);
     else document.querySelector(".wrap").replaceChildren(h("div", { class: "card" }, h("h2", {}, "No pages yet"),
-      h("p", { class: "desc" }, `You're signed in as ${me.user.email}, but no pages have been given to you yet. Ask Patrick or Kaitlyn.`)));
+      h("p", { class: "desc" }, `You're signed in as ${me.user.email}, but no pages have been given to you yet. Ask Patrick or Kaitlyn.`),
+      h("button", { onclick: async () => {
+        await api("/api/auth/logout", { method: "POST" });
+        location.href = "/admin/login.html";
+      } }, "Sign out")));
     // Never resolve: the page's own script stops here, without an error in the console.
     return new Promise(() => {});
   }
@@ -105,7 +121,9 @@ export async function initPage(active) {
     h(
       "nav",
       {},
-      mine.filter(([, , , inNav]) => inNav).map(([href, label]) => h("a", { href: `/admin/${href}`, class: href === active ? "active" : "" }, label))
+      // Reports is reached from Guests and Vendors; someone given Reports without either
+      // gets it in the bar.
+      mine.filter(([, , key, inNav]) => inNav || (key === "reports" && !canSee(me.user, "guests") && !canSee(me.user, "vendors"))).map(([href, label]) => h("a", { href: `/admin/${href}`, class: href === active ? "active" : "" }, label))
     ),
     h(
       "span",
@@ -168,10 +186,15 @@ export function formValues(form) {
 export function field(label, name, opts = {}) {
   let control;
   if (opts.options) {
+    // A saved value that's no longer offered (a payer since renamed) stays as an option,
+    // so saving the form doesn't quietly change it to the first one.
+    const options = [...opts.options];
+    const current = opts.value == null ? "" : String(opts.value);
+    if (current && !options.some(([value]) => String(value) === current)) options.push([current, `${current} (no longer listed)`]);
     control = h(
       "select",
       { name },
-      opts.options.map(([value, text]) => h("option", { value, selected: String(value) === String(opts.value ?? "") }, text))
+      options.map(([value, text]) => h("option", { value, selected: String(value) === current }, text))
     );
   } else if (opts.type === "textarea") {
     control = h("textarea", { name, placeholder: opts.placeholder || "" });

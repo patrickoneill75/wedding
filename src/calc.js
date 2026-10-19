@@ -176,7 +176,12 @@ export function mergeSettings(stored) {
   }
   merged.priority_weights = { ...DEFAULT_SETTINGS.priority_weights, ...(merged.priority_weights || {}) };
   merged.drinks = { ...DEFAULT_SETTINGS.drinks, ...(merged.drinks || {}) };
-  merged.rsvp_page = { ...DEFAULT_SETTINGS.rsvp_page, ...(merged.rsvp_page || {}) };
+  // A blank wording field means "use the default" (the editor shows it as the
+  // placeholder); only the heading may be blank, which shows your names.
+  merged.rsvp_page = { ...DEFAULT_SETTINGS.rsvp_page };
+  for (const [key, value] of Object.entries(stored?.rsvp_page || {})) {
+    if (Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS.rsvp_page, key) && (String(value ?? "").trim() || key === "heading")) merged.rsvp_page[key] = value;
+  }
   if (!Array.isArray(merged.calendar_events)) merged.calendar_events = [];
   merged.email_design = { ...DEFAULT_SETTINGS.email_design, ...(merged.email_design || {}) };
   return merged;
@@ -218,6 +223,9 @@ export function guestCounts(guests, settings) {
     if (guest.plus_one_allowed) {
       plusOnesAllowed++;
       invited++;
+      // A plus-one goes where their guest goes, as in the Head count report.
+      if (guest.invite_ceremony) invites.ceremony++;
+      if (guest.invite_reception) invites.reception++;
       weightedSum += weightOf(guest.priority);
       tally(guest.plus_one_rsvp);
     }
@@ -241,15 +249,19 @@ export function guestCounts(guests, settings) {
 }
 
 /** The spreadsheet's drinks calculator, for a given number of guests. */
+// A bottle or beer size of 0, blank or less falls back to the usual size (and the same
+// in the Settings preview, public/admin/settings.html).
+const size = (value, fallback) => (num(value) > 0 ? num(value) : fallback);
+
 export function drinksPlan(params, guestCount) {
   const p = { ...DEFAULT_SETTINGS.drinks, ...(params || {}) };
   const g = num(guestCount);
   const hours = num(p.hours);
   const total = Math.ceil(num(p.first_hour_drinks) * g + Math.max(hours - 1, 0) * num(p.later_hour_drinks) * g - 1e-9);
   const wineDrinks = Math.round(total * num(p.wine_share));
-  const wineBottles = Math.round(wineDrinks / Math.max(num(p.drinks_per_wine_bottle, 5), 1));
+  const wineBottles = Math.round(wineDrinks / Math.max(size(p.drinks_per_wine_bottle, 5), 1));
   const beerDrinks = Math.round(total * num(p.beer_share));
-  const beerOunces = beerDrinks * num(p.ounces_per_beer, 12);
+  const beerOunces = beerDrinks * size(p.ounces_per_beer, 12);
   const liquorDrinks = Math.round(total * num(p.liquor_share));
   return {
     guests: g,
@@ -264,7 +276,7 @@ export function drinksPlan(params, guestCount) {
     quarter_kegs: cents(beerOunces / KEG_OUNCES.quarter),
     sixth_kegs: cents(beerOunces / KEG_OUNCES.sixth),
     liquor_drinks: liquorDrinks,
-    liquor_bottles: Math.round(liquorDrinks / Math.max(num(p.drinks_per_liquor_bottle, 15), 1)),
+    liquor_bottles: Math.round(liquorDrinks / Math.max(size(p.drinks_per_liquor_bottle, 15), 1)),
     nonalc_drinks: Math.round(hours * g * num(p.nonalc_per_guest_hour)),
   };
 }
@@ -324,7 +336,8 @@ export function enrichExpense(expense, paid, ctx) {
   let projected;
   if (expense.status === "cancelled") projected = paidAmount;
   else if (expense.status === "paid") projected = paidAmount > 0 ? paidAmount : current;
-  else projected = current;
+  // A deposit on an item with no price yet (or more paid than the price) still counts.
+  else projected = Math.max(current, paidAmount);
   return {
     ...expense,
     ...totals,
@@ -340,15 +353,23 @@ export function enrichExpense(expense, paid, ctx) {
 }
 
 /** Roll each item's line items up into it (see the module docstring). */
+// A line item of a cancelled item counts as cancelled too (its own stage is kept, so
+// un-cancelling the item brings it back): nothing more is owed or due on it.
+const cancelledWithParent = (k) => ({
+  ...k, status: "cancelled", own_status: k.status, estimate: 0, projected: k.paid, owed: 0, actual: k.paid, incurred: k.paid, estimated: 0,
+});
+
 export function rollupPurchases(expenses) {
+  const cancelled = new Set(expenses.filter((e) => !e.parent_id && e.status === "cancelled").map((e) => e.id));
+  const rows = expenses.map((e) => (e.parent_id && cancelled.has(e.parent_id) && e.status !== "cancelled" ? cancelledWithParent(e) : e));
   const kids = new Map();
-  for (const e of expenses) {
+  for (const e of rows) {
     if (e.parent_id) {
       if (!kids.has(e.parent_id)) kids.set(e.parent_id, []);
       kids.get(e.parent_id).push(e);
     }
   }
-  return expenses.map((e) => {
+  return rows.map((e) => {
     const list = kids.get(e.id);
     if (!list || e.parent_id) return { ...e, purchases: 0 };
     const spent = cents(list.reduce((s, k) => s + k.projected, 0));
@@ -401,7 +422,16 @@ export function statusAfterPayment(expense, paid, ctx) {
 }
 
 /** Totals for the dashboard: by category, by status, payments over time, what's due. */
-export function summarize(all, payments, ctx, today = new Date().toISOString().slice(0, 10)) {
+/** Today's date (YYYY-MM-DD) where the wedding is, not in UTC: an evening entry is today's. */
+export function localToday(timeZone, now = new Date()) {
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  } catch {
+    return now.toISOString().slice(0, 10);
+  }
+}
+
+export function summarize(all, payments, ctx, today = localToday(ctx.settings?.time_zone)) {
   // Top-level rows carry the totals (a parent already includes its purchases); stages
   // and due dates come from the rows that are actually bought: purchases and items
   // without purchases.

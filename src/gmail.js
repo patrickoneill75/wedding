@@ -30,7 +30,9 @@ export async function saveGmailTokens(env, tokens, who) {
 export async function disconnectGmail(env) {
   const stored = await getSetting(env, "_gmail");
   await deleteSetting(env, "_gmail");
-  if (stored?.refresh_token) {
+  // Revoking ends the whole Google grant, Drive's too when it's the same account.
+  const drive = await getSetting(env, "_google_drive");
+  if (stored?.refresh_token && !(drive?.refresh_token && drive.email && drive.email === stored.email)) {
     await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(stored.refresh_token)}`, { method: "POST" }).catch(() => {});
   }
 }
@@ -71,7 +73,7 @@ export async function openGmail(env) {
     }),
   });
   if (!response.ok) {
-    const message = `Gmail stopped accepting the connection (${response.status}). Reconnect Gmail in Communications.`;
+    const message = `Gmail stopped accepting the connection (${response.status}). Reconnect Gmail in Settings.`;
     await setSetting(env, "_gmail", { ...stored, last_error: message, last_error_at: new Date().toISOString() });
     throw new GmailConnectionError(message);
   }

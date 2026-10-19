@@ -1,6 +1,6 @@
 /**
- * The seating chart, mounted under /api/admin/seating/* (admins only, like the rest of
- * src/admin_api.js).
+ * The seating chart, mounted under /api/admin/seating/* (admins, and users with the
+ * Seating page).
  *
  *   GET    seating                  rooms, templates, everything placed, who sits where,
  *                                   and the people who can be seated
@@ -11,12 +11,17 @@
  *   POST   seating/items            { room_id, kind: "table" | "seat" | "note" | "shape", template_id?,
  *                                     count? (chairs in a row), ...fields }
  *   PUT    seating/items/:id / DELETE seating/items/:id
+ *   POST   seating/items/lock       { ids, locked } lock or unlock several at once
+ *   POST   seating/items/arrange    { moves: [{ id, x, y }] } several at once (the align
+ *                                   and distribute tools, dragging a selection), one query
  *   POST   seating/assign           { item_id, seat_letter, guest_id, plus_one } puts that
  *                                   person in that seat (moving them from any other);
  *                                   guest_id null empties the seat
  *
  * A shape is a rectangle or oval of any size (a dance floor, the bar, a stage) with optional
- * text centered in it; nobody sits at one.
+ * text centered in it; nobody sits at one. Sizes and turns keep two decimals (12.75 ft,
+ * 22.50°). Anything can be locked: a locked item can't be moved, turned or resized until
+ * it's unlocked.
  *
  * Sizes and positions are in feet. A table's seats are lettered A, B, C ... clockwise
  * from the top (public/admin/seating.html draws them); a single chair has one seat, A. Only reception rooms take seat
@@ -91,13 +96,17 @@ function cleanItem(input, kind) {
   if (has(input, "label")) patch.label = text(input.label, kind === "note" || kind === "shape" ? 200 : 20);
   if (has(input, "x")) patch.x = number(input.x, "Position", -50, 550);
   if (has(input, "y")) patch.y = number(input.y, "Position", -50, 550);
-  if (has(input, "rotation")) patch.rotation = ((Math.round(number(input.rotation, "Rotation", -360, 360)) % 360) + 360) % 360;
+  if (has(input, "rotation")) {
+    const turn = number(input.rotation, "Rotation", -360, 360);
+    patch.rotation = Math.round((((turn % 360) + 360) % 360) * 100) / 100 % 360;
+  }
+  if (has(input, "locked")) patch.locked = input.locked === true || input.locked === 1 || input.locked === "1" || input.locked === "on" ? 1 : 0;
   if (kind === "table") cleanTableShape(input, patch);
   if ((kind === "note" || kind === "shape") && has(input, "font_size")) patch.font_size = number(input.font_size, "Text size", 0.5, 10);
   if (kind === "shape") {
     if (has(input, "shape")) patch.shape = oneOf(input.shape, SHAPES, "Shape");
-    if (has(input, "width_ft")) patch.width_ft = number(input.width_ft, "Width", 0.5, 500);
-    if (has(input, "length_ft")) patch.length_ft = number(input.length_ft, "Length", 0.5, 500);
+    if (has(input, "width_ft")) patch.width_ft = number(input.width_ft, "Width", 0.1, 500);
+    if (has(input, "length_ft")) patch.length_ft = number(input.length_ft, "Length", 0.1, 500);
     if (has(input, "color")) patch.color = oneOf(input.color, SHAPE_COLORS, "Color");
   }
   return patch;
@@ -113,22 +122,28 @@ const update = (env, table, id, patch) => {
   return run(env, `UPDATE ${table} SET ${columns.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`, ...columns.map((c) => patch[c]), id);
 };
 
-/** Table numbers (and chair names) are unique within a room, ignoring case. */
-async function checkLabel(env, roomId, label, exceptId = 0) {
-  if (!label) return;
-  const clash = await first(
-    env,
-    "SELECT id FROM seating_items WHERE room_id = ? AND kind IN ('table', 'seat') AND lower(label) = lower(?) AND id <> ?",
-    roomId,
-    label,
-    exceptId
-  );
-  if (clash) throw new Error(`There's already a table ${label} in this room.`);
+/**
+ * Where a number must be unique. Reception tables and chairs are numbered across every
+ * reception room, since escort cards, reports and the day-of view say "table 1" without
+ * the room. Elsewhere only tables are numbered, within their room; chairs there can
+ * share a label ("Row A").
+ */
+const labelScope = (room) => (room.kind === "reception"
+  ? { sql: "room_id IN (SELECT id FROM seating_rooms WHERE kind = 'reception') AND kind IN ('table', 'seat')", params: [] }
+  : { sql: "room_id = ? AND kind = 'table'", params: [room.id] });
+
+/** Table numbers (and reception chair numbers) are unique, ignoring case; see labelScope. */
+async function checkLabel(env, room, label, exceptId = 0, kind = "table") {
+  if (!label || (kind === "seat" && room.kind !== "reception")) return;
+  const scope = labelScope(room);
+  const clash = await first(env, `SELECT id FROM seating_items WHERE ${scope.sql} AND lower(label) = lower(?) AND id <> ?`, ...scope.params, label, exceptId);
+  if (clash) throw new Error(`There's already a table or chair ${label}${room.kind === "reception" ? " in a reception room" : " in this room"}.`);
 }
 
-/** The next free whole number for a table in this room ("1", "2", ...). */
-async function nextLabel(env, roomId) {
-  const rows = await all(env, "SELECT label FROM seating_items WHERE room_id = ? AND kind IN ('table', 'seat')", roomId);
+/** The next free whole number for a table ("1", "2", ...); see labelScope. */
+async function nextLabel(env, room) {
+  const scope = labelScope(room);
+  const rows = await all(env, `SELECT label FROM seating_items WHERE ${scope.sql}`, ...scope.params);
   const max = rows.reduce((m, r) => (/^\d+$/.test(r.label) ? Math.max(m, Number(r.label)) : m), 0);
   return String(max + 1);
 }
@@ -236,8 +251,8 @@ async function createItem(env, input) {
     patch.shape = null;
     let start = 0;
     if (room.kind === "reception") {
-      if (patch.label && count === 1) await checkLabel(env, room.id, patch.label);
-      else start = Number(await nextLabel(env, room.id));
+      if (patch.label && count === 1) await checkLabel(env, room, patch.label, 0, "seat");
+      else start = Number(await nextLabel(env, room));
     }
     const rows = [];
     for (let i = 0; i < count; i++) {
@@ -264,22 +279,29 @@ async function createItem(env, input) {
   }
   const patch = Object.assign(base, shape, cleanItem(input, kind));
   if (patch.shape === "round") patch.length_ft = patch.width_ft;
-  if (patch.label) await checkLabel(env, room.id, patch.label);
-  else patch.label = await nextLabel(env, room.id);
+  if (patch.label) await checkLabel(env, room, patch.label);
+  else patch.label = await nextLabel(env, room);
   const result = await insert(env, "seating_items", patch);
   return [result.meta.last_row_id];
 }
 
 async function updateItem(env, id, input) {
-  const item = await first(env, "SELECT * FROM seating_items WHERE id = ?", id);
+  const item = await first(env, "SELECT i.*, r.kind AS room_kind FROM seating_items i JOIN seating_rooms r ON r.id = i.room_id WHERE i.id = ?", id);
   if (!item) return false;
+  const room = { id: item.room_id, kind: item.room_kind };
   const patch = cleanItem(input, item.kind);
+  // Locked in place: no moving, turning or resizing until it's unlocked (this save may
+  // unlock it and move it at once).
+  const placing = ["x", "y", "rotation", "width_ft", "length_ft", "shape"].some((k) => has(patch, k) && patch[k] !== item[k]);
+  if (item.locked && patch.locked !== 0 && placing) throw new Error("This is locked in place. Unlock it first.");
   if (item.kind === "table" && (patch.shape || item.shape) === "round") {
     patch.length_ft = has(patch, "width_ft") ? patch.width_ft : item.width_ft;
   }
   if ((item.kind === "table" || item.kind === "seat") && has(patch, "label")) {
     if (!patch.label && item.kind === "table") throw new Error("A table needs a number.");
-    await checkLabel(env, item.room_id, patch.label, id);
+    // Someone may sit in a reception chair: it keeps a number.
+    if (!patch.label && item.kind === "seat" && room.kind === "reception") throw new Error("A chair needs a number.");
+    await checkLabel(env, room, patch.label, id, item.kind);
   }
   if (item.kind === "note" && has(patch, "label") && !patch.label) throw new Error("A note needs some text.");
   await update(env, "seating_items", id, patch);
@@ -296,6 +318,23 @@ async function updateItem(env, id, input) {
   return true;
 }
 
+/**
+ * Move several items in one UPDATE (with literal values, so a long list stays one
+ * query and under D1's bound-parameter limit). Locked items are refused.
+ */
+async function arrange(env, moves) {
+  if (!Array.isArray(moves) || !moves.length) throw new Error("Nothing to move.");
+  if (moves.length > 300) throw new Error("That's more than 300 at once.");
+  const clean = moves.map((m) => ({ id: Number(m?.id), x: number(m?.x, "Position", -50, 550), y: number(m?.y, "Position", -50, 550) }));
+  if (clean.some((m) => !Number.isInteger(m.id))) throw new Error("Pick what to move.");
+  const ids = [...new Set(clean.map((m) => m.id))];
+  const found = await all(env, `SELECT id, locked FROM seating_items WHERE id IN (${ids.join(",")})`);
+  if (found.length !== ids.length) throw new Error("Something to move is gone. Reload the page.");
+  if (found.some((f) => f.locked)) throw new Error("Some of these are locked in place. Unlock them first.");
+  const when = (key) => clean.map((m) => `WHEN ${m.id} THEN ${sqlValue(m[key])}`).join(" ");
+  await run(env, `UPDATE seating_items SET x = CASE id ${when("x")} END, y = CASE id ${when("y")} END WHERE id IN (${ids.join(",")})`);
+}
+
 async function assign(env, input) {
   const item = await first(
     env,
@@ -306,7 +345,17 @@ async function assign(env, input) {
   if (item.room_kind !== "reception") throw new Error("Seats are only assigned in a reception room.");
   const letter = String(input.seat_letter || "").toUpperCase();
   if (!seatLetters(item.seats).includes(letter)) throw new Error(`Table ${item.label} has no seat ${letter || "(none)"}.`);
-  if (!item.label) throw new Error("Give this table a number first.");
+  if (!item.label) throw new Error(`Give this ${item.kind === "seat" ? "chair" : "table"} a number first.`);
+  // A room just made a reception room can hold chairs or tables that share a number
+  // with others: seating someone there would put two people at "table 1 A".
+  const clash = await first(
+    env,
+    `SELECT i.id FROM seating_items i JOIN seating_rooms r ON r.id = i.room_id
+      WHERE r.kind = 'reception' AND i.kind IN ('table', 'seat') AND lower(i.label) = lower(?) AND i.id <> ?`,
+    item.label,
+    item.id
+  );
+  if (clash) throw new Error(`Two tables or chairs share the number ${item.label}. Renumber one first.`);
 
   if (input.guest_id === null || input.guest_id === undefined || input.guest_id === "") {
     await run(env, "DELETE FROM seat_assignments WHERE item_id = ? AND seat_letter = ?", item.id, letter);
@@ -394,6 +443,19 @@ export async function handleSeating(parts, method, request, env, body) {
       await run(env, "DELETE FROM seating_templates WHERE id = ?", id);
       return json(await overview(env));
     }
+  }
+
+  if (section === "items" && rawId === "lock" && method === "POST") {
+    const input = await body(request);
+    const ids = (Array.isArray(input.ids) ? input.ids : []).map(Number).filter(Number.isInteger);
+    if (!ids.length) throw new Error("Pick what to lock.");
+    await run(env, `UPDATE seating_items SET locked = ? WHERE id IN (${ids.join(",")})`, input.locked ? 1 : 0);
+    return json(await overview(env));
+  }
+
+  if (section === "items" && rawId === "arrange" && method === "POST") {
+    await arrange(env, (await body(request)).moves);
+    return json(await overview(env));
   }
 
   if (section === "items") {

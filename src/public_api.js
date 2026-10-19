@@ -22,10 +22,12 @@
  *   plus-one is only accepted for a guest who was given one, and a rehearsal dinner
  *   answer only from a guest invited to it.
  *
- * Expense form (/submit, for the two of us): every route needs the control panel's
- * Google sign-in (and the X-Wedding header on POSTs), and knows who is signed in.
- *   GET  expense/options      categories, items (top level, not line items), vendors,
- *                             payers, methods, and `me`: the payer who is signed in
+ * Expense form (/submit, for anyone with the Expenses page): every route needs the
+ * control panel's Google sign-in (and the X-Wedding header on POSTs), and knows who is
+ * signed in.
+ *   GET  expense/options      stages, categories, subcategories, items (top level, not
+ *                             line items), vendors, payers, and `me`: the payer who is
+ *                             signed in
  *   POST expense/chat         { messages, who, today }: one turn of the conversational
  *                             form (src/intake.js). Proposes an entry; never saves one.
  *   POST expense              multipart: a new item, a line item under an existing item
@@ -42,6 +44,7 @@ import { addPayment, createExpense, loadContext, loadSettings, listExpenses, lis
 import { uploadReceipt } from "./google.js";
 import { intakeTurn, payerFor } from "./intake.js";
 import { householdIcs, icsFor, queueAfterRsvp, testHousehold } from "./comms.js";
+import { eventsFor } from "./calendar.js";
 
 export { payerFor };
 
@@ -62,13 +65,26 @@ async function body(request) {
   }
 }
 
-/** Lowercase, strip accents and anything that isn't a letter: "O'Neill " -> "oneill". */
+/**
+ * Lowercase, strip accents and anything that isn't a letter: "O'Neill " -> "oneill".
+ * Letters of any script count, so "Ольга" stays findable.
+ */
 export function normalizeName(text) {
   return String(text || "")
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/\p{M}/gu, "")
     .toLowerCase()
-    .replace(/[^a-z]/g, "");
+    .replace(/[^\p{L}]/gu, "");
+}
+
+/**
+ * "alex@gmail.com" -> "a•••@gmail.com". The RSVP page shows only this, so a visitor
+ * who opens a household can't read its email addresses.
+ */
+export function maskEmail(email) {
+  const [user, domain] = String(email || "").split("@");
+  if (!user || !domain) return "";
+  return `${user[0]}•••@${domain}`;
 }
 
 function firstNameMatches(stored, typed) {
@@ -83,7 +99,8 @@ function firstNameMatches(stored, typed) {
 /** When and where the rehearsal dinner is, from its calendar invite entry, if there is one. */
 function rehearsalDetails(settings) {
   const event = (settings.calendar_events || []).find((e) => e.for === "rehearsal");
-  return event ? { date: event.date || "", start: event.start || "", location: event.location || "" } : null;
+  // An all-day event keeps the time typed before "All day" was ticked; it isn't shown.
+  return event ? { date: event.date || "", start: event.all_day ? "" : event.start || "", location: event.location || "" } : null;
 }
 
 async function householdForRsvp(env, householdId, settings) {
@@ -99,7 +116,8 @@ async function householdForRsvp(env, householdId, settings) {
   const rehearsal = guests.some((g) => g.invite_rehearsal) ? rehearsalDetails(settings) : null;
   return {
     greeting: household.greeting || household.display_name,
-    email: household.email || "",
+    // Emails come back masked: the page shows what's on file without revealing it.
+    email_hint: maskEmail(household.email),
     message: household.rsvp_message || "",
     responded: Boolean(household.rsvp_at),
     // Only a household with someone invited to the rehearsal dinner hears when it is.
@@ -108,7 +126,7 @@ async function householdForRsvp(env, householdId, settings) {
       id: g.id,
       first_name: g.first_name,
       last_name: g.last_name,
-      email: g.email || "",
+      email_hint: maskEmail(g.email),
       // What each guest is invited to, so the page can say so under their name.
       ceremony: Boolean(g.invite_ceremony),
       reception: Boolean(g.invite_reception),
@@ -162,9 +180,18 @@ export function searchGuests(guests, query, limit = SEARCH_LIMIT) {
 }
 
 async function rsvpSearch(env, input) {
-  const guests = await all(env, "SELECT id, first_name, last_name FROM guests");
+  const rows = await all(env, "SELECT id, first_name, last_name, plus_one_allowed, plus_one_name FROM guests");
+  // A plus-one whose name was preloaded finds their host's invitation: their name is a
+  // search entry whose pick opens the host's household.
+  const people = rows.flatMap((g) => {
+    const own = { id: g.id, first_name: g.first_name, last_name: g.last_name };
+    const typed = g.plus_one_allowed ? String(g.plus_one_name || "").trim() : "";
+    if (!typed) return [own];
+    const [first = "", ...rest] = typed.split(/\s+/);
+    return [own, { id: g.id, first_name: first, last_name: rest.join(" ") }];
+  });
   const results = [];
-  for (const g of searchGuests(guests, input.q)) {
+  for (const g of searchGuests(people, input.q)) {
     results.push({
       name: `${String(g.first_name).trim()} ${String(g.last_name).trim()}`.trim(),
       pick: await sign(env, { kind: "pick", g: g.id }, PICK_TOKEN_TTL),
@@ -218,9 +245,12 @@ async function rsvpSubmit(env, input, { preview = false } = {}) {
   if (!token || token.kind !== "rsvp") return json({ error: "This RSVP page expired. Look up your name again." }, 400);
   const householdId = token.h;
   // One email for the household is required: it's where the details and reminders go.
-  const email = String(input.email ?? "").trim().slice(0, 200);
-  if (!EMAIL.test(email)) return json({ error: email ? "That email address doesn't look right." : "Add an email address so we can send you the details." }, 400);
-  const members = await all(env, "SELECT id, plus_one_allowed, invite_rehearsal FROM guests WHERE household_id = ?", householdId);
+  // The page only sees it masked, so a blank keeps the one on file.
+  const onFile = await first(env, "SELECT email FROM households WHERE id = ?", householdId);
+  const typed = String(input.email ?? "").trim().slice(0, 200);
+  const email = typed || String(onFile?.email || "").trim();
+  if (!EMAIL.test(email)) return json({ error: typed ? "That email address doesn't look right." : "Add an email address so we can send you the details." }, 400);
+  const members = await all(env, "SELECT id, plus_one_allowed, invite_rehearsal, invite_ceremony, invite_reception FROM guests WHERE household_id = ?", householdId);
   const byId = new Map(members.map((m) => [m.id, m]));
   const answers = Array.isArray(input.guests) ? input.guests : [];
   const clip = (v, n = 500) => (v == null ? null : String(v).trim().slice(0, n) || null);
@@ -231,7 +261,8 @@ async function rsvpSubmit(env, input, { preview = false } = {}) {
     if (!guest) continue;
     if (!["yes", "no"].includes(answer.rsvp)) return json({ error: "Let us know whether each person is coming." }, 400);
     const set = { rsvp: answer.rsvp, dietary: clip(answer.dietary) };
-    // A guest's own email is optional; a blank one leaves what's on file.
+    // A guest's own email is optional; a blank one leaves what's on file (the page only
+    // sees it masked).
     const guestEmail = clip(answer.email, 200);
     if (guestEmail && !EMAIL.test(guestEmail)) return json({ error: `The email for one of your guests doesn't look right.` }, 400);
     if (guestEmail) set.email = guestEmail;
@@ -270,17 +301,23 @@ async function rsvpSubmit(env, input, { preview = false } = {}) {
 
   if (preview) {
     const household = await householdForRsvp(env, householdId, settings);
+    // Whether a calendar button shows follows the previewed answers, not the saved ones.
+    const previewed = members.map((m) => ({ ...m, ...(changes.get(m.id) || {}) }));
+    const hasEvents = eventsFor(settings.calendar_events, previewed).length > 0;
     return json({
       ok: true,
       preview: true,
       household: {
         ...household,
-        email,
+        email_hint: maskEmail(email),
         message: message || "",
         responded: true,
-        guests: household.guests.map((g) => ({ ...g, ...Object.fromEntries(Object.entries(changes.get(g.id) || {}).map(([k, v]) => [k, v ?? ""])) })),
+        guests: household.guests.map((g) => {
+          const { email: guestEmail, ...set } = changes.get(g.id) || {};
+          return { ...g, ...Object.fromEntries(Object.entries(set).map(([k, v]) => [k, v ?? ""])), ...(guestEmail ? { email_hint: maskEmail(guestEmail) } : {}) };
+        }),
       },
-      calendar_url: await calendarUrl(),
+      calendar_url: hasEvents ? `/api/public/calendar?t=${encodeURIComponent(await sign(env, { kind: "cal", h: householdId }, CALENDAR_TOKEN_TTL))}` : null,
     });
   }
 
@@ -358,7 +395,16 @@ async function submitExpense(env, form) {
   const status = field("status") || "estimate";
   if (!STATUSES.includes(status)) return json({ error: "Pick a stage." }, 400);
 
-  let expenseId = Number(field("expense_id")) || null;
+  // Only a line item or an update names an existing item: a new item never does, even
+  // if an id comes along with it.
+  const mode = field("mode");
+  let expenseId = mode === "purchase" || mode === "update" ? Number(field("expense_id")) || null : null;
+  if ((mode === "purchase" || mode === "update") && !expenseId) return json({ error: "Pick the item first." }, 400);
+  // Check the payment before anything is saved, so a bad amount can't leave a saved
+  // item behind for a second Save to duplicate. Blank or 0 means nothing was paid.
+  const paymentText = field("payment_amount");
+  const paymentAmount = paymentText === "" ? 0 : Number(paymentText);
+  if (!Number.isFinite(paymentAmount) || paymentAmount < 0) return json({ error: "The amount paid must be a number, zero or more." }, 400);
   const price = field("price");
   const note = field("notes");
   // Who/when/how it was paid: used for the payment Paid records, or the one typed in.
@@ -367,12 +413,12 @@ async function submitExpense(env, form) {
     const existing = await first(env, "SELECT id, pricing, parent_id FROM expenses WHERE id = ?", expenseId);
     if (!existing) return json({ error: "That item no longer exists. Reload the form." }, 400);
     // A line item can be updated (its quote went up), but takes no line items of its own.
-    if (existing.parent_id && field("mode") === "purchase") return json({ error: "A line item can't have line items of its own." }, 400);
+    if (existing.parent_id && mode === "purchase") return json({ error: "A line item can't have line items of its own." }, 400);
     const split = await first(env, "SELECT id FROM expenses WHERE parent_id = ? LIMIT 1", existing.id);
-    if (field("mode") !== "purchase" && split) {
+    if (mode !== "purchase" && split) {
       return json({ error: "That item is split into line items. Add a line item to it instead." }, 400);
     }
-    if (field("mode") === "purchase") {
+    if (mode === "purchase") {
       // A new line item filed under the chosen item.
       expenseId = await createExpense(
         env,
@@ -401,6 +447,10 @@ async function submitExpense(env, form) {
       if (field("units")) patch.units = field("units");
       if (field("vendor")) patch.vendor = field("vendor");
       if (field("due_date")) patch.due_date = field("due_date");
+      // Tax and tip are only ever added by an update (the chat can't see what an item
+      // has), never cleared.
+      if (field("taxable") === "on" || field("taxable") === "1") patch.taxable = true;
+      if (Number(field("gratuity_percent")) > 0) patch.gratuity_rate = Number(field("gratuity_percent")) / 100;
       if (!payment.payer) delete patch.payer;
       await updateExpense(env, expenseId, patch, ctx, by);
     }
@@ -432,12 +482,12 @@ async function submitExpense(env, form) {
 
   let paymentId = null;
   // At the Paid stage the payment was already recorded for the full amount.
-  if (field("payment_amount") && status !== "paid") {
+  if (paymentAmount > 0 && status !== "paid") {
     paymentId = await addPayment(
       env,
       expenseId,
       {
-        amount: field("payment_amount"),
+        amount: paymentAmount,
         paid_on: field("paid_on"),
         payer: field("payer"),
         method: field("method"),
@@ -501,14 +551,14 @@ export async function handlePublicApi(route, request, env) {
         contact_email: s.contact_email,
       });
     }
-    if (route === "calendar" && method === "GET") return calendarDownload(env, request);
+    if (route === "calendar" && method === "GET") return await calendarDownload(env, request);
     if (route.startsWith("rsvp/")) {
       const s = await loadSettings(env);
       const preview = !s.rsvp_open && (await previewer(request, env));
       if (!s.rsvp_open && !preview) return json({ error: "RSVPs are closed. Please contact us directly." }, 403);
-      if (route === "rsvp/search" && method === "POST") return rsvpSearch(env, await body(request));
-      if (route === "rsvp/lookup" && method === "POST") return rsvpLookup(env, await body(request));
-      if (route === "rsvp/submit" && method === "POST") return rsvpSubmit(env, await body(request), { preview });
+      if (route === "rsvp/search" && method === "POST") return await rsvpSearch(env, await body(request));
+      if (route === "rsvp/lookup" && method === "POST") return await rsvpLookup(env, await body(request));
+      if (route === "rsvp/submit" && method === "POST") return await rsvpSubmit(env, await body(request), { preview });
     }
     // The expense form takes the control panel's sign-in, with access to Expenses.
     let user = null;
@@ -517,6 +567,7 @@ export async function handlePublicApi(route, request, env) {
       if (denied) return denied;
       user = admin;
     }
+    // `return await` throughout, so a thrown error lands in the catch below as a 400.
     if (route === "expense/options" && method === "GET") return json(await expenseOptions(env, user));
     if (route === "expense/chat" && method === "POST") {
       const input = await body(request);
@@ -527,7 +578,7 @@ export async function handlePublicApi(route, request, env) {
     if (route === "expense" && method === "POST") {
       const form = await request.formData();
       if (!form.get("submitted_by")) form.set("submitted_by", payerFor(user, (await loadSettings(env)).payers) || user.name);
-      return submitExpense(env, form);
+      return await submitExpense(env, form);
     }
     return json({ error: "Not found." }, 404);
   } catch (error) {

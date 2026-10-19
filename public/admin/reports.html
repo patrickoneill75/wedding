@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="/admin/admin.css">
 <style>
   .layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 16px; align-items: start; }
-  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
+  @media (max-width: 860px) { .layout { grid-template-columns: minmax(0, 1fr); } }
   .menu h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 14px 0 6px; }
   .menu h3:first-child { margin-top: 0; }
   .menu button { display: flex; width: 100%; text-align: left; justify-content: flex-start; white-space: normal; border: 0;
@@ -141,10 +141,14 @@ function builder(saved, start = null) {
         h("button", { type: "button", title: "Move right", disabled: i === d.columns.length - 1, onclick: () => { [d.columns[i + 1], d.columns[i]] = [d.columns[i], d.columns[i + 1]]; draw(); } }, "›"),
         h("button", { type: "button", title: "Remove", onclick: () => { d.columns.splice(i, 1); draw(); } }, "×"))));
       const filterLines = d.filters.map((f, i) => {
-        const type = fields().find((x) => x.key === f.field)?.type;
+        const meta = fields().find((x) => x.key === f.field);
+        const type = meta?.type;
         const needsValue = !["empty", "not_empty"].includes(f.op);
+        if (meta?.choices && needsValue && !f.value) f.value = meta.choices[0];
         const value = type === "bool"
           ? h("select", { onchange: (e) => { f.value = e.target.value; } }, [["yes", "Yes"], ["no", "No"]].map(([v, t]) => h("option", { value: v, selected: (f.value || "yes") === v }, t)))
+          : meta?.choices && needsValue
+          ? h("select", { onchange: (e) => { f.value = e.target.value; } }, meta.choices.map((v) => h("option", { value: v, selected: f.value === v }, v)))
           : h("input", { value: f.value || "", placeholder: needsValue ? "value" : "", disabled: !needsValue, oninput: (e) => { f.value = e.target.value; } });
         if (type === "bool" && !f.value) f.value = "yes";
         return h("div", { class: "line" },

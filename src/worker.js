@@ -6,7 +6,7 @@ import { saveDriveTokens } from "./google.js";
 import { saveGmailTokens } from "./gmail.js";
 import { processComms } from "./comms.js";
 import { scheduledSync } from "./sync.js";
-import { ingestSite, serveFont, servePage } from "./site.js";
+import { ingestSite, recordSiteError, serveFont, servePage } from "./site.js";
 import { loadSettings } from "./store.js";
 import { handleDayOf } from "./runofshow.js";
 
@@ -18,10 +18,11 @@ import { handleDayOf } from "./runofshow.js";
  * form at /submit/, the control panel at /admin/.
  *
  *   /api/auth/login      start Google sign-in for the control panel
- *   /api/auth/callback   Google's redirect target (sign-in and Drive connection)
+ *   /api/auth/callback   Google's redirect target (sign-in, and connecting Drive or Gmail)
  *   /api/auth/me         who's signed in (401 if nobody)
  *   /api/auth/logout
- *   /api/admin/*         control panel (src/admin_api.js), admins only
+ *   /api/admin/*         control panel (src/admin_api.js): admins, or users with the
+ *                        page a route belongs to (ROUTE_PAGES)
  *   /api/public/*        RSVP and the unlisted expense form (src/public_api.js)
  *   /api/dayof/*         the coordinator's run of show for /dayof/ (src/runofshow.js):
  *                        the day-of link's key, or a sign-in with Run of show
@@ -75,6 +76,8 @@ async function handleSiteApi(route, request, env) {
     try {
       return json({ ok: true, status: await ingestSite(env, payload) });
     } catch (error) {
+      // Settings shows it: otherwise a refused copy looks like nothing happened.
+      await recordSiteError(env, `GitHub's copy was refused: ${error.message}`, { source: "github" }).catch(() => {});
       return json({ error: error.message }, 400);
     }
   }
@@ -152,7 +155,7 @@ export default {
           console.error("Sending emails failed:", error.message);
           return null;
         })
-        .then((comms) => (comms?.sent || comms?.failed ? null : scheduledSync(env)))
+        .then((comms) => (comms?.sent || comms?.failed || comms?.started ? null : scheduledSync(env)))
         .catch((error) => console.error("Drive sync failed:", error.message))
     );
   },

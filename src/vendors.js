@@ -1,5 +1,5 @@
 /**
- * Vendors, mounted under /api/admin/vendors/* (admins only, like src/admin_api.js).
+ * Vendors, mounted under /api/admin/vendors/* (admins, and users with the Vendors page).
  *
  *   GET    vendors          every vendor with its contacts, flags and what's spent with it
  *   POST   vendors          { name, category, day_of, key_vendor, primary_*, secondary_*, ... }
@@ -45,7 +45,9 @@ function cleanVendor(input) {
   return patch;
 }
 
-const fold = (name) => String(name || "").trim().toLowerCase();
+// ASCII-only, as SQLite's NOCASE compares: "Élan" and "élan" stay two names in both,
+// so a vendor's spending is never counted under two of them.
+const fold = (name) => String(name || "").trim().replace(/[A-Z]/g, (c) => c.toLowerCase());
 
 /** Owed is what's booked and not yet paid, as on the Expenses page; an estimate owes nothing. */
 const owedNow = (e) => Math.max(Math.round(((e.incurred || 0) - (e.paid || 0)) * 100) / 100, 0);

@@ -10,12 +10,13 @@ A Cloudflare Worker with two sides:
     a GitHub Action (`.github/workflows/zola-refresh.yml`) does the copying.
   - The RSVP page at `/rsvp/`, where guests find their name and answer for their
     household.
-  - The expense form at `/submit` (behind the same Google sign-in, so only the two of
-    us can use it; it knows which of us is signed in) for logging expenses, payments
+  - The expense form at `/submit` (behind the same Google sign-in, for us and anyone
+    given the Expenses page; it knows who is signed in) for logging expenses, payments
     and receipts from a phone: a conversation with Claude, who reads receipt photos,
     works out which item an expense belongs to, asks what it can't tell, and shows the
     entry to save. The plain form is at `/submit/form.html`.
-- **Control panel** (`/admin/`, Google sign-in, admins only):
+- **Control panel** (`/admin/`, Google sign-in: the owners, plus anyone added in
+  Settings → Users with the pages they're given):
   - **Dashboard**: guest counts, projected / paid / owed / overdue, upcoming payments,
     a pie of projected cost by category or subcategory, and an estimated vs. actual cost
     table by category, subcategory and item.
@@ -60,7 +61,7 @@ A Cloudflare Worker with two sides:
     and Seating.
 
 Everything syncs to a Google Drive folder as CSV files (guests, expenses, payments,
-price history, planning numbers).
+price history, planning numbers, vendors).
 
 ## How costs work
 
@@ -103,6 +104,7 @@ src/users.js       who can sign in besides the owners, and their pages
 src/comms.js       guest emails: audiences, fill-ins, sending in batches, schedules
 src/gmail.js       the Gmail connection and the email itself (MIME)
 src/calendar.js    the calendar invite (.ics)
+src/email_html.js  guest emails as HTML: the editor's cleaned tags, the plain-text twin, the designs
 src/sync.js        CSV exports and the Drive sync (cron every 5 minutes)
 src/site.js        the Zola website copy: fetch, clean, store, serve
 scripts/zola_refresh.mjs  runs src/site.js on GitHub and sends the pages to the site

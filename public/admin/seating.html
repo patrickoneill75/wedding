@@ -12,16 +12,22 @@
   .rooms button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
   .rooms .kind { font-size: 11px; opacity: .8; }
   .layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
-  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
   .toolbar select { width: auto; }
-  .canvas { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); max-height: 76vh; touch-action: none; }
+  .canvas { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); max-height: 76vh; }
   .canvas svg { display: block; user-select: none; -webkit-user-select: none; }
   .canvas .floor { fill: var(--surface-1); stroke: var(--text-secondary); stroke-width: .12; }
   .canvas .g1 { stroke: var(--grid); stroke-width: .03; }
   .canvas .g5 { stroke: var(--grid); stroke-width: .08; }
   .canvas .ruler { fill: var(--text-muted); font-size: .8px; }
   .canvas .item { cursor: grab; }
+  .canvas .item.locked { cursor: default; }
+  .canvas .lock-mark { font-size: .9px; pointer-events: none; }
+  .canvas .guide { stroke: #d6337a; stroke-width: .07; stroke-dasharray: .35 .2; pointer-events: none; }
+  .align { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 6px 0 12px; }
+  .align button { font-size: 12.5px; padding: 5px 6px; }
+  .panel h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 14px 0 4px; }
   .canvas .item.dragging { cursor: grabbing; }
   .canvas .top { fill: var(--surface-2); stroke: var(--text-secondary); stroke-width: .08; }
   .canvas .sel .top, .canvas .sel .chair.solo { stroke: var(--accent); stroke-width: .2; }
@@ -30,7 +36,8 @@
   .canvas .chair.taken { fill: var(--accent); stroke: var(--accent); }
   .canvas .chair.stale { fill: var(--warn); stroke: var(--warn); }
   .canvas .letter { fill: var(--text-secondary); font-size: .6px; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
-  .canvas .taken + .letter, .canvas .stale + .letter { fill: #fff; font-weight: 650; }
+  .canvas .taken + .letter { fill: #fff; font-weight: 650; }
+  .canvas .stale + .letter { fill: #3a2600; font-weight: 650; }
   .canvas .seatable .chair { cursor: pointer; }
   .canvas .note { fill: var(--text-secondary); font-style: italic; text-anchor: middle; dominant-baseline: central; }
   .canvas .sel .note { fill: var(--accent); }
@@ -59,6 +66,9 @@
     .topbar, .toolbar, .panel, #templatesCard, #whoCard, .rooms, #addRoom { display: none !important; }
     .layout { display: block; }
     .canvas { max-height: none; overflow: visible; border: 0; }
+    /* The whole room on the page, whatever the zoom on screen. */
+    .canvas svg { width: 100% !important; min-width: 0 !important; }
+    .canvas .lock-mark, .canvas .guide { display: none; }
   }
 </style>
 </head>
@@ -99,6 +109,12 @@ const CHAIR_GAP = 0.35; // from the table's edge to the chair's
 let data;
 let roomId = Number(new URLSearchParams(location.search).get("room")) || null;
 let selectedId = null;
+// Everything selected (shift- or Ctrl/Cmd-click adds or removes one); selectedId is the
+// one the side panel shows when only one is.
+let picked = new Set();
+const select = (id) => { selectedId = id; picked = new Set(id == null ? [] : [id]); };
+let snapOn = true;
+try { snapOn = localStorage.getItem("seating-snap") !== "off"; } catch {}
 let zoom = 1;
 try { zoom = Number(localStorage.getItem("seating-zoom")) || 1; } catch {}
 
@@ -115,6 +131,7 @@ function accept(next) {
   data.byPerson = new Map(data.assignments.map((a) => [personKey(a.guest_id, a.plus_one), a]));
   if (!room()) roomId = data.rooms[0]?.id ?? null;
   if (selectedId && !data.items.some((i) => i.id === selectedId)) selectedId = null;
+  picked = new Set([...picked].filter((id) => data.items.some((i) => i.id === id)));
 }
 
 async function load() {
@@ -123,6 +140,7 @@ async function load() {
 }
 
 /** Send a change; the reply is the whole seating chart again. */
+let savedFlash = "";
 async function send(path, method, body) {
   const reply = await api(`/api/admin/seating/${path}`, { method, body });
   accept(reply);
@@ -154,8 +172,11 @@ function seatSpots(item) {
       spots.push({ x: r * Math.cos(a), y: r * Math.sin(a) });
     }
   } else {
-    const w = item.width_ft;
-    const l = item.length_ft;
+    // Chairs go on the long sides: for a table longer top to bottom than across, lay
+    // them out as if it were turned, then turn them back (below).
+    const tall = item.length_ft > item.width_ft;
+    const w = tall ? item.length_ft : item.width_ft;
+    const l = tall ? item.width_ft : item.length_ft;
     const off = CHAIR_GAP + CHAIR_R;
     const along = (count, y, reverse) => {
       const row = Array.from({ length: count }, (_, i) => ({ x: -w / 2 + (w * (i + 0.5)) / count, y }));
@@ -169,6 +190,7 @@ function seatSpots(item) {
       const top = Math.ceil(n / 2);
       spots.push(...along(top, -(l / 2 + off)), ...along(n - top, l / 2 + off, true));
     }
+    if (tall) for (const p of spots) [p.x, p.y] = [-p.y, p.x];
   }
   const t = ((item.rotation || 0) * Math.PI) / 180;
   return spots.map((p, i) => ({
@@ -176,6 +198,75 @@ function seatSpots(item) {
     x: p.x * Math.cos(t) - p.y * Math.sin(t),
     y: p.x * Math.sin(t) + p.y * Math.cos(t),
   }));
+}
+
+/* ---------------------------------------------------------- sizes and text ---- */
+
+/** Half the width and height of what an item covers on the floor, turn included. */
+function halfSize(item) {
+  const t = ((item.rotation || 0) * Math.PI) / 180;
+  const c = Math.abs(Math.cos(t));
+  const sn = Math.abs(Math.sin(t));
+  if (item.kind === "seat") return { hx: CHAIR_R, hy: CHAIR_R };
+  if (item.kind === "note") {
+    const w = (measure(item.label || "", 400) * (item.font_size || 1.5)) / 2;
+    const h2 = (item.font_size || 1.5) / 2;
+    return { hx: w * c + h2 * sn, hy: w * sn + h2 * c };
+  }
+  const a = item.width_ft / 2;
+  const b = item.length_ft / 2;
+  if (item.kind === "table" && item.shape === "round") return { hx: a, hy: a };
+  if (item.shape === "round") return { hx: Math.hypot(a * Math.cos(t), b * Math.sin(t)), hy: Math.hypot(a * Math.sin(t), b * Math.cos(t)) };
+  return { hx: a * c + b * sn, hy: a * sn + b * c };
+}
+/** Its box on the floor: left, right, top, bottom and center, in feet. */
+function box(item, x = item.x, y = item.y) {
+  const { hx, hy } = halfSize(item);
+  return { l: x - hx, r: x + hx, t: y - hy, b: y + hy, cx: x, cy: y };
+}
+
+let measurer = null;
+/** How wide a line of text is, in ems of the font the floor plan uses. */
+function measure(text, weight = 600) {
+  measurer ??= document.createElement("canvas").getContext("2d");
+  measurer.font = `${weight} 100px ${getComputedStyle(document.body).fontFamily}`;
+  return measurer.measureText(String(text)).width / 100;
+}
+
+/**
+ * A shape's text at the largest size that fits inside it, with a margin all round: an
+ * oval's text fits the rectangle inside it. Lines typed stay as typed; otherwise the
+ * words wrap onto as many lines (up to six) as make the text biggest.
+ */
+function fitText(item) {
+  const w = item.width_ft;
+  const l = item.length_ft;
+  const inner = item.shape === "round" ? [w / Math.SQRT2, l / Math.SQRT2] : [w, l];
+  const pad = Math.min(Math.max(Math.min(w, l) * 0.1, 0.15), 1);
+  const room = [Math.max(inner[0] - pad * 2, 0.1), Math.max(inner[1] - pad * 2, 0.1)];
+  const label = String(item.label || "").trim();
+  const sizeFor = (lines) => Math.min(room[0] / Math.max(...lines.map((x) => measure(x)), 0.01), room[1] / (lines.length * 1.2));
+  const options = [];
+  if (label.includes("\n")) options.push(label.split("\n").map((x) => x.trim()));
+  else {
+    const words = label.split(/\s+/);
+    const total = measure(label);
+    for (let k = 1; k <= Math.min(6, words.length); k++) {
+      const lines = [];
+      let line = "";
+      for (const word of words) {
+        const next = line ? `${line} ${word}` : word;
+        if (line && measure(next) > total / k + 0.01 && lines.length < k - 1) {
+          lines.push(line);
+          line = word;
+        } else line = next;
+      }
+      lines.push(line);
+      options.push(lines);
+    }
+  }
+  const best = options.map((lines) => ({ lines, size: sizeFor(lines) })).sort((a, b) => b.size - a.size)[0];
+  return { lines: best.lines, size: Math.min(best.size, 6) };
 }
 
 /* ------------------------------------------------------------------- drawing ---- */
@@ -194,7 +285,11 @@ function s(tag, attrs = {}, ...children) {
 
 function drawItem(item, r) {
   const seatable = r.kind === "reception" && isSeating(item);
-  const g = s("g", { class: `item${item.id === selectedId ? " sel" : ""}${seatable ? " seatable" : ""}`, transform: `translate(${item.x} ${item.y})`, "data-id": item.id });
+  const g = s("g", { class: `item${picked.has(item.id) ? " sel" : ""}${seatable ? " seatable" : ""}${item.locked ? " locked" : ""}`, transform: `translate(${item.x} ${item.y})`, "data-id": item.id });
+  if (item.locked) {
+    const b = halfSize(item);
+    g.append(s("text", { class: "lock-mark", x: b.hx + 0.2, y: -b.hy - 0.2, "text-anchor": "start" }, "🔒"));
+  }
   if (item.kind === "note") {
     g.append(s("text", { class: "note", "font-size": item.font_size, transform: `rotate(${item.rotation || 0})` }, item.label));
     return g;
@@ -206,10 +301,9 @@ function drawItem(item, r) {
     g.append(item.shape === "round"
       ? s("ellipse", { class: `area ${item.color || "gray"}`, rx: w / 2, ry: l / 2, transform: turn })
       : s("rect", { class: `area ${item.color || "gray"}`, x: -w / 2, y: -l / 2, width: w, height: l, rx: 0.2, transform: turn }));
-    // The text sits dead center, across and up and down; each line of it is one row.
-    const lines = String(item.label || "").split(/\n/).filter((line, i, all) => line || all.length === 1);
-    if (item.label) {
-      const size = item.font_size || 1.5;
+    // The text sits dead center and is sized to fill the shape, inside a margin.
+    if (String(item.label || "").trim()) {
+      const { size, lines } = fitText(item);
       g.append(s("text", { class: "area-text", "font-size": size, transform: turn },
         lines.map((line, i) => s("tspan", { x: 0, y: (i - (lines.length - 1) / 2) * size * 1.2 }, line))));
     }
@@ -241,7 +335,15 @@ function drawRoom(r) {
   const pad = 3;
   const W = r.width_ft;
   const L = r.length_ft;
-  const svg = s("svg", { viewBox: `${-pad} ${-pad} ${W + pad * 2} ${L + pad * 2}`, style: `width:${Math.round(zoom * 100)}%; min-width:${Math.round(zoom * 100)}%` });
+  // The drawing covers anything that ended up outside the room (a long row of chairs, a
+  // room made smaller), so it can still be seen and dragged back in.
+  const items = itemsOf(r.id);
+  const reach = (i) => Math.max(2, (Number(i.width_ft) || 0) / 2, (Number(i.length_ft) || 0) / 2) + 2;
+  const minX = Math.min(0, ...items.map((i) => i.x - reach(i)));
+  const minY = Math.min(0, ...items.map((i) => i.y - reach(i)));
+  const maxX = Math.max(W, ...items.map((i) => i.x + reach(i)));
+  const maxY = Math.max(L, ...items.map((i) => i.y + reach(i)));
+  const svg = s("svg", { viewBox: `${minX - pad} ${minY - pad} ${maxX - minX + pad * 2} ${maxY - minY + pad * 2}`, style: `width:${Math.round(zoom * 100)}%; min-width:${Math.round(zoom * 100)}%` });
   svg.append(s("rect", { class: "floor", x: 0, y: 0, width: W, height: L }));
   const lines = [];
   const fine = W <= 120 && L <= 120;
@@ -252,15 +354,24 @@ function drawRoom(r) {
   for (let y = step; y <= L; y += step) lines.push(s("text", { class: "ruler", x: -0.6, y, "text-anchor": "end", "dominant-baseline": "central" }, `${y}′`));
   svg.append(s("g", {}, lines));
   // Shapes go underneath, so a dance floor never hides the tables placed on it.
-  const items = itemsOf(r.id);
   for (const item of [...items.filter((i) => i.kind === "shape"), ...items.filter((i) => i.kind !== "shape")]) svg.append(drawItem(item, r));
+  svg.append(s("g", { class: "guides" }));
   wireDragging(svg, r);
   return svg;
 }
 
-/** Drag to move; a press that doesn't move selects (and, on a reception chair, seats someone). */
+/**
+ * Drag to move; a press that doesn't move selects (and, on a reception chair, seats
+ * someone). Shift- or Ctrl/Cmd-click adds to the selection, and dragging any of a
+ * selection moves all of it. Locked items don't move. With "Snap to align" on, the
+ * dragged item's edges and center snap to the other items' (a pink guide shows where).
+ */
+const SNAP_FT = 0.5;
 function wireDragging(svg, r) {
   let drag = null;
+  const guides = svg.querySelector(".guides");
+  // A touch on a table or chair drags it; a touch on the floor scrolls the room.
+  svg.addEventListener("touchstart", (ev) => { if (ev.target.closest(".item")) ev.preventDefault(); }, { passive: false });
   const toRoom = (ev) => {
     const pt = svg.createSVGPoint();
     pt.x = ev.clientX;
@@ -270,45 +381,98 @@ function wireDragging(svg, r) {
   svg.addEventListener("pointerdown", (ev) => {
     const g = ev.target.closest(".item");
     if (!g) {
-      if (selectedId) { selectedId = null; render(); }
+      if (picked.size) { select(null); render(); }
       return;
     }
     const item = data.items.find((i) => i.id === Number(g.dataset.id));
     const p = toRoom(ev);
-    drag = { item, g, dx: p.x - item.x, dy: p.y - item.y, x: item.x, y: item.y, moved: false, letter: ev.target.dataset.letter || null, pointer: ev.pointerId };
+    const adding = ev.shiftKey || ev.ctrlKey || ev.metaKey;
+    // Dragging one of a selection moves the selection; anything else moves just itself.
+    const group = !adding && picked.has(item.id) && picked.size > 1
+      ? data.items.filter((i) => picked.has(i.id) && !i.locked)
+      : item.locked ? [] : [item];
+    const others = itemsOf(r.id).filter((i) => !group.includes(i));
+    drag = {
+      item, adding, group, others, dx: p.x - item.x, dy: p.y - item.y, moved: false, offX: 0, offY: 0,
+      letter: ev.target.dataset.letter || null, pointer: ev.pointerId,
+      nodes: group.map((i) => [i, svg.querySelector(`.item[data-id="${i.id}"]`)]),
+    };
     svg.setPointerCapture(ev.pointerId);
     g.classList.add("dragging");
     hideTooltip();
   });
   svg.addEventListener("pointermove", (ev) => {
-    if (!drag || ev.pointerId !== drag.pointer) return;
+    // Shift-click only selects; a locked item (with nothing else picked) stays put.
+    if (!drag || ev.pointerId !== drag.pointer || drag.adding || !drag.group.length) return;
     const p = toRoom(ev);
-    const snap = (v, max) => Math.min(max, Math.max(0, Math.round(v * 4) / 4));
-    const x = snap(p.x - drag.dx, r.width_ft);
-    const y = snap(p.y - drag.dy, r.length_ft);
+    const grid = (v) => Math.round(v * 4) / 4;
+    let x = grid(p.x - drag.dx);
+    let y = grid(p.y - drag.dy);
     if (!drag.moved && Math.hypot(x - drag.item.x, y - drag.item.y) < 0.4) return;
     drag.moved = true;
-    drag.x = x;
-    drag.y = y;
-    drag.g.setAttribute("transform", `translate(${x} ${y})`);
+    guides.replaceChildren();
+    if (snapOn && drag.others.length) {
+      // The nearest edge or center of any other item, within SNAP_FT, on each axis.
+      const me = box(drag.item, x, y);
+      const best = { x: null, y: null };
+      for (const o of drag.others) {
+        const b = box(o);
+        for (const [mine, theirs] of [["l", "l"], ["l", "r"], ["r", "l"], ["r", "r"], ["cx", "cx"]]) {
+          const d = b[theirs] - me[mine];
+          if (Math.abs(d) <= SNAP_FT && (best.x === null || Math.abs(d) < Math.abs(best.x.d))) best.x = { d, at: b[theirs] };
+        }
+        for (const [mine, theirs] of [["t", "t"], ["t", "b"], ["b", "t"], ["b", "b"], ["cy", "cy"]]) {
+          const d = b[theirs] - me[mine];
+          if (Math.abs(d) <= SNAP_FT && (best.y === null || Math.abs(d) < Math.abs(best.y.d))) best.y = { d, at: b[theirs] };
+        }
+      }
+      if (best.x) {
+        x += best.x.d;
+        guides.append(s("line", { class: "guide", x1: best.x.at, x2: best.x.at, y1: -1000, y2: 1000 }));
+      }
+      if (best.y) {
+        y += best.y.d;
+        guides.append(s("line", { class: "guide", y1: best.y.at, y2: best.y.at, x1: -1000, x2: 1000 }));
+      }
+    }
+    // The whole group moves by the same amount, and stays in the room.
+    let offX = x - drag.item.x;
+    let offY = y - drag.item.y;
+    for (const i of drag.group) {
+      offX = Math.min(r.width_ft - i.x, Math.max(-i.x, offX));
+      offY = Math.min(r.length_ft - i.y, Math.max(-i.y, offY));
+    }
+    drag.offX = offX;
+    drag.offY = offY;
+    for (const [i, node] of drag.nodes) node?.setAttribute("transform", `translate(${i.x + offX} ${i.y + offY})`);
   });
   const finish = async (ev) => {
     if (!drag || ev.pointerId !== drag.pointer) return;
-    const { item, moved, x, y, letter } = drag;
-    drag.g.classList.remove("dragging");
+    const { item, moved, group, offX, offY, letter, adding } = drag;
+    svg.querySelector(".dragging")?.classList.remove("dragging");
+    guides.replaceChildren();
     drag = null;
-    if (moved) {
-      item.x = x;
-      item.y = y;
+    if (moved && group.length) {
+      const round = (v) => Math.round(v * 100) / 100;
+      const moves = group.map((i) => ({ id: i.id, x: round(i.x + offX), y: round(i.y + offY) }));
+      for (const m of moves) Object.assign(data.items.find((i) => i.id === m.id), { x: m.x, y: m.y });
       try {
-        await send(`items/${item.id}`, "PUT", { x, y });
+        if (moves.length === 1) await send(`items/${item.id}`, "PUT", { x: moves[0].x, y: moves[0].y });
+        else await send("items/arrange", "POST", { moves });
       } catch (error) {
         alert(error.message);
         await load();
       }
       return;
     }
-    selectedId = item.id;
+    if (adding) {
+      if (picked.has(item.id)) picked.delete(item.id);
+      else picked.add(item.id);
+      selectedId = picked.size === 1 ? [...picked][0] : picked.has(item.id) ? item.id : null;
+      render();
+      return;
+    }
+    select(item.id);
     render();
     if (letter && r.kind === "reception") pickPerson(item, letter);
   };
@@ -320,7 +484,7 @@ function wireDragging(svg, r) {
 
 function render() {
   document.getElementById("rooms").replaceChildren(
-    ...data.rooms.map((r) => h("button", { class: r.id === roomId ? "on" : "", onclick: () => { roomId = r.id; selectedId = null; history.replaceState(null, "", `?room=${r.id}`); render(); } },
+    ...data.rooms.map((r) => h("button", { class: r.id === roomId ? "on" : "", onclick: () => { roomId = r.id; select(null); history.replaceState(null, "", `?room=${r.id}`); render(); } },
       r.name, h("span", { class: "kind" }, KIND_LABEL[r.kind] || r.kind)))
   );
   const r = room();
@@ -365,7 +529,7 @@ async function addItem(body) {
   try {
     const reply = await api("/api/admin/seating/items", { method: "POST", body });
     accept(reply);
-    selectedId = reply.ids[reply.ids.length - 1];
+    select(reply.ids[reply.ids.length - 1]);
     render();
   } catch (error) {
     alert(error.message);
@@ -390,6 +554,9 @@ function toolbar(r) {
     h("button", { class: "small", onclick: () => addNote(r) }, "+ Note"),
     h("button", { class: "small", onclick: () => addItem({ room_id: r.id, kind: "shape", ...nextSpot(r) }) }, "+ Shape"),
     h("span", { class: "spacer" }),
+    h("label", { class: "check", title: "While dragging, line up with the edges and centers of what's nearby" },
+      h("input", { type: "checkbox", checked: snapOn, onchange: (ev) => { snapOn = ev.target.checked; try { localStorage.setItem("seating-snap", snapOn ? "on" : "off"); } catch {} } }),
+      "Snap to align"),
     h("label", { class: "check" }, "Zoom",
       h("select", { onchange: (ev) => { zoom = Number(ev.target.value); try { localStorage.setItem("seating-zoom", zoom); } catch {} render(); } },
         [1, 1.5, 2, 3, 4].map((z) => h("option", { value: z, selected: z === zoom }, `${z * 100}%`)))),
@@ -406,7 +573,7 @@ function addChairs(r) {
       try {
         const reply = await api("/api/admin/seating/items", { method: "POST", body: { room_id: r.id, kind: "seat", count: v.count, label: v.label, ...nextSpot(r) } });
         accept(reply);
-        selectedId = reply.ids[reply.ids.length - 1];
+        select(reply.ids[reply.ids.length - 1]);
         close(true);
         render();
       } catch (error) {
@@ -433,7 +600,7 @@ function addNote(r) {
       try {
         const reply = await api("/api/admin/seating/items", { method: "POST", body: { room_id: r.id, kind: "note", label: v.label, font_size: v.font_size, ...nextSpot(r) } });
         accept(reply);
-        selectedId = reply.ids[0];
+        select(reply.ids[0]);
         close(true);
         render();
       } catch (error) {
@@ -488,19 +655,129 @@ function editRoom(r) {
 
 /* ---------------------------------------------------------- the side panel ---- */
 
+/* ------------------------------------------------- align, distribute, lock ---- */
+
+const round2 = (v) => Math.round(v * 100) / 100;
+
+/**
+ * Where each unlocked item goes to line up: their edges or centers on the selection's,
+ * evenly spaced, or centered in the room. Locked items stay put and the rest line up
+ * with them.
+ */
+function arrangeMoves(items, how, r) {
+  const boxes = items.map((i) => ({ i, b: box(i) }));
+  const min = (k) => Math.min(...boxes.map((x) => x.b[k]));
+  const max = (k) => Math.max(...boxes.map((x) => x.b[k]));
+  const moves = new Map();
+  const move = (i, dx, dy) => { if (!i.locked && (dx || dy)) moves.set(i.id, { id: i.id, x: round2(i.x + dx), y: round2(i.y + dy) }); };
+  const across = { left: () => min("l"), center: () => (min("l") + max("r")) / 2, right: () => max("r") };
+  const down = { top: () => min("t"), middle: () => (min("t") + max("b")) / 2, bottom: () => max("b") };
+  if (across[how]) {
+    const to = across[how]();
+    for (const { i, b } of boxes) move(i, how === "left" ? to - b.l : how === "right" ? to - b.r : to - b.cx, 0);
+  } else if (down[how]) {
+    const to = down[how]();
+    for (const { i, b } of boxes) move(i, 0, how === "top" ? to - b.t : how === "bottom" ? to - b.b : to - b.cy);
+  } else if (how === "spread-x" || how === "spread-y") {
+    // Equal gaps between neighbors, the first and last staying where they are.
+    const [lo, hi, c] = how === "spread-x" ? ["l", "r", "cx"] : ["t", "b", "cy"];
+    const sorted = [...boxes].sort((a, b) => a.b[c] - b.b[c]);
+    const used = sorted.reduce((n, x) => n + (x.b[hi] - x.b[lo]), 0);
+    const gap = (sorted[sorted.length - 1].b[hi] - sorted[0].b[lo] - used) / (sorted.length - 1);
+    let at = sorted[0].b[hi] + gap;
+    for (const x of sorted.slice(1, -1)) {
+      const d = at - x.b[lo];
+      move(x.i, how === "spread-x" ? d : 0, how === "spread-y" ? d : 0);
+      at += x.b[hi] - x.b[lo] + gap;
+    }
+  } else if (how === "room-x" || how === "room-y") {
+    // The selection as a whole, centered in the room.
+    const d = how === "room-x" ? r.width_ft / 2 - (min("l") + max("r")) / 2 : r.length_ft / 2 - (min("t") + max("b")) / 2;
+    for (const { i } of boxes) move(i, how === "room-x" ? d : 0, how === "room-y" ? d : 0);
+  }
+  return [...moves.values()];
+}
+
+async function arrange(items, how, r) {
+  const moves = arrangeMoves(items, how, r);
+  if (!moves.length) return;
+  try {
+    await send("items/arrange", "POST", { moves });
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function setLocked(items, locked) {
+  try {
+    await send("items/lock", "POST", { ids: items.map((i) => i.id), locked });
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+/** The align, distribute and lock buttons, for one item or a selection. */
+function arrangeTools(items, r) {
+  const b = (label, title, how, disabled = false) => h("button", { type: "button", class: "small", title, disabled, onclick: () => arrange(items, how, r) }, label);
+  const many = items.length > 1;
+  const locked = items.filter((i) => i.locked);
+  return h("div", {},
+    many ? h("div", {},
+      h("h3", {}, "Align"),
+      h("div", { class: "align" },
+        b("⇤ Left", "Line up the left edges", "left"), b("↔ Center", "Line up the centers, left to right", "center"), b("Right ⇥", "Line up the right edges", "right"),
+        b("⤒ Top", "Line up the top edges", "top"), b("↕ Middle", "Line up the centers, top to bottom", "middle"), b("Bottom ⤓", "Line up the bottom edges", "bottom")),
+      h("h3", {}, "Distribute"),
+      h("div", { class: "align", style: "grid-template-columns: 1fr 1fr" },
+        b("Evenly across", "Equal gaps left to right (pick 3 or more)", "spread-x", items.length < 3),
+        b("Evenly up and down", "Equal gaps top to bottom (pick 3 or more)", "spread-y", items.length < 3))) : null,
+    h("h3", {}, many ? "Center the selection in the room" : "Center in the room"),
+    h("div", { class: "align", style: "grid-template-columns: 1fr 1fr" },
+      b("Left to right", "Center across the room", "room-x"), b("Top to bottom", "Center up and down the room", "room-y")),
+    h("h3", {}, "Lock"),
+    locked.length
+      ? h("p", { class: "desc", style: "margin:0 0 6px" }, many ? `${locked.length} of these ${locked.length === 1 ? "is" : "are"} locked and stay put; the rest line up with ${locked.length === 1 ? "it" : "them"}.` : "Locked in place: it can't be dragged, turned or resized until you unlock it.")
+      : null,
+    h("div", { class: "row" },
+      locked.length < items.length ? h("button", { type: "button", class: "small", onclick: () => setLocked(items, true) }, many ? "🔒 Lock all" : "🔒 Lock in place") : null,
+      locked.length ? h("button", { type: "button", class: "small", onclick: () => setLocked(items, false) }, many ? "Unlock all" : "Unlock") : null));
+}
+
+function multiPanel(r) {
+  const items = data.items.filter((i) => picked.has(i.id) && i.room_id === r.id);
+  return h("div", {}, h("h2", {}, `${items.length} selected`),
+    h("p", { class: "desc" }, "Shift- or Ctrl-click to add or remove one. Drag any of them to move them together."),
+    arrangeTools(items, r),
+    h("div", { class: "row", style: "margin-top:12px" }, h("button", { type: "button", class: "small", onclick: () => { select(null); render(); } }, "Clear selection")));
+}
+
 function panel(r) {
+  if (picked.size > 1) return multiPanel(r);
   const item = data.items.find((i) => i.id === selectedId && i.room_id === r.id);
   if (!item) {
     return h("div", {}, h("h2", {}, r.name),
-      h("p", { class: "desc" }, "Click a table, chair, shape or note to change it. Drag to move it; positions snap to 3 inches."),
+      h("p", { class: "desc" }, "Click a table, chair, shape or note to change it. Drag to move it; positions snap to 3 inches, and to line up with what's nearby while Snap to align is on. Shift- or Ctrl-click to pick several, then align or space them evenly."),
       r.kind === "reception" ? h("p", { class: "desc" }, "Click a chair to seat someone in it. Blue chairs are taken. Orange ones hold someone who has since declined or lost their invitation.") : null);
   }
   const msg = h("p", { class: "msg" });
+  // A save redraws this panel: the new one shows the "Saved." the old one would have.
+  if (savedFlash) {
+    setMsg(msg, savedFlash, "ok");
+    savedFlash = "";
+  }
   const save = async (form) => {
+    const values = formValues(form);
+    // Fewer seats unseats whoever sat in the ones that go: ask first.
+    if (item.kind === "table" && values.seats !== undefined) {
+      const keep = new Set(seatSpots({ ...item, seats: Number(values.seats) || 0 }).map((p) => p.letter));
+      const lost = data.assignments.filter((a) => a.item_id === item.id && !keep.has(a.seat_letter)).length;
+      if (lost && !confirm(`${lost === 1 ? "1 person sits" : `${lost} people sit`} in the seats this removes. Unseat them?`)) return;
+    }
     try {
-      await send(`items/${item.id}`, "PUT", formValues(form));
-      setMsg(msg, "Saved.", "ok");
+      savedFlash = "Saved.";
+      await send(`items/${item.id}`, "PUT", values);
     } catch (error) {
+      savedFlash = "";
       setMsg(msg, error.message, "err");
     }
   };
@@ -519,9 +796,9 @@ function panel(r) {
       h("div", { class: "fields" },
         field("Text", "label", { value: item.label, wide: true }),
         field("Text size (ft)", "font_size", { type: "number", step: 0.25, min: 0.5, value: item.font_size }),
-        field("Turn (degrees)", "rotation", { type: "number", step: 15, value: item.rotation })),
+        field("Turn (degrees)", "rotation", { type: "number", step: 0.01, value: item.rotation })),
       h("div", { class: "row" }, h("button", { class: "primary" }, "Save"), h("button", { type: "button", class: "danger", onclick: remove }, "Remove")), msg);
-    return h("div", {}, h("h2", {}, "Note"), form);
+    return h("div", {}, h("h2", {}, "Note"), form, arrangeTools([item], r));
   }
 
   if (item.kind === "shape") {
@@ -532,12 +809,12 @@ function panel(r) {
         h("label", { class: "field", style: "grid-column: 1 / -1" }, "Text, centered in the shape", label),
         field("Shape", "shape", { options: [["rect", "Rectangle"], ["round", "Circle or oval"]], value: item.shape }),
         field("Color", "color", { options: Object.entries(COLOR_LABEL), value: item.color || "gray" }),
-        field("Width (ft)", "width_ft", { type: "number", step: 0.5, min: 0.5, value: item.width_ft }),
-        field("Length (ft)", "length_ft", { type: "number", step: 0.5, min: 0.5, value: item.length_ft }),
-        field("Text size (ft)", "font_size", { type: "number", step: 0.25, min: 0.5, value: item.font_size }),
-        field("Turn (degrees)", "rotation", { type: "number", step: 15, value: item.rotation })),
+        field("Width (ft)", "width_ft", { type: "number", step: 0.01, min: 0.1, value: item.width_ft }),
+        field("Length (ft)", "length_ft", { type: "number", step: 0.01, min: 0.1, value: item.length_ft }),
+        field("Turn (degrees)", "rotation", { type: "number", step: 0.01, value: item.rotation })),
+      h("p", { class: "desc", style: "margin:0 0 8px" }, "The text sizes itself to fill the shape, with a margin."),
       h("div", { class: "row" }, h("button", { class: "primary" }, "Save"), h("button", { type: "button", class: "danger", onclick: remove }, "Remove")), msg);
-    return h("div", {}, h("h2", {}, "Shape"), form);
+    return h("div", {}, h("h2", {}, "Shape"), form, arrangeTools([item], r));
   }
 
   const seatable = r.kind === "reception";
@@ -554,12 +831,12 @@ function panel(r) {
     const form = h("form", { onsubmit: (ev) => { ev.preventDefault(); save(form); } },
       h("div", { class: "fields" }, field(seatable ? "Number" : "Label", "label", { value: item.label, wide: true })),
       h("div", { class: "row" }, h("button", { class: "primary" }, "Save"), h("button", { type: "button", class: "danger", onclick: remove }, "Remove")), msg);
-    return h("div", {}, h("h2", {}, seatable ? `Chair ${item.label}` : "Chair"), form, seatButtons);
+    return h("div", {}, h("h2", {}, seatable ? `Chair ${item.label}` : "Chair"), form, seatButtons, arrangeTools([item], r));
   }
 
-  const lengthField = field("Length (ft)", "length_ft", { type: "number", step: 0.5, min: 1, value: item.length_ft });
+  const lengthField = field("Length (ft)", "length_ft", { type: "number", step: 0.01, min: 1, value: item.length_ft });
   const sidesField = field("Seats on", "seat_sides", { options: Object.entries(SIDES_LABEL), value: item.seat_sides, wide: true });
-  const widthField = field("Width (ft)", "width_ft", { type: "number", step: 0.5, min: 1, value: item.width_ft });
+  const widthField = field("Width (ft)", "width_ft", { type: "number", step: 0.01, min: 1, value: item.width_ft });
   const showShape = (shape) => {
     lengthField.hidden = shape === "round";
     sidesField.hidden = shape === "round";
@@ -571,7 +848,7 @@ function panel(r) {
       field("Shape", "shape", { options: [["round", "Round"], ["rect", "Rectangle"]], value: item.shape, onchange: (ev) => showShape(ev.target.value) }),
       widthField, lengthField,
       field("Seats", "seats", { type: "number", min: 0, value: item.seats }),
-      field("Turn (degrees)", "rotation", { type: "number", step: 15, value: item.rotation }),
+      field("Turn (degrees)", "rotation", { type: "number", step: 0.01, value: item.rotation }),
       sidesField),
     h("div", { class: "row" },
       h("button", { class: "primary" }, "Save"),
@@ -579,7 +856,7 @@ function panel(r) {
       h("button", { type: "button", class: "danger", onclick: remove }, "Remove")),
     msg);
   showShape(item.shape);
-  return h("div", {}, h("h2", {}, `Table ${item.label}`), form, seatButtons);
+  return h("div", {}, h("h2", {}, `Table ${item.label}`), form, seatButtons, arrangeTools([item], r));
 }
 
 /* --------------------------------------------------------- seating people ---- */

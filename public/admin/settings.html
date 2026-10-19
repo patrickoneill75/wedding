@@ -169,23 +169,26 @@ const DRINK_LABELS = {
   nonalc_per_guest_hour: "Non-alcoholic drinks per guest per hour",
 };
 
-function fill() {
+/** Draw the cards' fields from the saved settings: all of them, or only `only` (a form's
+ * id), so saving one card doesn't throw away what's typed in another. */
+function fill(only = null) {
   const s = state.settings;
-  document.getElementById("weddingFields").replaceChildren(
+  const draw = (formId) => !only || only === formId;
+  if (draw("weddingForm")) document.getElementById("weddingFields").replaceChildren(
     field("Couple's names", "couple_names", { value: s.couple_names, placeholder: "Patrick & Kaitlyn" }),
     field("Wedding date", "wedding_date", { type: "date", value: s.wedding_date }),
     field("Venue", "venue", { value: s.venue }),
     field("Contact email (the Contact us link at the bottom of the website and RSVP page)", "contact_email", { type: "email", value: s.contact_email, placeholder: "Leave blank for no link" }),
   );
-  document.getElementById("budgetFields").replaceChildren(
+  if (draw("budgetForm")) document.getElementById("budgetFields").replaceChildren(
     field("Sales tax %", "tax_percent", { type: "number", step: "any", value: Math.round(s.tax_rate * 10000) / 100 }),
     field("Total budget ($, optional)", "budget_target", { type: "number", step: "1", value: s.budget_target ?? "" }),
     field("Who pays (comma-separated)", "payers", { value: s.payers.join(", ") }),
   );
-  document.getElementById("weightFields").replaceChildren(
+  if (draw("calcForm")) document.getElementById("weightFields").replaceChildren(
     ...["High", "Medium", "Low"].map((p) => field(`${p} priority`, `w_${p}`, { type: "number", step: "any", value: s.priority_weights[p], oninput: preview })),
   );
-  document.getElementById("drinkFields").replaceChildren(
+  if (draw("calcForm")) document.getElementById("drinkFields").replaceChildren(
     ...Object.entries(DRINK_LABELS).map(([key, label]) => field(label, `d_${key}`, { type: "number", step: "any", value: s.drinks[key], oninput: preview })),
   );
   preview();
@@ -228,16 +231,17 @@ function drawBasis() {
 
 /* Mirrors drinksPlan() in src/calc.js for a live preview; the server recalculates on save. */
 function drinksPlan(p, g) {
+  const size = (value, fallback) => (value > 0 ? value : fallback);
   const total = Math.ceil(p.first_hour_drinks * g + Math.max(p.hours - 1, 0) * p.later_hour_drinks * g - 1e-9);
   const wineDrinks = Math.round(total * p.wine_share);
-  const wineBottles = Math.round(wineDrinks / Math.max(p.drinks_per_wine_bottle || 5, 1));
+  const wineBottles = Math.round(wineDrinks / Math.max(size(p.drinks_per_wine_bottle, 5), 1));
   const beerDrinks = Math.round(total * p.beer_share);
-  const beerOunces = beerDrinks * (p.ounces_per_beer || 12);
+  const beerOunces = beerDrinks * size(p.ounces_per_beer, 12);
   const liquorDrinks = Math.round(total * p.liquor_share);
   return {
     total, wineBottles, red: Math.round(wineBottles * p.red_share), white: Math.round(wineBottles * p.white_share),
     beerDrinks, beerOunces, half: beerOunces / 1984, quarter: beerOunces / 992, sixth: beerOunces / 672,
-    liquorBottles: Math.round(liquorDrinks / Math.max(p.drinks_per_liquor_bottle || 15, 1)),
+    liquorBottles: Math.round(liquorDrinks / Math.max(size(p.drinks_per_liquor_bottle, 15), 1)),
     nonalc: Math.round(p.hours * g * p.nonalc_per_guest_hour),
   };
 }
@@ -268,7 +272,7 @@ async function save(form, payload) {
   const msg = form.querySelector(".msg");
   try {
     state = { ...state, ...(await api("/api/admin/settings", { method: "PUT", body: payload })) };
-    fill();
+    fill(form.id);
     setMsg(msg, "Saved.", "ok");
   } catch (error) {
     setMsg(msg, error.message, "err");
@@ -407,7 +411,11 @@ async function renderSite() {
     return;
   }
   const failedLast = status.error && (!status.changed_at || status.error_at >= status.checked_at);
+  // GitHub turns off a public repo's scheduled runs after 60 days with no activity
+  // (GitHub's docs say so; not checked here), so a copy days old is worth a look.
+  const stale = status.checked_at && Date.now() - new Date(status.checked_at).getTime() > 2 * 86400000;
   box.replaceChildren(
+    stale ? h("p", { class: "msg err", style: "margin:0 0 6px" }, "The daily copy hasn't run in over two days. On GitHub, open Actions, then Refresh website from Zola; if it says the workflow is disabled, click Enable workflow.") : "",
     h("p", { style: "margin:0 0 6px" }, `Last checked ${when(status.checked_at)}${status.source === "github" ? " by GitHub" : ""} · last changed ${when(status.changed_at)}`),
     via_github ? "" : h("p", { class: "muted", style: "margin:0 0 6px" }, "The button fetches from Cloudflare until PANEL_GITHUB_TOKEN is set up (SETUP.md), and Zola blocks that. The daily GitHub copy still runs."),
     failedLast ? h("p", { class: "msg err", style: "margin:0 0 6px" }, `The last check failed: ${status.error} The previous copy is still up.`) : "",
@@ -454,7 +462,7 @@ siteForm.addEventListener("submit", async (ev) => {
   const v = formValues(siteForm);
   try {
     state = { ...state, ...(await api("/api/admin/settings", { method: "PUT", body: { zola_url: v.zola_url, rsvp_button_color: v.rsvp_button_color } })) };
-    // The button color and address are baked into the copy, so re-copy now.
+    // The address is baked into the copy, so re-copy now (the color applies as pages are served).
     await refreshSite();
   } catch (error) {
     setMsg(siteMsg, error.message, "err");
@@ -497,7 +505,8 @@ showLink();
 renderDrive();
 renderSite();
 const params = new URLSearchParams(location.search);
-if (params.get("error")) setMsg(driveMsg, params.get("error"), "err");
+// A failed Google connection comes back with ?error= and the card's hash (#drive or #gmail).
+if (params.get("error") && location.hash !== "#gmail") setMsg(driveMsg, params.get("error"), "err");
 if (params.get("drive") === "connected") setMsg(driveMsg, "Google Drive connected. Now pick a folder.", "ok");
 if (location.hash === "#drive") document.getElementById("drive").scrollIntoView();
 
@@ -544,7 +553,17 @@ async function loadUsers() {
       h("td", {}, h("span", { class: "tag admin" }, "Owner")),
       h("td", { class: "muted" }, "Everything"),
       h("td", { class: "muted", style: "font-size:12px" }, "Set by the ADMIN_EMAILS secret"))),
-    ...usersData.users.map((u) => h("tr", { class: "clickable", onclick: () => editUser(u) },
+    ...usersData.users.map((u) => u.also_owner
+      ? h("tr", {},
+          h("td", {}, u.name ? h("div", {}, u.name) : null, h("div", { class: u.name ? "muted" : "" }, u.email)),
+          h("td", {}, h("span", { class: "tag" }, "Old entry")),
+          h("td", { class: "muted", style: "font-size:12px" }, "Now an owner. This entry would apply again if they left ADMIN_EMAILS."),
+          h("td", { class: "num" }, h("button", { class: "small danger", onclick: async () => {
+            if (!confirm(`Remove the old entry for ${u.email}? They stay an owner.`)) return;
+            await api(`/api/admin/users/${encodeURIComponent(u.email)}`, { method: "DELETE" });
+            await loadUsers();
+          } }, "Remove")))
+      : h("tr", { class: "clickable", onclick: () => editUser(u) },
       h("td", {}, u.name ? h("div", {}, u.name) : null, h("div", { class: u.name ? "muted" : "" }, u.email)),
       h("td", {}, h("span", { class: `tag${u.role === "admin" ? " admin" : ""}` }, u.role === "admin" ? "Admin" : "User")),
       h("td", {}, u.role === "admin" ? h("span", { class: "muted" }, "Everything")

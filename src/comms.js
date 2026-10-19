@@ -51,7 +51,10 @@ import { RSVP_COLOR } from "./site.js";
 import { disconnectGmail, gmailStatus, GmailConnectionError, openGmail, sendGmail } from "./gmail.js";
 
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
-export const SEND_BATCH = 20;
+// Ten a run keeps a run well inside the Workers Free limits (one D1 write per email
+// sent, and CPU for building each one). The cron sends the rest every five minutes.
+export const SEND_BATCH = 10;
+const STUCK_MINUTES = 15;
 const MAX_ATTEMPTS = 3;
 const CALENDAR_TOKEN_TTL = 60 * 60 * 24 * 500;
 const EMAIL = /^[^\s@<>"]+@[^\s@<>"]+\.[a-z]{2,}$/i;
@@ -307,30 +310,67 @@ export async function queueAfterRsvp(env, householdId) {
 /**
  * Send up to `limit` queued emails. Returns { sent, failed, stopped } -- stopped is the
  * reason Gmail can't send right now, and the rest stay queued for the next run.
+ *
+ * Each run first claims its rows (queued -> sending, in one statement), so a cron run
+ * that overlaps "Send now" can't pick the same rows and send them twice. Each row is
+ * marked sent as soon as Gmail takes it. A run that dies partway (a CPU limit, a lost
+ * isolate) leaves rows in "sending"; after STUCK_MINUTES they're marked failed, never
+ * re-queued, since the one in flight may have gone out.
  */
 export async function sendQueued(env, { limit = SEND_BATCH, origin = "" } = {}) {
+  const now = new Date().toISOString();
+  const stuck = new Date(Date.now() - STUCK_MINUTES * 60000).toISOString();
+  await run(
+    env,
+    `UPDATE comm_sends SET status = 'failed', error = 'Stopped partway through sending, so it may or may not have gone out.'
+      WHERE status = 'sending' AND claimed_at < ?`,
+    stuck
+  );
+  const claimed = await all(
+    env,
+    `UPDATE comm_sends SET status = 'sending', claimed_at = ?
+      WHERE id IN (SELECT id FROM comm_sends WHERE status = 'queued' ORDER BY id LIMIT ?) RETURNING id`,
+    now,
+    limit
+  );
+  const result = claimed.length ? await sendClaimed(env, claimed.map((c) => Number(c.id)), origin) : { sent: 0, failed: 0, stopped: null };
+  // An email with nothing left to send is done (also one whose audience had nobody to send to).
+  await run(
+    env,
+    `UPDATE comm_messages SET status = 'sent', sent_at = ? WHERE status = 'sending'
+        AND NOT EXISTS (SELECT 1 FROM comm_sends s WHERE s.message_id = comm_messages.id AND s.status IN ('queued', 'sending'))`,
+    now
+  );
+  return result;
+}
+
+async function sendClaimed(env, ids, origin) {
   const queued = await all(
     env,
     `SELECT s.id, s.message_id, s.household_id, s.attempts, m.subject, m.body, m.attach_ics, m.format, m.design
        FROM comm_sends s JOIN comm_messages m ON m.id = s.message_id
-      WHERE s.status = 'queued' ORDER BY s.id LIMIT ?`,
-    limit
+      WHERE s.id IN (${ids.join(",")}) ORDER BY s.id`
   );
-  if (!queued.length) return { sent: 0, failed: 0, stopped: null };
+  const release = (rows) => rows.length
+    ? run(env, `UPDATE comm_sends SET status = 'queued', claimed_at = NULL WHERE id IN (${rows.map((r) => Number(r.id)).join(",")}) AND status = 'sending'`)
+    : null;
   let session;
   try {
     session = await openGmail(env);
   } catch (error) {
+    await release(queued);
     if (error instanceof GmailConnectionError) return { sent: 0, failed: 0, stopped: error.message };
     throw error;
   }
   const settings = await loadSettings(env);
   const theme = await emailTheme(env, settings);
   const entries = new Map((await loadHouseholds(env, [...new Set(queued.map((q) => q.household_id))])).map((e) => [e.household.id, e]));
-  const sent = [];
+  let sent = 0;
   const failed = [];
   let stopped = null;
-  for (const item of queued) {
+  let next = 0;
+  for (; next < queued.length; next++) {
+    const item = queued[next];
     const entry = entries.get(item.household_id);
     const recipients = entry && recipientsFor(entry.household, entry.guests);
     if (!recipients) {
@@ -340,7 +380,8 @@ export async function sendQueued(env, { limit = SEND_BATCH, origin = "" } = {}) 
     try {
       const email = await compose(env, origin || originOf(env), settings, item, entry.household, entry.guests, recipients, theme);
       await sendGmail(env, session, email);
-      sent.push(item);
+      await run(env, "UPDATE comm_sends SET status = 'sent', sent_at = ?, error = NULL, attempts = attempts + 1 WHERE id = ?", new Date().toISOString(), item.id);
+      sent++;
     } catch (error) {
       if (error instanceof GmailConnectionError) {
         stopped = error.message;
@@ -349,42 +390,35 @@ export async function sendQueued(env, { limit = SEND_BATCH, origin = "" } = {}) 
       failed.push([item, error.message]);
     }
   }
-  const now = new Date().toISOString();
-  if (sent.length) {
-    await run(env, `UPDATE comm_sends SET status = 'sent', sent_at = ?, error = NULL, attempts = attempts + 1 WHERE id IN (${sent.map((s) => Number(s.id)).join(",")})`, now);
-  }
+  // What a stop left unsent goes back in the queue for the next run.
+  if (stopped) await release(queued.slice(next));
   if (failed.length) {
     // A failed send is tried again on the next runs, up to MAX_ATTEMPTS in all.
     await run(
       env,
-      `UPDATE comm_sends SET attempts = attempts + 1,
+      `UPDATE comm_sends SET attempts = attempts + 1, claimed_at = NULL,
               status = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
               error = CASE id ${failed.map(([item, msg]) => `WHEN ${Number(item.id)} THEN ${sqlValue(String(msg).slice(0, 500))}`).join(" ")} END
         WHERE id IN (${failed.map(([item]) => Number(item.id)).join(",")})`
     );
   }
-  // An email sent to everyone it was going to is done.
-  await run(
-    env,
-    `UPDATE comm_messages SET status = 'sent', sent_at = ? WHERE status = 'sending'
-        AND NOT EXISTS (SELECT 1 FROM comm_sends s WHERE s.message_id = comm_messages.id AND s.status = 'queued')`,
-    now
-  );
-  if (sent.length && session.last_error) await setSetting(env, "_gmail", { ...session.stored, last_error: null, last_error_at: null });
-  return { sent: sent.length, failed: failed.length, stopped };
+  // A send that worked clears an old error, but not one this run hit.
+  if (sent && session.last_error && !stopped) await setSetting(env, "_gmail", { ...session.stored, last_error: null, last_error_at: null });
+  return { sent, failed: failed.length, stopped };
 }
 
 /** The cron's part: start scheduled emails that are due, then send a batch. */
 export async function processComms(env) {
   const due = await all(env, "SELECT * FROM comm_messages WHERE status = 'scheduled' AND send_at <= ?", new Date().toISOString());
   if (due.length) {
+    // (The run also tells the cron it started emails, so the Drive sync waits a run.)
     const entries = await loadHouseholds(env);
     for (const message of due) {
       await enqueue(env, message, entries);
       await run(env, "UPDATE comm_messages SET status = 'sending', updated_at = datetime('now') WHERE id = ?", message.id);
     }
   }
-  return sendQueued(env);
+  return { ...(await sendQueued(env)), started: due.length };
 }
 
 /* -------------------------------------------------------------------- API ---- */
@@ -419,7 +453,8 @@ async function listMessages(env) {
   const byMessage = new Map();
   for (const c of counts) {
     if (!byMessage.has(c.message_id)) byMessage.set(c.message_id, { queued: 0, sent: 0, failed: 0, skipped: 0 });
-    byMessage.get(c.message_id)[c.status] = c.n;
+    // A row being sent right now still counts as waiting.
+    byMessage.get(c.message_id)[c.status === "sending" ? "queued" : c.status] += c.n;
   }
   return messages.map((m) => ({ ...m, audience: JSON.parse(m.audience || "{}"), attach_ics: Boolean(m.attach_ics), counts: byMessage.get(m.id) || { queued: 0, sent: 0, failed: 0, skipped: 0 } }));
 }
@@ -500,6 +535,12 @@ export async function handleComms(parts, method, request, env, body, user) {
       if (patch.format && patch.format !== message.format && !has(patch, "body")) {
         patch.body = patch.format === "html" ? textToContent(message.body) : htmlToText(message.body);
       }
+      // A scheduled or automatic email can't be emptied: it would go out blank.
+      if (message.status !== "draft") {
+        const merged = { ...message, ...patch };
+        if (!String(merged.subject || "").trim()) throw new Error("Give the email a subject. It's set to go out.");
+        if (isBlank(merged)) throw new Error("Write the email first. It's set to go out.");
+      }
       const columns = Object.keys(patch);
       if (columns.length) await run(env, `UPDATE comm_messages SET ${columns.map((c) => `${c} = ?`).join(", ")}, updated_at = datetime('now') WHERE id = ?`, ...columns.map((c) => patch[c]), id);
       return json(await overview(env));
@@ -554,7 +595,11 @@ export async function handleComms(parts, method, request, env, body, user) {
       if (!EDITABLE.includes(message.status)) throw new Error("This email has already been sent.");
       const queued = await enqueue(env, message, await loadHouseholds(env));
       if (!queued) throw new Error("Nobody is in this email's audience yet.");
-      await run(env, "UPDATE comm_messages SET status = 'sending', send_at = ?, updated_at = datetime('now') WHERE id = ?", new Date().toISOString(), id);
+      // An automatic email stays automatic: this catches up the households that already
+      // replied, and each later RSVP still gets it.
+      if (message.status !== "automated") {
+        await run(env, "UPDATE comm_messages SET status = 'sending', send_at = ?, updated_at = datetime('now') WHERE id = ?", new Date().toISOString(), id);
+      }
       // The first batch goes now; the cron sends the rest every five minutes.
       const result = await sendQueued(env, { origin: originOf(env, request) });
       return json({ result, ...(await overview(env)) });

@@ -14,7 +14,7 @@
           background: var(--wash); color: var(--text-secondary); white-space: nowrap; }
   .step.std, .step.invite { color: var(--accent); border-color: rgba(42, 120, 214, .35); background: rgba(42, 120, 214, .08); }
   .step.yes, .step.gift { color: var(--good); border-color: rgba(12, 163, 12, .3); background: rgba(12, 163, 12, .1); }
-  .step.thanks { color: #fff; border-color: var(--good); background: var(--good); }
+  .step.thanks { color: #fff; border-color: #087008; background: #087008; }
   .step.no { color: var(--bad); border-color: rgba(208, 59, 59, .3); background: rgba(208, 59, 59, .08); }
   .bulk .sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
   td.c { text-align: center; }
@@ -117,14 +117,18 @@ async function load() {
   data = await api("/api/admin/guests");
   const c = data.counts;
   const item = (n, label) => h("span", {}, h("b", {}, String(n)), ` ${label}`);
+  const guests = data.households.flatMap((hh) => hh.guests);
+  // Guests matching `test`, plus the plus-ones of those matching `plusOne` (by default, the same test).
+  const people = (test, plusOne = test) => guests.filter(test).length + guests.filter((g) => g.plus_one_allowed && plusOne(g)).length;
   document.getElementById("summary").replaceChildren(
     item(c.invited, "invited"), item(c.weighted, "weighted"), item(c.confirmed, "coming"), item(c.declined, "not coming"),
     item(c.pending, "awaiting reply"), item(c.households, "households"), item(c.plus_ones_allowed, "plus-ones offered"),
     item(c.invites.ceremony, "invited to the ceremony"), item(c.invites.reception, "invited to the reception"),
-    item(data.households.flatMap((hh) => hh.guests).filter((g) => g.invite_rehearsal).length, "invited to the rehearsal dinner"),
-    item(data.households.flatMap((hh) => hh.guests).filter((g) => g.invite_rehearsal && g.rehearsal_rsvp === "yes").length, "coming to the rehearsal dinner"),
-    item(data.households.flatMap((hh) => hh.guests).filter((g) => g.out_of_town).length, "out of town"),
-    item(data.households.flatMap((hh) => hh.guests).filter((g) => g.international).length, "international"),
+    // Plus-ones count with their guest, as in the Head count report.
+    item(people((g) => g.invite_rehearsal), "invited to the rehearsal dinner"),
+    item(people((g) => g.invite_rehearsal && g.rehearsal_rsvp === "yes", (g) => g.invite_rehearsal && g.plus_one_rehearsal_rsvp === "yes"), "coming to the rehearsal dinner"),
+    item(people((g) => g.out_of_town), "out of town"),
+    item(people((g) => g.international), "international"),
   );
   render();
 }
@@ -188,7 +192,7 @@ function matches(hh) {
   const rsvp = document.getElementById("rsvp").value;
   const inviteType = document.getElementById("inviteType").value;
   if (q) {
-    const hay = [hh.display_name, hh.greeting, hh.city, hh.state, hh.notes, hh.email, ...hh.guests.flatMap((g) => [g.first_name, g.last_name, g.plus_one_name, g.notes])]
+    const hay = [hh.display_name, hh.greeting, hh.city, hh.state, hh.notes, hh.email, ...hh.guests.flatMap((g) => [g.first_name, g.last_name, g.plus_one_name, g.notes, g.email])]
       .join(" ").toLowerCase();
     if (!hay.includes(q)) return false;
   }
@@ -212,7 +216,8 @@ function render() {
   const shown = data.households.filter(matches);
   const rows = shown.map((hh) => {
     const box = (fieldName) => h("td", { class: "c" }, h("input", { type: "checkbox", checked: Boolean(hh[fieldName]),
-      onchange: (ev) => toggle(hh, fieldName, ev.target.checked).catch((e) => { alert(e.message); ev.target.checked = !ev.target.checked; }) }));
+      // Redrawn after the save, so the funnel pills show the new step.
+      onchange: (ev) => toggle(hh, fieldName, ev.target.checked).then(render, (e) => { alert(e.message); ev.target.checked = !ev.target.checked; }) }));
     return h("tr", {},
       h("td", {}, h("input", { type: "checkbox", checked: selected.has(hh.id), onchange: (ev) => { ev.target.checked ? selected.add(hh.id) : selected.delete(hh.id); updateBulk(); } })),
       h("td", {}, h("button", { class: "link", onclick: () => openHousehold(hh) }, hh.display_name || "(no name)"),
@@ -251,26 +256,30 @@ document.getElementById("selectAll").addEventListener("change", (ev) => {
   render();
 });
 document.getElementById("clearSel").addEventListener("click", () => { selected.clear(); document.getElementById("selectAll").checked = false; render(); });
+/** A bulk action that fails says so, instead of doing nothing. */
+const bulk = (fn) => fn().catch((error) => alert(error.message));
 for (const button of document.querySelectorAll("#bulk [data-field]")) {
-  button.addEventListener("click", async () => {
+  button.addEventListener("click", () => bulk(async () => {
     await api("/api/admin/households/bulk", { method: "POST", body: { ids: [...selected], field: button.dataset.field, value: true } });
     selected.clear();
     document.getElementById("selectAll").checked = false;
     await load();
-  });
+  }));
 }
 for (const button of document.querySelectorAll("#bulk [data-invite]")) {
-  button.addEventListener("click", async () => {
+  button.addEventListener("click", () => bulk(async () => {
     await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: [...selected], field: button.dataset.invite, value: button.dataset.on === "1" } });
     await load();
-  });
+  }));
 }
-document.getElementById("resetRsvp").addEventListener("click", async () => {
+document.getElementById("resetRsvp").addEventListener("click", () => {
   if (!confirm(`Reset the RSVP for ${selected.size} household(s)? Everyone goes back to "awaiting reply", and what they filled in (plus-one names, dietary needs, message) is cleared.`)) return;
-  await api("/api/admin/households/reset-rsvp", { method: "POST", body: { ids: [...selected] } });
-  selected.clear();
-  document.getElementById("selectAll").checked = false;
-  await load();
+  bulk(async () => {
+    await api("/api/admin/households/reset-rsvp", { method: "POST", body: { ids: [...selected] } });
+    selected.clear();
+    document.getElementById("selectAll").checked = false;
+    await load();
+  });
 });
 document.getElementById("addBtn").addEventListener("click", () => openHousehold(null));
 
@@ -335,12 +344,26 @@ function cardValues(card) {
   return out;
 }
 
+/** The fields whose values changed since `before`. */
+const changes = (now, before) => Object.fromEntries(Object.entries(now).filter(([k, v]) => !before || before[k] !== v));
+
 async function openHousehold(hh) {
+  // Open the household as it is now (a guest may have RSVP'd since this page loaded).
+  if (hh) {
+    await load();
+    hh = data.households.find((x) => x.id === hh.id) || hh;
+  }
   const changed = await openDialog(hh ? hh.display_name || "Household" : "New household", (close) => {
     const msg = h("p", { class: "msg" });
     const removed = [];
     const guestList = h("div", {});
-    const addGuest = (g) => guestList.append(guestCard(g, (card) => { if (card.guestId) removed.push(card.guestId); card.remove(); }));
+    // Saving sends only what was changed here, so it can't put back an answer from
+    // before an RSVP that arrived while the editor was open.
+    const addGuest = (g) => {
+      const card = guestCard(g, (c) => { if (c.guestId) removed.push(c.guestId); c.remove(); });
+      card.initial = card.guestId ? cardValues(card) : null;
+      guestList.append(card);
+    };
     (hh?.guests?.length ? hh.guests : [{ priority: "High" }]).forEach(addGuest);
 
     const form = h("form", { onsubmit: (ev) => ev.preventDefault() },
@@ -370,18 +393,35 @@ async function openHousehold(hh) {
       ),
       hh?.rsvp_message ? h("p", { class: "desc" }, `Message with their RSVP: “${hh.rsvp_message}”`) : null,
     );
+    let householdBefore = hh ? formValues(form) : null;
 
+    // Remembered across tries: if a save fails partway (a bad email on the third guest),
+    // saving again updates what the first try created instead of adding it twice.
+    let householdId = hh?.id;
     async function save() {
       const household = formValues(form);
-      const guests = [...guestList.children].map((card) => ({ id: card.guestId, ...cardValues(card) }));
+      // A new card left blank adds nobody.
+      const cards = [...guestList.children].filter((card) => {
+        const v = cardValues(card);
+        return card.guestId || String(v.first_name || "").trim() || String(v.last_name || "").trim();
+      });
       try {
-        let householdId = hh?.id;
-        if (householdId) await api(`/api/admin/households/${householdId}`, { method: "PUT", body: household });
-        else householdId = (await api("/api/admin/households", { method: "POST", body: household })).id;
-        for (const guestId of removed) await api(`/api/admin/guests/${guestId}`, { method: "DELETE" });
-        for (const g of guests) {
-          if (g.id) await api(`/api/admin/guests/${g.id}`, { method: "PUT", body: g });
-          else await api("/api/admin/guests", { method: "POST", body: { ...g, household_id: householdId } });
+        if (householdId) {
+          const edits = changes(household, householdBefore);
+          if (Object.keys(edits).length) await api(`/api/admin/households/${householdId}`, { method: "PUT", body: edits });
+        } else householdId = (await api("/api/admin/households", { method: "POST", body: household })).id;
+        householdBefore = household;
+        while (removed.length) {
+          await api(`/api/admin/guests/${removed[0]}`, { method: "DELETE" });
+          removed.shift();
+        }
+        for (const card of cards) {
+          const g = cardValues(card);
+          if (card.guestId) {
+            const edits = changes(g, card.initial);
+            if (Object.keys(edits).length) await api(`/api/admin/guests/${card.guestId}`, { method: "PUT", body: edits });
+          } else card.guestId = (await api("/api/admin/guests", { method: "POST", body: { ...g, household_id: householdId } })).id;
+          card.initial = g;
         }
         close(true);
       } catch (error) {

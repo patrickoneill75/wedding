@@ -20,17 +20,17 @@
  * cross-site form can't set a custom header, and a cross-site fetch() that does gets
  * stopped at the CORS preflight, which this Worker never answers.
  *
- * One OAuth callback serves two purposes, told apart by the signed `state`:
+ * One OAuth callback serves three purposes, told apart by the signed `state`:
  *   login  scopes openid/email/profile; sets the session cookie.
  *   drive  adds the Drive scope with offline access; stores the refresh token (see
- *          src/google.js). Requires an existing admin session.
+ *          src/google.js). Started from the admin-only drive/connect route.
  *   gmail  adds gmail.send with offline access, for guest emails (src/gmail.js).
  *          Requires an admin session.
  * The state also carries a nonce matched against a short-lived cookie, so a callback
  * URL can't be replayed into someone else's browser.
  */
 
-import { first, getSetting, setSetting } from "./db.js";
+import { first, getSetting, run, setSetting } from "./db.js";
 
 const encoder = new TextEncoder();
 const SESSION_COOKIE = "wedding_session";
@@ -93,8 +93,10 @@ async function signingKey(env) {
 async function loadSigningKey(env) {
   let secret = await getSetting(env, "_session_secret");
   if (!secret) {
-    secret = randomToken(32);
-    await setSetting(env, "_session_secret", secret);
+    // First use: two requests may race to create the key. Only the first write sticks,
+    // and both read back that one, so nobody signs with a key the rest won't accept.
+    await run(env, "INSERT INTO settings (key, value) VALUES ('_session_secret', ?) ON CONFLICT(key) DO NOTHING", JSON.stringify(randomToken(32)));
+    secret = await getSetting(env, "_session_secret");
   }
   return crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
     "sign",
@@ -287,16 +289,18 @@ function redirect(location, cookies = []) {
 export async function handleOAuthCallback(request, env, onTokens) {
   const url = new URL(request.url);
   const clearState = cookie(STATE_COOKIE, "", 0);
-  const fail = (page, msg) => redirect(`${page}?error=${encodeURIComponent(msg)}`, [clearState]);
+  // Settings shows a Drive or Gmail error in that card: the hash names it.
+  const fail = (page, msg, card = "") => redirect(`${page}?error=${encodeURIComponent(msg)}${card ? `#${card}` : ""}`, [clearState]);
 
   const state = await verify(env, url.searchParams.get("state"));
   if (!state || state.kind !== "oauth" || state.nonce !== readCookie(request, STATE_COOKIE)) {
     return fail("/admin/login.html", "That sign-in link expired or was already used. Try again.");
   }
   const page = state.purpose === "drive" || state.purpose === "gmail" ? "/admin/settings.html" : "/admin/login.html";
-  if (url.searchParams.get("error")) return fail(page, `Google said: ${url.searchParams.get("error")}`);
+  const failHere = (msg) => fail(page, msg, page === "/admin/settings.html" ? state.purpose : "");
+  if (url.searchParams.get("error")) return failHere(`Google said: ${url.searchParams.get("error")}`);
   const code = url.searchParams.get("code");
-  if (!code) return fail(page, "Google didn't return a sign-in code.");
+  if (!code) return failHere("Google didn't return a sign-in code.");
 
   let tokens;
   let info;
@@ -304,7 +308,7 @@ export async function handleOAuthCallback(request, env, onTokens) {
     tokens = await exchangeCode(request, env, code);
     info = await fetchUserInfo(tokens.access_token);
   } catch (error) {
-    return fail(page, error.message);
+    return failHere(error.message);
   }
   const email = String(info.email || "").toLowerCase();
 
@@ -312,10 +316,10 @@ export async function handleOAuthCallback(request, env, onTokens) {
     const user = await currentUser(request, env);
     if (!user) return fail("/admin/login.html", "Sign in before connecting Google Drive.");
     if (!tokens.refresh_token) {
-      return fail(page, "Google didn't grant offline access. Remove the app at myaccount.google.com/permissions and try again.");
+      return failHere("Google didn't grant offline access. Remove the app at myaccount.google.com/permissions and try again.");
     }
     if (!String(tokens.scope || "").split(" ").includes(DRIVE_SCOPE)) {
-      return fail(page, "Drive access wasn't granted. Tick the Google Drive box on the consent screen.");
+      return failHere("Drive access wasn't granted. Tick the Google Drive box on the consent screen.");
     }
     await onTokens.drive(env, tokens, { email, connected_by: user.email });
     return redirect("/admin/settings.html?drive=connected#drive", [clearState]);
@@ -326,10 +330,10 @@ export async function handleOAuthCallback(request, env, onTokens) {
     const user = await currentUser(request, env);
     if (!user || user.role !== "admin") return fail("/admin/login.html", "Sign in as an admin before connecting Gmail.");
     if (!tokens.refresh_token) {
-      return fail(page, "Google didn't grant offline access. Remove the app at myaccount.google.com/permissions and try again.");
+      return failHere("Google didn't grant offline access. Remove the app at myaccount.google.com/permissions and try again.");
     }
     if (!String(tokens.scope || "").split(" ").includes(GMAIL_SCOPE)) {
-      return fail(page, "Sending email wasn't allowed. Tick the \"Send email on your behalf\" box on the consent screen.");
+      return failHere("Sending email wasn't allowed. Tick the \"Send email on your behalf\" box on the consent screen.");
     }
     await onTokens.gmail(env, tokens, { email, connected_by: user.email });
     return redirect("/admin/settings.html?gmail=connected#gmail", [clearState]);

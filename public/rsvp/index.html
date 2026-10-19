@@ -215,7 +215,8 @@ let options = [];
 let active = -1;
 let searchSeq = 0;
 let searchTimer = null;
-const letters = (text) => text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z]/g, "");
+// Letters of any script, accents stripped, as the server's normalizeName does.
+const letters = (text) => text.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "").replace(/[^\p{L}]/gu, "");
 
 function closeList() {
   list.hidden = true;
@@ -335,7 +336,10 @@ function openReply(household) {
   $("greeting").textContent = `Hi ${household.greeting}!`;
   $("replyHelp").textContent = household.responded ? "You've already replied. Change anything below and send it again." : page.reply_help;
   const form = $("reply");
-  form.email.value = household.email || "";
+  // The email on file comes back masked: leave the box blank to keep it.
+  form.email.value = "";
+  form.email.required = !household.email_hint;
+  form.email.placeholder = household.email_hint ? `On file: ${household.email_hint}. Leave blank to keep it.` : "";
   form.message.value = household.message || "";
   $("people").replaceChildren(...household.guests.map((g) => {
     const box = el("div", { class: "person" },
@@ -345,7 +349,8 @@ function openReply(household) {
       el("label", {}, "Dietary needs (optional)", el("input", { type: "text", name: `dietary_${g.id}`, value: g.dietary || "" })),
       // Only for households of more than one: a single guest's email is the household's.
       household.guests.length > 1
-        ? el("label", {}, page.guest_email_label, el("input", { type: "email", name: `email_${g.id}`, value: g.email || "", autocomplete: "off" }))
+        ? el("label", {}, page.guest_email_label, el("input", { type: "email", name: `email_${g.id}`, value: "", autocomplete: "off",
+            placeholder: g.email_hint ? `On file: ${g.email_hint}. Leave blank to keep it.` : "" }))
         : null);
     // The rehearsal dinner question, for guests invited to it, once they've said yes.
     if (g.rehearsal) {

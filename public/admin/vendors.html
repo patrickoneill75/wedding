@@ -177,7 +177,9 @@ function editVendor(detail) {
 
     if (!detail) return form;
     const labels = detail.status_labels || {};
-    const lines = detail.expenses.map((e) => h("tr", { class: "clickable", onclick: () => { location.href = `/admin/expenses.html#${e.id}`; } },
+    // Rows open the expense only for someone who can see Expenses.
+    const open = canSee(me, "expenses");
+    const lines = detail.expenses.map((e) => h("tr", open ? { class: "clickable", onclick: () => { location.href = `/admin/expenses.html#${e.id}`; } } : {},
       h("td", {}, e.item || "(no name)", e.part_of ? h("div", { class: "muted", style: "font-size:12px" }, `part of ${e.part_of}`) : null),
       h("td", { class: "muted" }, [e.category, e.subcategory].filter(Boolean).join(" › ")),
       h("td", {}, statusPill(e.status, labels)),

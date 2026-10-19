@@ -413,6 +413,15 @@ const MIGRATIONS = [
     `ALTER TABLE comm_messages ADD COLUMN format TEXT NOT NULL DEFAULT 'text'`,
     `ALTER TABLE comm_messages ADD COLUMN design TEXT NOT NULL DEFAULT 'plain'`,
   ],
+  // 17: a send is claimed (status 'sending', claimed_at) before it goes, so two runs
+  // can never send the same row (src/comms.js sendQueued).
+  [
+    `ALTER TABLE comm_sends ADD COLUMN claimed_at TEXT`,
+  ],
+  // 18: anything on the seating chart can be locked in place, so it can't be dragged.
+  [
+    `ALTER TABLE seating_items ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
@@ -442,8 +451,19 @@ async function migrate(env) {
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = '_schema_version'").first();
   const current = row ? Number(JSON.parse(row.value)) : 0;
   for (let version = current; version < MIGRATIONS.length; version++) {
-    await env.DB.batch(MIGRATIONS[version].map((sql) => env.DB.prepare(sql)));
-    await setSetting(env, "_schema_version", version + 1);
+    // The version number is written in the same batch (one transaction on D1), so a
+    // migration can't be applied without being recorded and then run again.
+    const record = env.DB.prepare(
+      "INSERT INTO settings (key, value) VALUES ('_schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    ).bind(JSON.stringify(version + 1));
+    try {
+      await env.DB.batch([...MIGRATIONS[version].map((sql) => env.DB.prepare(sql)), record]);
+    } catch (error) {
+      // Another isolate may have just run it: carry on from wherever the database is.
+      const now = await env.DB.prepare("SELECT value FROM settings WHERE key = '_schema_version'").first();
+      if (!now || Number(JSON.parse(now.value)) <= version) throw error;
+      version = Number(JSON.parse(now.value)) - 1;
+    }
   }
 }
 

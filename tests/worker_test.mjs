@@ -13,17 +13,18 @@ import { DatabaseSync } from "node:sqlite";
 
 import worker from "../src/worker.js";
 import { resetSchemaMemo } from "../src/db.js";
-import { sign } from "../src/auth.js";
+import { sign, verify } from "../src/auth.js";
 import { buildContext, drinksPlan, enrichExpense, guestCounts, mergeSettings, statusAfterPayment } from "../src/calc.js";
 import { buildExports, toCsv } from "../src/sync.js";
 import { sqlValue } from "../src/importer.js";
 import { normalizeName, searchGuests } from "../src/public_api.js";
-import { buildIcs, zonedTime } from "../src/calendar.js";
-import { fillIn, processComms } from "../src/comms.js";
+import { buildIcs, cleanEvents, zonedTime } from "../src/calendar.js";
+import { fillIn, processComms, SEND_BATCH } from "../src/comms.js";
 import { htmlToText, sanitizeHtml, themeFrom } from "../src/email_html.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, "fixtures", "sample_wedding.xlsx");
+const ROOT = path.join(HERE, "..");
 
 /* ------------------------------------------------------------------ tiny test runner */
 const tests = [];
@@ -59,9 +60,17 @@ class FakeD1 {
   prepare(sql) {
     return new FakeStatement(this.db, sql);
   }
+  // Like D1, a batch is one transaction: all of it applies, or none of it.
   async batch(statements) {
     const out = [];
-    for (const s of statements) out.push(await s.run());
+    this.db.exec("BEGIN");
+    try {
+      for (const s of statements) out.push(await s.run());
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
     return out;
   }
 }
@@ -319,7 +328,7 @@ test("spreadsheet import brings in households, guests, budget lines and constant
   assert.equal(jordan.guests.length, 1, 'the "Guest Guest Jordan Sample" placeholder row is not imported as a person');
   assert.equal(jordan.guests[0].plus_one_allowed, 1, "the placeholder becomes a plus-one on its host");
   assert.equal(jordan.guests[0].plus_one_name, null, "with no name, so the guest types it in when they RSVP");
-  assert.deepEqual(guests.counts.invites, { ceremony: 2, reception: 4 });
+  assert.deepEqual(guests.counts.invites, { ceremony: 2, reception: 5 }, "Jordan's plus-one counts for the reception, as in Head count");
   assert.equal(guests.counts.weighted, 4); // ceil(0.9*3 + 0.6)
 
   const { expenses } = (await api("/api/admin/expenses")).data;
@@ -494,6 +503,59 @@ test('upgrading a database turns "Guest Guest <host>" rows into a nameless plus-
   assert.ok(rows.every((r) => r.plus_one_name === null));
 });
 
+// Bug guard: bulk actions bound one SQL parameter per household, and D1 refuses more
+// than 100, so selecting 100+ households failed.
+test("bulk actions work on more than 100 households", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const prepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => {
+    const statement = prepare(sql);
+    const bind = statement.bind.bind(statement);
+    statement.bind = (...params) => {
+      if (params.length > 100) throw new Error("too many SQL variables");
+      return bind(...params);
+    };
+    return statement;
+  };
+  const rows = Array.from({ length: 120 }, (_, i) => `('H-${i + 1}', 'Household ${i + 1}')`).join(", ");
+  await call(env, "/api/auth/me");
+  env.DB.db.exec(`INSERT INTO households (code, display_name) VALUES ${rows}`);
+  env.DB.db.exec("INSERT INTO guests (household_id, first_name, last_name) SELECT id, 'G', 'Test' FROM households");
+  const ids = env.DB.db.prepare("SELECT id FROM households").all().map((r) => r.id);
+  assert.equal((await api("/api/admin/households/bulk", { method: "POST", body: { ids, field: "invite_sent", value: true } })).status, 200);
+  assert.equal((await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: ids, field: "invite_ceremony", value: true } })).status, 200);
+  assert.equal((await api("/api/admin/households/reset-rsvp", { method: "POST", body: { ids } })).status, 200);
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM households WHERE invite_sent = 1").get().n, 120);
+});
+
+// Bug guards: a blank guest card saved a nameless guest who counted in the budget; a
+// guest added later jumped ahead of imported ones; the import put a row with no
+// Household ID into another family's household, lost a US ZIP's leading zero when the
+// country was filled in, and dropped "groom" or "low" typed in lower case.
+test("guests: no nameless guests, added guests go last, and the import keeps households, ZIPs and case straight", async () => {
+  const { parseGuests } = await import("../src/importer.js");
+  const env = makeEnv();
+  const api = await adminClient(env);
+  await api("/api/admin/import", { method: "POST", form: fixtureForm({ guests: 1 }) });
+  const h3 = (await api("/api/admin/guests")).data.households.find((h) => h.code === "H-003");
+  assert.equal((await api("/api/admin/guests", { method: "POST", body: { household_id: h3.id, first_name: " ", last_name: "" } })).status, 400);
+  await api("/api/admin/guests", { method: "POST", body: { household_id: h3.id, first_name: "Newer", last_name: "Test" } });
+  const names = (await api("/api/admin/guests")).data.households.find((h) => h.code === "H-003").guests.map((g) => g.first_name);
+  assert.equal(names[names.length - 1], "Newer");
+  const made = await api("/api/admin/households", { method: "POST", body: { display_name: "Blank card", guests: [{ first_name: "Ann" }, { first_name: "", last_name: "" }] } });
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM guests WHERE household_id = ?").get(made.data.id).n, 1);
+
+  const sheet = new Map(Object.entries({
+    A1: { v: "Household ID" }, B1: { v: "First" }, C1: { v: "Last" }, D1: { v: "Full Name(s)" }, E1: { v: "Zip" }, F1: { v: "Country" }, G1: { v: "Priority" }, H1: { v: "Bride/Groom" },
+    B2: { v: "Ann" }, C2: { v: "Blank" }, D2: { v: "Ann Blank" }, E2: { v: 2134 }, F2: { v: "USA" }, G2: { v: "low" }, H2: { v: "groom" },
+    A3: { v: "H-001" }, B3: { v: "Bo" }, C3: { v: "Typed" }, D3: { v: "Bo Typed" },
+  }));
+  const parsed = parseGuests(sheet);
+  assert.deepEqual(parsed.guests.map((g) => [g.first_name, g.household_code, g.priority, g.side]), [["Ann", "H-002", "Low", "Groom"], ["Bo", "H-001", "High", null]]);
+  assert.equal(parsed.households.find((h) => h.code === "H-002").zip, "02134");
+});
+
 test("bulk ceremony/reception switches change every guest in the chosen households, and nothing else", async () => {
   const env = makeEnv();
   const api = await adminClient(env);
@@ -504,10 +566,10 @@ test("bulk ceremony/reception switches change every guest in the chosen househol
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal(r.data.updated, 3);
   let counts = (await api("/api/admin/guests")).data.counts;
-  assert.deepEqual(counts.invites, { ceremony: 3, reception: 4 });
+  assert.deepEqual(counts.invites, { ceremony: 4, reception: 5 }, "plus-ones included");
   await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: ids, field: "invite_reception", value: false } });
   counts = (await api("/api/admin/guests")).data.counts;
-  assert.deepEqual(counts.invites, { ceremony: 3, reception: 1 }, "ceremony and reception switch independently");
+  assert.deepEqual(counts.invites, { ceremony: 4, reception: 1 }, "ceremony and reception switch independently");
   const bad = await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: ids, field: "invite_ceremony", value: "yes" } });
   assert.equal(bad.status, 400, "value must be a real true/false");
   const badField = await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: ids, field: "rsvp", value: true } });
@@ -948,6 +1010,103 @@ test("every proposal in the conversation is answered before it goes back to Clau
   assert.deepEqual(sent.messages[2].content.map((b) => b.type), ["tool_result", "tool_result", "text"]);
 });
 
+// Bug guards for the expense form and chat: a bad payment amount used to fail after the
+// item was saved (so Save again duplicated it); a "new item" carrying an id saved over
+// that item; an update's tax and tip never saved; an update always reset the units.
+test("expense form: payment checked before saving, new items never overwrite, updates keep units and add tax", async () => {
+  const { checkProposal } = await import("../src/intake.js");
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const post = (fields) => api("/api/public/expense", { method: "POST", form: formOf(fields) });
+  const count = () => env.DB.db.prepare("SELECT COUNT(*) AS n FROM expenses").get().n;
+  assert.equal((await post({ item: "Florist", status: "quote", price: "500", payment_amount: "-200" })).status, 400);
+  assert.equal(count(), 0, "nothing saved before the bad amount was caught");
+  const florist = (await post({ item: "Florist", status: "quote", price: "500", payment_amount: "0" })).data.expense_id;
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM payments").get().n, 0, "0 paid is no payment");
+
+  const catering = (await api("/api/admin/expenses", { method: "POST", body: { category: "Food", item: "Catering", pricing: "variable", quantity_source: "guests", unit_cost: 80, status: "quote" } })).data.expense.id;
+  const expenses = (await api("/api/admin/expenses")).data.expenses;
+  const settings = { payers: ["Patrick"], payment_methods: [] };
+  const base = { mode: "new", expense_id: florist, item: "Cake", category: "Food", subcategory: null, vendor: null, stage: "quote", price: 300, quantity: 1,
+    taxable: false, gratuity_percent: 0, due_date: null, payment_amount: 0, paid_on: null, payer: null, notes: null };
+  const fresh = checkProposal(base, expenses, settings);
+  assert.deepEqual([fresh.form.expense_id, fresh.form.payment_amount], ["", ""]);
+  const viaForm = await post({ ...fresh.form, mode: "", expense_id: String(florist) });
+  assert.equal(viaForm.status, 201);
+  assert.notEqual(viaForm.data.expense_id, florist, "a new item never saves over the item named by the id");
+  assert.equal((await api(`/api/admin/expenses/${florist}`)).data.expense.item, "Florist");
+
+  const update = checkProposal({ ...base, mode: "update", expense_id: catering, item: null, category: null, price: 85, quantity: null, taxable: true, gratuity_percent: 20 }, expenses, settings);
+  assert.equal(update.form.units, "", "an update without a quantity keeps the units");
+  assert.match(update.summary.find(([k]) => k === "Price")[1], /per guest .*\+ tax \+ 20% tip/);
+  assert.equal((await post(Object.fromEntries(Object.entries(update.form).filter(([, v]) => v !== "")))).status, 201);
+  const after = (await api(`/api/admin/expenses/${catering}`)).data.expense;
+  assert.deepEqual([after.unit_cost, after.pricing, after.taxable, after.gratuity_rate], [85, "variable", 1, 0.2]);
+  const plain = checkProposal({ ...base, mode: "update", expense_id: catering, item: null, category: null, price: 90, quantity: null }, expenses, settings);
+  await post(Object.fromEntries(Object.entries(plain.form).filter(([, v]) => v !== "")));
+  const kept = (await api(`/api/admin/expenses/${catering}`)).data.expense;
+  assert.deepEqual([kept.unit_cost, kept.taxable, kept.gratuity_rate], [90, 1, 0.2], "an update without tax or tip leaves them on");
+});
+
+// Bug guards for the budget math: a cancelled item's line items stayed due; paying what
+// was due left the date to go overdue; a deposit on an unpriced item projected $0;
+// line items kept the old category; editing a Paid item put a deleted payment back; an
+// item saved down to what's paid stayed Partially paid; and an item created past
+// Estimate never froze its original estimate.
+test("budget: cancelled items, due dates, deposits, categories and Paid behave", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const make = async (body) => (await api("/api/admin/expenses", { method: "POST", body })).data.expense.id;
+  const summary = async () => (await api("/api/admin/summary")).data;
+
+  const venue = await make({ category: "Venue", item: "Venue" });
+  const balance = await make({ parent_id: venue, item: "Balance", unit_cost: 9000, status: "booked", due_date: "2020-01-01" });
+  await api(`/api/admin/expenses/${venue}`, { method: "PUT", body: { status: "cancelled" } });
+  const s1 = await summary();
+  assert.equal(s1.overdue.count, 0, "nothing on a cancelled item is overdue");
+  assert.equal(s1.totals.owed, 0);
+  await api(`/api/admin/expenses/${venue}`, { method: "PUT", body: { category: "Reception venue" } });
+  assert.equal((await api(`/api/admin/expenses/${balance}`)).data.expense.category, "Reception venue", "line items follow the item's category");
+
+  const dj = await make({ category: "Music", item: "DJ", unit_cost: 2000, status: "booked", due_date: "2020-01-01", due_amount: 500 });
+  await api(`/api/admin/expenses/${dj}/payments`, { method: "POST", body: { amount: 500, paid_on: "2019-12-30" } });
+  const djRow = (await api(`/api/admin/expenses/${dj}`)).data.expense;
+  assert.deepEqual([djRow.due_date, djRow.due_amount, djRow.status], [null, null, "partially_paid"], "paying what was due clears the due date");
+
+  const cake = await make({ category: "Food", item: "Cake", status: "quote" });
+  await api(`/api/admin/expenses/${cake}/payments`, { method: "POST", body: { amount: 100 } });
+  assert.equal((await api(`/api/admin/expenses/${cake}`)).data.expense.projected, 100, "a deposit counts before there's a price");
+
+  const flowers = await make({ category: "Flowers", item: "Flowers", unit_cost: 400, status: "paid" });
+  const pay = (await api(`/api/admin/expenses/${flowers}`)).data.payments[0];
+  await api(`/api/admin/payments/${pay.id}`, { method: "DELETE" });
+  await api(`/api/admin/expenses/${flowers}`, { method: "PUT", body: { notes: "refunded" } });
+  assert.equal((await api(`/api/admin/expenses/${flowers}`)).data.payments.length, 0, "editing a Paid item doesn't add the payment back");
+
+  const band = await make({ category: "Music", item: "Band", unit_cost: 1000, status: "booked" });
+  assert.equal(env.DB.db.prepare("SELECT baseline_total FROM expenses WHERE id = ?").get(band).baseline_total, 1000, "created past Estimate: its price is the original estimate");
+  await api(`/api/admin/expenses/${band}/payments`, { method: "POST", body: { amount: 600 } });
+  await api(`/api/admin/expenses/${band}`, { method: "PUT", body: { unit_cost: 600 } });
+  assert.equal((await api(`/api/admin/expenses/${band}`)).data.expense.status, "paid", "saved down to what's paid, it's Paid");
+});
+
+// Bug guard: GET guests sent the budget settings to a user who only has the Guests page.
+test("a Guests-only user's guest list carries no budget settings", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  await api("/api/admin/settings", { method: "PUT", body: { budget_target: 42000 } });
+  await api("/api/admin/users", { method: "POST", body: { email: "mom@example.com", role: "user", pages: ["guests"] } });
+  const mom = await sessionCookie(env, "mom@example.com");
+  const r = await call(env, "/api/admin/guests", { cookie: mom });
+  assert.equal(r.status, 200);
+  assert.ok(!JSON.stringify(r.data).includes("42000") && !("settings" in r.data));
+});
+
+test("drinks: a bottle or beer size of 0 or blank uses the usual size", () => {
+  const usual = drinksPlan({}, 100);
+  assert.deepEqual(drinksPlan({ drinks_per_wine_bottle: 0, drinks_per_liquor_bottle: "", ounces_per_beer: -1 }, 100), usual);
+});
+
 // Asked for after saving books as a quote: "update the quote for the book to $25 a piece"
 // -- a line item couldn't be updated, by the form or by Claude.
 test("a line item can be updated through the expense form, and Claude may propose that", async () => {
@@ -1094,6 +1253,70 @@ test("RSVP preview: while RSVPs are closed only a signed-in admin can try the pa
   const stored = (await api("/api/admin/guests")).data.households.find((h) => h.code === "H-001");
   assert.deepEqual([stored.rsvp_at, stored.email === "preview@example.com", ...stored.guests.map((g) => g.rsvp)], [null, false, ...alex.guests.map(() => "pending")], "nothing is saved");
   assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM comm_sends").get().n, 0, "and no after-RSVP email is queued");
+});
+
+// Bug guard: a visitor could walk the name search and read every household's email
+// addresses; the page now gets them masked, and a blank box keeps the one on file.
+test("RSVP: emails come back masked, a blank keeps the one on file, and a typed one replaces it", async () => {
+  const { env, api, households } = await rsvpSetup();
+  const h1 = households.find((h) => h.code === "H-001");
+  await api(`/api/admin/households/${h1.id}`, { method: "PUT", body: { email: "alex@example.com" } });
+  await api(`/api/admin/guests/${h1.guests[1].id}`, { method: "PUT", body: { email: "sam@own.example.com" } });
+  const pick = (await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "alex" } })).data.results[0].pick;
+  const alex = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick } })).data.matches[0];
+  const text = JSON.stringify(alex);
+  assert.ok(!text.includes("alex@example.com") && !text.includes("sam@own.example.com"), "no address in the lookup");
+  assert.equal(alex.email_hint, "a•••@example.com");
+  assert.equal(alex.guests[1].email_hint, "s•••@own.example.com");
+  const submit = (email) => call(env, "/api/public/rsvp/submit", { method: "POST", body: { token: alex.token, email, guests: alex.guests.map((g) => ({ id: g.id, rsvp: "yes", email: "" })) } });
+  assert.equal((await submit("")).status, 200, "a blank keeps the email on file");
+  const stored = () => env.DB.db.prepare("SELECT h.email AS h, g.email AS g FROM households h JOIN guests g ON g.household_id = h.id WHERE h.id = ? ORDER BY g.sort_order, g.id").all(h1.id);
+  assert.deepEqual(stored().map((r) => [r.h, r.g]), [["alex@example.com", null], ["alex@example.com", "sam@own.example.com"]]);
+  assert.equal((await submit("new@example.com")).status, 200);
+  assert.equal(stored()[0].h, "new@example.com");
+  // A household with no email on file still has to give one.
+  const jordan = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Jordan", last: "Sample" } })).data.matches[0];
+  const none = await call(env, "/api/public/rsvp/submit", { method: "POST", body: { token: jordan.token, email: "", guests: [{ id: jordan.guests[0].id, rsvp: "no" }] } });
+  assert.equal(none.status, 400);
+});
+
+// Bug guard: the type-ahead search replaced the first/last form and only searched
+// guests, so a preloaded plus-one could no longer find their host's invitation.
+test("RSVP: a preloaded plus-one finds their host through the name search; names in any script are found", async () => {
+  const { env, api, households } = await rsvpSetup();
+  const results = (await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "casey" } })).data.results;
+  assert.deepEqual(results.map((r) => r.name), ["Casey Guest"]);
+  const opened = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick: results[0].pick } })).data.matches[0];
+  assert.equal(opened.guests[0].first_name, "Jordan", "the pick opens the host's household");
+  await api("/api/admin/households", { method: "POST", body: { display_name: "Ivanova", guests: [{ first_name: "Ольга", last_name: "Иванова" }] } });
+  assert.deepEqual((await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "Ольга" } })).data.results.map((r) => r.name), ["Ольга Иванова"]);
+});
+
+// Bug guard: a cleared wording box saved "" and the RSVP page showed empty yes/no buttons.
+test("RSVP page: a blank wording field falls back to the default, except the heading", async () => {
+  const { env, api } = await rsvpSetup();
+  await api("/api/admin/comms/rsvp-page", { method: "PUT", body: { page: { accept_label: "", decline_label: "  ", heading: "", thanks_yes: "Yay" } } });
+  const page = (await call(env, "/api/public/info")).data.rsvp_page;
+  assert.deepEqual([page.accept_label, page.decline_label, page.heading, page.thanks_yes], ["Joyfully accepts", "Regretfully declines", "", "Yay"]);
+});
+
+// Bug guard: an all-day rehearsal dinner still showed the time typed before "All day"
+// was ticked, and an admin's preview showed the calendar button from the saved answers.
+test("RSVP: an all-day dinner shows no time, and a preview's calendar button follows the previewed answers", async () => {
+  const { env, api, households } = await rsvpSetup();
+  const alexRow = households.find((h) => h.code === "H-001").guests[0];
+  await api(`/api/admin/guests/${alexRow.id}`, { method: "PUT", body: { invite_rehearsal: true, rsvp: "no" } });
+  await api(`/api/admin/guests/${households.find((h) => h.code === "H-001").guests[1].id}`, { method: "PUT", body: { rsvp: "no" } });
+  await api("/api/admin/comms/calendar", { method: "PUT", body: { events: [{ title: "Dinner", date: "2027-06-11", start: "18:30", all_day: true, for: "rehearsal" }, { title: "Wedding", date: "2027-06-12", start: "16:00", for: "everyone" }] } });
+  await api("/api/admin/settings", { method: "PUT", body: { rsvp_open: false } });
+  const owner = await sessionCookie(env);
+  const pick = (await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "alex" }, cookie: owner })).data.results[0].pick;
+  const alex = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick }, cookie: owner })).data.matches[0];
+  assert.deepEqual(alex.rehearsal, { date: "2027-06-11", start: "", location: "" });
+  const sent = await call(env, "/api/public/rsvp/submit", { method: "POST", cookie: owner, body: { token: alex.token, email: "a@example.com",
+    guests: alex.guests.map((g) => ({ id: g.id, rsvp: "yes", rehearsal_rsvp: "yes" })) } });
+  assert.equal(sent.data.preview, true);
+  assert.ok(sent.data.calendar_url, "a previewed yes shows the calendar button even though the saved answers are no");
 });
 
 test("RSVP lookup never exposes addresses, priority or budget fields", async () => {
@@ -1304,6 +1527,104 @@ test("Drive sync creates each CSV once, then updates the same files in place", a
   assert.equal(status.pending_changes, false);
 });
 
+// Bug guard: two syncs into an empty folder each created every file, leaving a stale
+// second copy; the next sync now keeps the oldest and bins the rest.
+test("Drive sync keeps one copy of each file when a race made two", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const { setSetting } = await import("../src/db.js");
+  await setSetting(env, "_google_drive", { refresh_token: "rt", access_token: "at", expires_at: Date.now() + 3600e3, email: "a@example.com" });
+  await setSetting(env, "_drive_folder", { id: "folder1", name: "Wedding" });
+  const trashed = [];
+  const r = await withFetch((url, init) => {
+    if (url.startsWith("https://www.googleapis.com/drive/v3/files?")) {
+      const name = /name = '([^']+)'/.exec(new URL(url).searchParams.get("q"))?.[1];
+      return okJson({ files: [{ id: `${name}-old`, name }, { id: `${name}-new`, name }] });
+    }
+    if (/\/drive\/v3\/files\/[^?]+-new\?/.test(url) && init.method === "PATCH") {
+      trashed.push(decodeURIComponent(url.split("/files/")[1].split("?")[0]));
+      return okJson({});
+    }
+    if (/\/upload\/drive\/v3\/files\/[^?]+-old\?uploadType=media/.test(url) && init.method === "PATCH") return okJson({ id: "patched" });
+    throw new Error(`unexpected fetch ${init.method || "GET"} ${url}`);
+  }, () => api("/api/admin/drive/sync", { method: "POST" }));
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.ok(trashed.includes("guests.csv-new") && trashed.length === 6, trashed.join(","));
+});
+
+// Bug guard: the cron entry point had no test, so breaking "a run that sent email
+// leaves the Drive sync to the next run" would have passed.
+test("cron: a run that sends email skips the Drive sync; the next quiet run syncs", async () => {
+  const { env, api } = await commsSetup({ households: 2 });
+  const { setSetting } = await import("../src/db.js");
+  await setSetting(env, "_google_drive", { refresh_token: "rt", access_token: "at", expires_at: Date.now() + 3600e3, email: "a@example.com" });
+  await setSetting(env, "_drive_folder", { id: "folder1", name: "Wedding" });
+  await setSetting(env, "_sync_dirty_at", new Date().toISOString());
+  const id = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Hi", body: "Hi" } })).data.id;
+  await api(`/api/admin/comms/messages/${id}/schedule`, { method: "POST", body: { send_at: "2099-01-01T09:00" } });
+  env.DB.db.prepare("UPDATE comm_messages SET send_at = '2000-01-01T00:00:00Z'").run();
+  const cron = async () => {
+    const waits = [];
+    const calls = [];
+    await withFetch((url, init) => {
+      calls.push(url);
+      if (url.includes("gmail.googleapis.com")) return okJson({ id: "m" });
+      if (url.startsWith("https://www.googleapis.com/drive/v3/files?")) return okJson({ files: [] });
+      if (url.includes("uploadType=multipart")) return okJson({ id: "f", name: "x" });
+      throw new Error(`unexpected fetch ${url}`);
+    }, async () => {
+      await worker.scheduled({}, env, { waitUntil: (p) => waits.push(p) });
+      await Promise.all(waits);
+    });
+    return calls;
+  };
+  const first = await cron();
+  assert.ok(first.some((u) => u.includes("gmail")) && !first.some((u) => u.includes("drive")), "emails, and no Drive calls");
+  const second = await cron();
+  assert.ok(second.some((u) => u.includes("drive")), "the next run syncs Drive");
+});
+
+// Coverage the audit found missing: receipts never overwrite each other; a day-of link
+// turned off stops working; deleting a household takes its guests' seats and groups.
+test("receipts upload as new files every time, a turned-off day-of link stops working, and a deleted household leaves nothing behind", async () => {
+  const { env, api, id, roomId } = await seatingSetup();
+  const { setSetting } = await import("../src/db.js");
+  await setSetting(env, "_google_drive", { refresh_token: "rt", access_token: "at", expires_at: Date.now() + 3600e3, email: "a@example.com" });
+  await setSetting(env, "_drive_folder", { id: "folder1", name: "Wedding" });
+  const expense = (await api("/api/admin/expenses", { method: "POST", body: { item: "Cake", vendor: "Bakery", unit_cost: 300 } })).data.expense.id;
+  const created = [];
+  const upload = () => {
+    const form = new FormData();
+    form.append("file", new File(["receipt"], "receipt.pdf", { type: "application/pdf" }));
+    return api(`/api/admin/expenses/${expense}/attachments`, { method: "POST", form });
+  };
+  await withFetch((url, init) => {
+    if (url.startsWith("https://www.googleapis.com/drive/v3/files?")) return okJson({ files: [{ id: "receipts", name: "Receipts" }] });
+    if (url.includes("uploadType=multipart")) {
+      created.push(url);
+      return okJson({ id: `r${created.length}`, name: "x", webViewLink: "https://drive.example/x" });
+    }
+    throw new Error(`unexpected fetch ${init.method || "GET"} ${url}`);
+  }, async () => {
+    assert.equal((await upload()).status, 201);
+    assert.equal((await upload()).status, 201);
+  });
+  assert.equal(created.length, 2, "two receipts, two files: never an update of the first");
+
+  const key = new URL((await api("/api/admin/runofshow/link", { method: "POST" })).data.url).hash.slice(3);
+  await api("/api/admin/runofshow/link", { method: "DELETE" });
+  assert.equal((await call(env, "/api/dayof", { headers: { "x-dayof-key": key } })).status, 401);
+
+  const table = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 4 } })).data.ids[0];
+  await api("/api/admin/seating/assign", { method: "POST", body: { item_id: table, seat_letter: "A", guest_id: id.Avery } });
+  await api("/api/admin/runofshow/groups", { method: "POST", body: { name: "Photos", members: [`${id.Avery}:0`] } });
+  const household = env.DB.db.prepare("SELECT household_id FROM guests WHERE id = ?").get(id.Avery).household_id;
+  assert.equal((await api(`/api/admin/households/${household}`, { method: "DELETE" })).status, 200);
+  for (const table of ["guests", "seat_assignments", "guest_group_members"]) {
+    assert.equal(env.DB.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, `${table} is empty`);
+  }
+});
+
 test("guests.csv carries addresses and RSVP answers for each guest", async () => {
   const env = makeEnv();
   const api = await adminClient(env);
@@ -1327,14 +1648,48 @@ test("connecting Drive refuses a grant without the Drive scope", async () => {
     },
     () => call(env, `/api/auth/callback?code=c&state=${encodeURIComponent(state)}`, { cookie: `${cookie}; wedding_oauth=d1` })
   );
-  assert.match(r.headers.get("location"), /settings\.html\?error=/);
+  assert.match(r.headers.get("location"), /settings\.html\?error=[^#]+#drive$/, "the error comes back to the Drive card");
   const status = await (await adminClient(env))("/api/admin/drive/status");
   assert.equal(status.data.connected, false);
 });
 
+// Bug guard: a Gmail connection error landed in the Drive card (no hash on the redirect).
+test("a failed Gmail connection reports back to the Gmail card", async () => {
+  const env = makeEnv();
+  const cookie = await sessionCookie(env);
+  const state = await sign(env, { kind: "oauth", purpose: "gmail", nonce: "g1" }, 600);
+  const r = await call(env, `/api/auth/callback?error=access_denied&state=${encodeURIComponent(state)}`, { cookie: `${cookie}; wedding_oauth=g1` });
+  assert.match(r.headers.get("location"), /^\/admin\/settings\.html\?error=Google%20said%3A%20access_denied#gmail$/);
+});
+
+// Bug guard: two requests on a fresh database each made a signing key and the later
+// write won, so tokens signed with the losing key stopped verifying.
+test("the first signing key is created once even when requests race for it", async () => {
+  const env = makeEnv();
+  await call(env, "/api/auth/me"); // migrations
+  const tokens = await Promise.all([1, 2, 3].map((n) => sign(env, { kind: "test", n }, 60)));
+  const fresh = { ...env }; // a new isolate: no cached key
+  for (const t of tokens) assert.ok(await verify(fresh, t), "every token verifies with the stored key");
+});
+
+// Bug guard: login.html's ?next= check was weaker than the server's, so "/\\evil.example"
+// sent a signed-in visitor to another site.
+test("login.html only follows a ?next= path on this site", () => {
+  const html = fs.readFileSync(path.join(ROOT, "public/admin/login.html"), "utf8");
+  const rule = new RegExp(html.match(/const next = \/(.+)\/\.test\(raw\)/)[1]);
+  for (const bad of ["//evil.example", "/\\evil.example", "/\t/evil.example", "https://evil.example", "/x?y=//z"]) assert.ok(!rule.test(bad), bad);
+  for (const ok of ["/submit", "/admin/index.html", "/submit/form.html#x"]) assert.ok(rule.test(ok), ok);
+});
+
+// Bug guard: /dayof was added to public/ but not to the reserved paths, so a Zola page
+// with that slug would have replaced the coordinator's view.
+test("every top-level folder and file in public/ is reserved from the copied website", () => {
+  for (const name of fs.readdirSync(path.join(ROOT, "public"))) assert.ok(RESERVED.has(name), `${name} is not in RESERVED`);
+});
+
 /* --------------------------------------------------------------- website copy -- */
 
-import { cleanPage, contrastingColor, fontFacesFor, parseHtml, serialize } from "../src/site.js";
+import { cleanPage, fontFacesFor, PAGE_SCRIPT, parseHtml, RESERVED, serialize } from "../src/site.js";
 
 const SLUG = "testcouple2030";
 // A made-up page shaped like Zola's server-rendered wedding site.
@@ -1392,6 +1747,22 @@ test("the copy's links point at its own pages, our RSVP page, and Zola for anyth
   assert.ok(menu.startsWith('<a href="/" aria-current="page">Home</a>'), menu);
 });
 
+// Bug guards: the phone menu left out Registry (it stays on Zola), so phone guests
+// couldn't reach it; menu labels were written back unescaped; the phone menu button
+// never showed while the site title linked home; and the desktop pill sat on Registry.
+test("the phone menu includes Registry, labels stay text, and the page script measures only the menu row", () => {
+  const page = zolaPage().replace(">Travel</a>", ">Travel &amp;lt;b&amp;gt;</a>");
+  const html = cleanPage(page, { slug: SLUG, pages: new Set(["travel"]), currentPath: "/" }).html;
+  const menu = /<nav id="wm-menu"[^>]*>(.*?)<\/nav>/.exec(html)[1];
+  assert.ok(menu.includes(`<a href="https://www.zola.com/wedding/${SLUG}/registry" target="_blank" rel="noopener">Registry</a>`), menu);
+  assert.ok(!menu.includes("RSVP"), "the pill already covers RSVP");
+  assert.ok(menu.includes("Travel &amp;lt;b&amp;gt;") || menu.includes("Travel &lt;b&gt;"), menu);
+  assert.ok(!/<b>/.test(menu), "escaped text never becomes a tag");
+  assert.ok(html.includes(`<a href="https://www.zola.com/wedding/${SLUG}/registry" data-wm-nav="menu">Registry</a>`), "Registry counts as part of the menu row");
+  assert.ok(PAGE_SCRIPT.includes(`'a[data-wm-nav="menu"]'`), "the phone check looks at the menu links when there are any");
+  assert.ok(/box\.querySelectorAll\("a"\)/.test(PAGE_SCRIPT), "the pill clears every link in the row");
+});
+
 test('"View" buttons become links: the place\'s website by name, else its address on a map', () => {
   const html = cleanPage(zolaPage(), { slug: SLUG, pages: new Set(), currentPath: "/" }).html;
   assert.ok(/<a class="css-btn" href="https:\/\/grandtest\.example\/rooms" target="_blank"[^>]*>View<\/a>/.test(html));
@@ -1414,8 +1785,7 @@ test("a page whose footer can't be found is still copied, with a warning", () =>
   assert.ok(out.warnings.some((w) => /"Zola" still appears 1 time/.test(w)));
 });
 
-test("the RSVP pill's automatic color sits opposite the theme's color", () => {
-  assert.equal(contrastingColor("#89645c"), "hsl(191 35% 30%)");
+test("a pill color set in Settings wins", () => {
   const html = cleanPage(zolaPage(), { slug: SLUG, pages: new Set(), rsvpColor: "#123456", currentPath: "/" }).html;
   assert.ok(html.includes("background:#123456"), "a color set in Settings wins");
 });
@@ -1514,6 +1884,10 @@ test("the GitHub Action's routes need the shared secret", async () => {
   assert.equal((await ingest(env, { pages: [] }, "nope")).status, 401);
   // Not set up at all: say so rather than accept anything.
   assert.equal((await call(makeEnv(), "/api/site/config", { headers: { authorization: "Bearer " } })).status, 503);
+  // Bug guard: a copy the Worker refused never showed in Settings.
+  assert.equal((await ingest(env, { pages: [{ path: "/admin", html: "x" }] })).status, 400);
+  const status = (await (await adminClient(env))("/api/admin/site/status")).data.status;
+  assert.match(status.error, /GitHub's copy was refused/);
 });
 
 test("a site built on GitHub is stored and served, and resending it isn't a change", async () => {
@@ -1716,6 +2090,75 @@ test("seating: tables come from templates, get the next table number, and number
   assert.equal((await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "note", label: " " } })).status, 400);
 });
 
+// Bug guards: every reception room numbered its tables from 1, so escort cards said
+// "table 1" twice; a ceremony row of chairs with a label couldn't be saved again; a
+// reception chair's number could be cleared with someone in it; a room made a
+// reception room could seat two people at the same "table 1 A".
+test("seating: numbers are unique across reception rooms, ceremony chairs may share labels, seated chairs keep numbers", async () => {
+  const { env, api, id, roomId } = await seatingSetup();
+  const patio = (await api("/api/admin/seating/rooms", { method: "POST", body: { name: "Patio", kind: "reception", width_ft: 40, length_ft: 30 } })).data.id;
+  const hallTable = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 4 } })).data;
+  const patioTable = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: patio, kind: "table", seats: 4 } })).data;
+  const label = (d) => d.items.find((i) => i.id === d.ids[0]).label;
+  assert.deepEqual([label(hallTable), label(patioTable)], ["1", "2"], "the Patio's first table is 2");
+  assert.equal((await api(`/api/admin/seating/items/${patioTable.ids[0]}`, { method: "PUT", body: { label: "1" } })).status, 400);
+
+  const chapel = (await api("/api/admin/seating/rooms", { method: "POST", body: { name: "Chapel", kind: "ceremony", width_ft: 40, length_ft: 60 } })).data.id;
+  const row = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: chapel, kind: "seat", count: 3, label: "Row A" } })).data.ids;
+  assert.equal((await api(`/api/admin/seating/items/${row[1]}`, { method: "PUT", body: { label: "Row A", x: 5 } })).status, 200, "ceremony chairs may share a label");
+
+  const chair = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "seat" } })).data.ids[0];
+  await api("/api/admin/seating/assign", { method: "POST", body: { item_id: chair, seat_letter: "A", guest_id: id.Avery } });
+  assert.equal((await api(`/api/admin/seating/items/${chair}`, { method: "PUT", body: { label: "" } })).status, 400, "a reception chair keeps a number");
+
+  // The chapel becomes a reception room: its "Row A" chairs share a number.
+  await api(`/api/admin/seating/rooms/${chapel}`, { method: "PUT", body: { kind: "reception" } });
+  const seat = await api("/api/admin/seating/assign", { method: "POST", body: { item_id: row[0], seat_letter: "A", guest_id: id.Blake } });
+  assert.equal(seat.status, 400);
+  assert.match(seat.data.error, /share the number Row A/);
+});
+
+// Bug guards: a table typed on the Guests page reached guests.csv but no report; the
+// seating board still printed a guest taken off the reception.
+test("seating: a typed table shows in reports until the guest has a seat; the board leaves out non-reception guests", async () => {
+  const { api, id, roomId } = await seatingSetup();
+  await api(`/api/admin/guests/${id.Blake}`, { method: "PUT", body: { table_name: "7" } });
+  const table = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 4 } })).data.ids[0];
+  await api("/api/admin/seating/assign", { method: "POST", body: { item_id: table, seat_letter: "A", guest_id: id.Avery } });
+  const cards = await runReport(api, { id: "table-cards" });
+  assert.equal(cards.find((r) => r.Name === "Blake Test").Table, "7");
+  await api(`/api/admin/guests/${id.Avery}`, { method: "PUT", body: { invite_reception: false } });
+  const board = await runReport(api, { id: "seating-board" });
+  assert.ok(!board.some((r) => r.Name === "Avery Test"), "off the reception, off the board");
+});
+
+test("seating: turns and shape sizes keep two decimals; locked items can't move until unlocked; several move in one query", async () => {
+  const { env, api, roomId } = await seatingSetup();
+  const shape = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "shape", x: 10, y: 10 } })).data.ids[0];
+  const table = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", x: 20, y: 10 } })).data.ids[0];
+  const item = async (id) => (await api("/api/admin/seating")).data.items.find((i) => i.id === id);
+  await api(`/api/admin/seating/items/${shape}`, { method: "PUT", body: { rotation: 22.456, width_ft: 12.755, length_ft: 0.25, label: "Dance floor" } });
+  await api(`/api/admin/seating/items/${table}`, { method: "PUT", body: { rotation: -7.5 } });
+  assert.deepEqual([(await item(shape)).rotation, (await item(shape)).width_ft, (await item(shape)).length_ft], [22.46, 12.76, 0.25]);
+  assert.equal((await item(table)).rotation, 352.5);
+
+  await api("/api/admin/seating/items/lock", { method: "POST", body: { ids: [shape], locked: true } });
+  assert.equal((await api(`/api/admin/seating/items/${shape}`, { method: "PUT", body: { x: 30 } })).status, 400, "locked: no moving");
+  assert.equal((await api(`/api/admin/seating/items/${shape}`, { method: "PUT", body: { rotation: 45 } })).status, 400, "or turning");
+  assert.equal((await api(`/api/admin/seating/items/${shape}`, { method: "PUT", body: { label: "Floor", color: "blue" } })).status, 200, "its text and color can still change");
+  assert.equal((await api("/api/admin/seating/items/arrange", { method: "POST", body: { moves: [{ id: shape, x: 1, y: 1 }] } })).status, 400);
+  assert.equal((await api(`/api/admin/seating/items/${shape}`, { method: "PUT", body: { locked: false, x: 30 } })).status, 200, "unlock and move in one save");
+
+  const queries = [];
+  const prepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => { queries.push(sql); return prepare(sql); };
+  const moved = await api("/api/admin/seating/items/arrange", { method: "POST", body: { moves: [{ id: shape, x: 5.25, y: 6 }, { id: table, x: 15.5, y: 6 }] } });
+  assert.equal(moved.status, 200, JSON.stringify(moved.data));
+  assert.equal(queries.filter((q) => /^UPDATE seating_items SET x/.test(q)).length, 1, "one UPDATE for the lot");
+  env.DB.prepare = prepare;
+  assert.deepEqual([[(await item(shape)).x, (await item(shape)).y], [(await item(table)).x, (await item(table)).y]], [[5.25, 6], [15.5, 6]]);
+});
+
 test("seating: a person has one seat; seating them again moves them, and taking a seat bumps whoever had it", async () => {
   const { env, api, id, roomId } = await seatingSetup();
   const tableId = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 6 } })).data.ids[0];
@@ -1890,6 +2333,33 @@ test("reports: head count, table cards, chase list and mailing labels count the 
   assert.deepEqual((await runReport(api, { id: "ceremony-only" })).map((r) => r.Name), ["Dana Lee"]);
 });
 
+// Bug guards: "is more than"/"is less than" never matched dates or times and "less
+// than" took in blanks; counting by a yes/no field labeled No as "(none)"; meal counts
+// split "Vegetarian" and "vegetarian"; an RSVP filter typed "Awaiting reply" matched nobody.
+test("reports: before/after works on dates and times, counts read Yes/No and 0, and text counts ignore case", async () => {
+  const { api } = await reportSetup();
+  const run = (definition) => runReport(api, { definition });
+  await api("/api/admin/runofshow/items", { method: "POST", body: { title: "Dinner", start_time: "18:00", duration_min: 0 } });
+  await api("/api/admin/runofshow/items", { method: "POST", body: { title: "Toasts", start_time: "19:30" } });
+  await api("/api/admin/runofshow/items", { method: "POST", body: { title: "Unscheduled" } });
+  assert.deepEqual((await run({ source: "run_of_show", columns: ["title"], filters: [{ field: "start_time", op: "gt", value: "18:30" }] })).map((r) => r.Step), ["Toasts"]);
+  assert.deepEqual((await run({ source: "run_of_show", columns: ["title"], filters: [{ field: "duration_min", op: "lt", value: "30" }] })).map((r) => r.Step), ["Dinner"], "a blank isn't less than 30");
+  const minutes = await run({ source: "run_of_show", group_by: "duration_min", filters: [] });
+  assert.ok(minutes.some((r) => r.Minutes === "0"), JSON.stringify(minutes));
+  const plusOnes = await run({ source: "people", group_by: "plus_one", filters: [] });
+  assert.ok(plusOnes.some((r) => r["Is a plus-one"] === "No") && !plusOnes.some((r) => r["Is a plus-one"] === "(none)"), JSON.stringify(plusOnes));
+
+  const households = (await api("/api/admin/guests")).data.households;
+  const [a, b] = households.find((h) => h.display_name === "The Smiths").guests;
+  await api(`/api/admin/guests/${a.id}`, { method: "PUT", body: { rsvp: "yes", dietary: "Vegetarian" } });
+  await api(`/api/admin/guests/${b.id}`, { method: "PUT", body: { rsvp: "yes", dietary: "vegetarian " } });
+  const meals = await runReport(api, { id: "meal-counts" });
+  assert.equal(meals.filter((r) => /vegetarian/i.test(r["Dietary needs"])).length, 1, JSON.stringify(meals));
+
+  const fields = (await api("/api/admin/reports")).data.sources.people.fields;
+  assert.deepEqual(fields.find((f) => f.key === "rsvp").choices, ["Awaiting", "Coming", "Not coming"], "the builder offers the stored words");
+});
+
 test("reports: CSV downloads defuse formulas, and custom reports save, filter and count", async () => {
   const { api } = await reportSetup();
   const csv = await api("/api/admin/reports/full-list/csv");
@@ -1973,6 +2443,45 @@ test("day-of view: the coordinator's key reads and checks off steps, never budge
     "an admin's POST without the X-Wedding header is refused (CSRF)");
 });
 
+// Bug guards: the rehearsal dinner cohort kept guests who declined the dinner; the
+// day-of data carried each linked guest's "declined" RSVP flag and kept a declined
+// guest linked by name; a step saved with a bad link half-saved.
+test("run of show: the dinner cohort drops dinner declines; day-of carries no RSVP flags; a bad link saves nothing", async () => {
+  const { env, api } = await reportSetup();
+  const households = (await api("/api/admin/guests")).data.households;
+  const smiths = households.find((h) => h.display_name === "The Smiths");
+  await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: [smiths.id], field: "invite_rehearsal", value: true } });
+  const [avery, blake] = smiths.guests;
+  await api(`/api/admin/guests/${avery.id}`, { method: "PUT", body: { rsvp: "yes", rehearsal_rsvp: "no" } });
+  await api(`/api/admin/guests/${blake.id}`, { method: "PUT", body: { rsvp: "yes", rehearsal_rsvp: "yes" } });
+  const people = (await api("/api/admin/runofshow")).data.people;
+  const casey = people.find((p) => p.name === "Casey Jones");
+  const step = await api("/api/admin/runofshow/items", { method: "POST", body: { title: "Toasts", start_time: "19:00",
+    links: [{ kind: "preset", ref_key: "rehearsal_dinner" }, { kind: "guest", ref_id: Number(casey.key.split(":")[0]), plus_one: 0 }] } });
+  const s = step.data.steps[0];
+  assert.ok(!s.links.find((l) => l.kind === "preset").people.some((p) => p.name === "Avery Smith"), "Avery said no to the dinner");
+  assert.ok(s.links.find((l) => l.kind === "preset").people.some((p) => p.name === "Blake Smith"));
+  assert.equal(s.links.find((l) => l.kind === "guest").declined, true, "the couple see a declined guest flagged");
+
+  const key = new URL((await api("/api/admin/runofshow/link", { method: "POST" })).data.url).hash.slice(3);
+  const view = await call(env, "/api/dayof", { headers: { "x-dayof-key": key } });
+  assert.ok(!JSON.stringify(view.data).includes("declined"), "no RSVP flags on the day-of view");
+  assert.ok(!view.data.steps[0].links.some((l) => l.kind === "guest"), "a declined guest linked by name is left off");
+
+  const bad = await api(`/api/admin/runofshow/items/${step.data.id}`, { method: "PUT", body: { title: "Renamed", links: [{ kind: "vendor", ref_id: 999 }] } });
+  assert.equal(bad.status, 400);
+  assert.equal((await api("/api/admin/runofshow")).data.steps[0].title, "Toasts", "nothing saved");
+});
+
+// Bug guard: the Guests page could save answers the RSVP page forbids (a declined guest
+// still bringing a plus-one, or at the rehearsal dinner), and reports counted them.
+test("guests: a guest marked not coming brings no plus-one and skips the rehearsal dinner", async () => {
+  const { api, id } = await seatingSetup();
+  await api(`/api/admin/guests/${id.Avery}`, { method: "PUT", body: { invite_rehearsal: true, rsvp: "yes", plus_one_rsvp: "yes", rehearsal_rsvp: "yes", plus_one_rehearsal_rsvp: "yes" } });
+  const g = (await api(`/api/admin/guests/${id.Avery}`, { method: "PUT", body: { rsvp: "no" } })).data.guest;
+  assert.deepEqual([g.plus_one_rsvp, g.rehearsal_rsvp, g.plus_one_rehearsal_rsvp], ["no", "no", "no"]);
+});
+
 test("run of show: one lead vendor per step, listed first, then supporting vendors and guest cohorts", async () => {
   const { api } = await reportSetup();
   const mk = async (name) => (await api("/api/admin/vendors", { method: "POST", body: { name } })).data.vendor.id;
@@ -2025,6 +2534,7 @@ test("upgrading copies a household's out-of-town and international tags onto eac
     INSERT INTO settings VALUES ('_schema_version', '11');
     CREATE TABLE households (id INTEGER PRIMARY KEY, out_of_town INTEGER NOT NULL DEFAULT 0, international INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE guests (id INTEGER PRIMARY KEY, household_id INTEGER);
+    CREATE TABLE seating_items (id INTEGER PRIMARY KEY);
     INSERT INTO households VALUES (1, 1, 1), (2, 0, 0);
     INSERT INTO guests VALUES (1, 1), (2, 1), (3, 2);
   `);
@@ -2034,6 +2544,21 @@ test("upgrading copies a household's out-of-town and international tags onto eac
 });
 
 /* ------------------------------------------------------------------------ users -- */
+
+// Bug guard: an entry for someone later made an owner was hidden and couldn't be
+// removed, so taking them off ADMIN_EMAILS didn't lock them out.
+test("users: an owner's old entry is listed and can be removed", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  await api("/api/admin/users", { method: "POST", body: { email: "jo@example.com", role: "admin" } });
+  env.ADMIN_EMAILS = "admin@example.com, jo@example.com";
+  const listed = (await api("/api/admin/users")).data.users;
+  assert.deepEqual(listed.map((u) => [u.email, u.also_owner]), [["jo@example.com", true]]);
+  assert.equal((await api("/api/admin/users/jo%40example.com", { method: "PUT", body: { role: "user" } })).status, 400, "an owner can't be edited here");
+  assert.equal((await api("/api/admin/users/jo%40example.com", { method: "DELETE" })).status, 200, "but the old entry can go");
+  env.ADMIN_EMAILS = "admin@example.com";
+  assert.equal((await call(env, "/api/auth/me", { cookie: await sessionCookie(env, "jo@example.com") })).status, 401, "off ADMIN_EMAILS, they're out");
+});
 
 test("users: a user sees only their pages, an admin sees everything, and removing someone signs them out", async () => {
   const env = makeEnv();
@@ -2139,7 +2664,7 @@ test("RSVP: the household email is required, guests may add their own, and the c
   const ok = await call(env, "/api/public/rsvp/submit", { method: "POST", body: { token: alex.token, email: "alex@example.com",
     guests: alex.guests.map((g, i) => ({ id: g.id, rsvp: "yes", email: i === 1 ? "sam@example.com" : "" })) } });
   assert.equal(ok.status, 200, JSON.stringify(ok.data));
-  assert.equal(ok.data.household.guests[1].email, "sam@example.com");
+  assert.equal(ok.data.household.guests[1].email_hint, "s•••@example.com", "the page only sees emails masked");
   const ics = await call(env, ok.data.calendar_url);
   assert.equal(ics.status, 200);
   assert.match(ics.headers.get("content-type"), /text\/calendar/);
@@ -2256,8 +2781,11 @@ test("email editor HTML keeps formatting and links but loses scripts, styles and
     <a href="https://example.com/?a=1&amp;b=2" target="_blank">site</a><img src=x onerror=alert(1)><p>5 < 6 & 7</p><h1>Big</h1><em>open`;
   const clean = sanitizeHtml(dirty);
   assert.equal(clean, `<p>Hi <b>there</b></p>
-    <ul><li>One<li>Two</li></li></ul>bad <a href="{rsvp_link}" class="button">RSVP</a>
-    <a href="https://example.com/?a=1&amp;b=2">site</a><p>5 &lt; 6 &amp; 7</p><h2>Big</h2><em>open</em>`);
+    <ul><li>One<li>Two</li></li></ul><p>bad <a href="{rsvp_link}" class="button">RSVP</a>
+    <a href="https://example.com/?a=1&amp;b=2">site</a></p><p>5 &lt; 6 &amp; 7</p><h2>Big</h2><p><em>open</em></p>`);
+  // Bug guard: the editor leaves the first line outside any paragraph, and the wedding
+  // design then showed it unstyled.
+  assert.equal(sanitizeHtml("Hi {greeting},<p>Body</p>"), "<p>Hi {greeting},</p><p>Body</p>");
   assert.equal(sanitizeHtml("<p>Plan:</p><p><ul><li>A</li></ul><p><b>B</b></p></p>"), "<p>Plan:</p><ul><li>A</li></ul><p><b>B</b></p>",
     "a list the editor nested in a paragraph comes out after it");
   assert.equal(htmlToText("<h2>Plans</h2><p>Hi {greeting},</p><ul><li>Ceremony</li><li>Dinner</li></ul><ol><li>Park</li><li>Walk in</li></ol><p><a href=\"https://x.com/r\" class=\"button\">RSVP</a> &amp; more</p>"),
@@ -2355,9 +2883,11 @@ test("emails: a big send goes out in batches, and the cron sends the rest", asyn
   const { env, api } = await commsSetup({ households: 25 });
   const id = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Hello", body: "Hi {greeting}" } })).data.id;
   const now = await withGmail(() => api(`/api/admin/comms/messages/${id}/send`, { method: "POST", body: {} }));
-  assert.equal(now.sent.length, 20, "the first batch goes at once");
+  assert.equal(now.sent.length, SEND_BATCH, "the first batch goes at once");
   const later = await withGmail(() => processComms(env));
-  assert.equal(later.sent.length, 5, "the cron sends the rest");
+  assert.equal(later.sent.length, SEND_BATCH, "the cron sends the next batch");
+  const last = await withGmail(() => processComms(env));
+  assert.equal(last.sent.length, 25 - 2 * SEND_BATCH, "and the rest");
   const again = await withGmail(() => processComms(env));
   assert.equal(again.sent.length, 0, "and nobody gets it twice");
   assert.equal((await api("/api/admin/comms")).data.messages[0].status, "sent");
@@ -2400,13 +2930,68 @@ test("emails: when Gmail stops working nothing is lost; the emails wait and go o
   assert.equal((await api("/api/admin/comms")).data.gmail.last_error, null, "and the problem clears once it sends");
 });
 
+// Bug guard: a cron run that overlapped "Send now" picked the same queued rows and sent
+// them twice; a run that died partway left its rows queued to be sent again.
+test("emails: two overlapping runs never send the same email twice; a run stuck mid-send is marked failed, not resent", async () => {
+  const { env, api } = await commsSetup({ households: 6 });
+  const id = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Hello", body: "Hi" } })).data.id;
+  await api(`/api/admin/comms/messages/${id}/schedule`, { method: "POST", body: { send_at: "2099-01-01T09:00" } });
+  env.DB.db.prepare("UPDATE comm_messages SET send_at = '2000-01-01T00:00:00Z'").run();
+  const { sent } = await withGmail(() => Promise.all([processComms(env), processComms(env)]));
+  const to = sent.map((m) => m.match(/^To: (.+)$/m)[1]).sort();
+  assert.deepEqual(to, [...new Set(to)], "nobody got it twice");
+  assert.equal(to.length, 6);
+
+  const id2 = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Again", body: "Hi" } })).data.id;
+  await withGmail(() => api(`/api/admin/comms/messages/${id2}/send`, { method: "POST", body: {} }), { status: () => 500 });
+  env.DB.db.prepare("UPDATE comm_sends SET status = 'sending', claimed_at = '2000-01-01T00:00:00Z' WHERE message_id = ?").run(id2);
+  const after = await withGmail(() => processComms(env));
+  assert.equal(after.sent.length, 0, "rows stuck in sending aren't sent again");
+  const rows = env.DB.db.prepare("SELECT status, error FROM comm_sends WHERE message_id = ? AND status != 'skipped'").all(id2);
+  assert.ok(rows.every((r) => r.status === "failed" && /may or may not have gone out/.test(r.error)));
+  assert.equal(env.DB.db.prepare("SELECT status FROM comm_messages WHERE id = ?").get(id2).status, "sent", "and the email is done");
+});
+
+// Bug guards: "Send now" on an automatic email turned its automation off; an email whose
+// audience had nobody to send to stayed "Sending" forever; a scheduled email could be
+// emptied and still go out; a Gmail error hit during a batch was erased by that batch.
+test("emails: Send now keeps automation on, empty sends finish, set emails can't be emptied, a new Gmail error stays", async () => {
+  const { env, api } = await commsSetup();
+  const auto = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Thanks", body: "Hi" } })).data.id;
+  await api(`/api/admin/comms/messages/${auto}/automate`, { method: "POST", body: { on: true } });
+  await withGmail(() => api(`/api/admin/comms/messages/${auto}/send`, { method: "POST", body: {} }));
+  assert.equal(env.DB.db.prepare("SELECT status FROM comm_messages WHERE id = ?").get(auto).status, "automated");
+  assert.equal((await api(`/api/admin/comms/messages/${auto}`, { method: "PUT", body: { body: "<p><br></p>", format: "html" } })).status, 400, "can't empty an automatic email");
+
+  const nobody = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "No email", body: "Hi", audience: { ticks: ["side:Bride"] } } })).data.id;
+  env.DB.db.prepare("UPDATE households SET email = NULL").run();
+  await withGmail(() => api(`/api/admin/comms/messages/${nobody}/send`, { method: "POST", body: {} }));
+  assert.equal(env.DB.db.prepare("SELECT status FROM comm_messages WHERE id = ?").get(nobody).status, "sent", "nothing to send: done, not stuck");
+
+  env.DB.db.prepare("UPDATE households SET email = 'h' || id || '@example.com'").run();
+  env.DB.db.prepare("UPDATE settings SET value = json_set(value, '$.last_error', 'old problem') WHERE key = '_gmail'").run();
+  const third = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Third", body: "Hi" } })).data.id;
+  await withGmail(() => api(`/api/admin/comms/messages/${third}/send`, { method: "POST", body: {} }), { status: (n) => (n === 0 ? 200 : 429) });
+  assert.match((await api("/api/admin/comms")).data.gmail.last_error, /sending limit/, "the limit hit in this batch is still shown");
+});
+
+test("calendar: an event that ends after midnight ends on the next day", () => {
+  const events = cleanEvents([{ title: "Reception", date: "2027-06-12", start: "18:00", end: "00:30", for: "everyone" }]);
+  const ics = buildIcs(events, { timeZone: "America/Indiana/Indianapolis" });
+  assert.match(ics, /DTSTART:20270612T220000Z\r\nDTEND:20270613T043000Z/);
+  assert.throws(() => cleanEvents([{ title: "x", date: "2027-06-12", start: "18:00", end: "18:00" }]), /ends when it starts/);
+});
+
 test("emails: a Communications user can write and send, but only an admin connects Gmail", async () => {
   const { env, api } = await commsSetup();
   await api("/api/admin/users", { method: "POST", body: { email: "jo@example.com", role: "user", pages: ["communications"] } });
   const jo = `wedding_session=${await sign(env, { kind: "session", email: "jo@example.com", name: "Jo" }, 3600)}`;
   const as = (path, opts = {}) => call(env, path, { ...opts, cookie: jo, headers: { "x-wedding": "1" } });
   assert.equal((await as("/api/admin/comms")).status, 200);
-  assert.equal((await as("/api/admin/comms/messages", { method: "POST", body: { subject: "Hi", body: "Hi" } })).status, 201);
+  const made = await as("/api/admin/comms/messages", { method: "POST", body: { subject: "Hi", body: "Hi" } });
+  assert.equal(made.status, 201);
+  const { sent } = await withGmail(() => as(`/api/admin/comms/messages/${made.data.id}/send`, { method: "POST", body: {} }));
+  assert.equal(sent.length, 3, "Jo's send goes out");
   assert.equal((await as("/api/admin/comms/gmail/connect")).status, 403);
   assert.equal((await as("/api/admin/comms/gmail/disconnect", { method: "POST" })).status, 403);
   const nobody = `wedding_session=${await sign(env, { kind: "session", email: "jo@example.com" }, 3600)}`;
