@@ -15,8 +15,10 @@
   @media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
   .toolbar select { width: auto; }
-  .canvas { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); max-height: 76vh; }
-  .canvas svg { display: block; user-select: none; -webkit-user-select: none; }
+  /* JS sets the height (see sizeCanvas); the corner handle makes it taller or shorter. */
+  .canvas { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); resize: vertical; min-height: 160px; }
+  .canvas svg { display: block; margin: 0 auto; user-select: none; -webkit-user-select: none; }
+  .toolbar .zoom { width: 72px; padding: 4px 6px; }
   .canvas .floor { fill: var(--surface-1); stroke: var(--text-secondary); stroke-width: .12; }
   .canvas .g1 { stroke: var(--grid); stroke-width: .03; }
   .canvas .g5 { stroke: var(--grid); stroke-width: .08; }
@@ -24,6 +26,8 @@
   .canvas .item { cursor: grab; }
   .canvas .item.locked { cursor: default; }
   .canvas .lock-mark { font-size: .9px; pointer-events: none; }
+  .canvas .marquee { fill: var(--accent); fill-opacity: .08; stroke: var(--accent); stroke-width: .08; stroke-dasharray: .3 .2; pointer-events: none; }
+  .canvas .group-box { fill: none; stroke: var(--accent); stroke-width: .08; stroke-dasharray: .5 .3; pointer-events: none; }
   .canvas .guide { stroke: #d6337a; stroke-width: .07; stroke-dasharray: .35 .2; pointer-events: none; }
   .align { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 6px 0 12px; }
   .align button { font-size: 12.5px; padding: 5px 6px; }
@@ -65,7 +69,7 @@
   @media print {
     .topbar, .toolbar, .panel, #templatesCard, #whoCard, .rooms, #addRoom { display: none !important; }
     .layout { display: block; }
-    .canvas { max-height: none; overflow: visible; border: 0; }
+    .canvas { height: auto !important; overflow: visible; border: 0; resize: none; }
     /* The whole room on the page, whatever the zoom on screen. */
     .canvas svg { width: 100% !important; min-width: 0 !important; }
     .canvas .lock-mark, .canvas .guide { display: none; }
@@ -80,8 +84,10 @@
     <span class="spacer"></span>
     <button class="primary" id="addRoom">+ Add room</button>
   </div>
-  <p class="sub">Lay out each room in feet. Drag tables, chairs and notes to move them. In a reception room, click a
-    chair to seat someone there: each person gets a table number and a seat letter.</p>
+  <p class="sub">Lay out each room in feet. Drag tables, chairs and notes to move them. Drag on an empty spot to draw a box
+    around several at once, or Shift-click to add one. In a reception room, click a
+    chair to seat someone there: each person gets a table number and a seat letter. Drag the plan's bottom-right
+    corner to make it taller.</p>
   <div class="rooms" id="rooms"></div>
   <div id="main"></div>
 
@@ -115,11 +121,26 @@ let picked = new Set();
 const select = (id) => { selectedId = id; picked = new Set(id == null ? [] : [id]); };
 let snapOn = true;
 try { snapOn = localStorage.getItem("seating-snap") !== "off"; } catch {}
+// The drawing's width as a share of the box: 1 fills it, below 1 shows more of a long room.
+const ZOOM_MIN = 0.1;
+const ZOOM_MAX = 8;
+const clampZoom = (z) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(z * 100) / 100));
 let zoom = 1;
-try { zoom = Number(localStorage.getItem("seating-zoom")) || 1; } catch {}
+try { zoom = clampZoom(Number(localStorage.getItem("seating-zoom")) || 1); } catch {}
+const setZoom = (z) => { zoom = clampZoom(z); try { localStorage.setItem("seating-zoom", zoom); } catch {} render(); };
+// A height someone dragged the box to, per room, so it survives each redraw.
+const boxHeights = {};
+try { Object.assign(boxHeights, JSON.parse(localStorage.getItem("seating-box-heights") || "{}")); } catch {}
+let boxWatch = null;
 
 const room = () => data.rooms.find((r) => r.id === roomId) || null;
 const itemsOf = (id) => data.items.filter((i) => i.room_id === id);
+// The item and everything grouped with it (just the item when it isn't in a group).
+const groupOf = (item) => {
+  if (item.group_id == null) return [item];
+  const members = data.items.filter((i) => i.group_id === item.group_id && i.room_id === item.room_id);
+  return members.length > 1 ? members : [item];
+};
 const personKey = (guestId, plusOne) => `${guestId}:${plusOne ? 1 : 0}`;
 const letters = (n) => Array.from({ length: Math.max(0, Math.min(26, n)) }, (_, i) => String.fromCharCode(65 + i));
 const ft = (n) => `${Number(n)} ft`;
@@ -236,7 +257,8 @@ function measure(text, weight = 600) {
 /**
  * A shape's text at the largest size that fits inside it, with a margin all round: an
  * oval's text fits the rectangle inside it. Lines typed stay as typed; otherwise the
- * words wrap onto as many lines (up to six) as make the text biggest.
+ * words wrap onto as many lines (up to six) as make the text biggest. A size set on the
+ * shape (font_size above 0) is used as is, with the words wrapped to the shape's width.
  */
 function fitText(item) {
   const w = item.width_ft;
@@ -246,6 +268,22 @@ function fitText(item) {
   const room = [Math.max(inner[0] - pad * 2, 0.1), Math.max(inner[1] - pad * 2, 0.1)];
   const label = String(item.label || "").trim();
   const sizeFor = (lines) => Math.min(room[0] / Math.max(...lines.map((x) => measure(x)), 0.01), room[1] / (lines.length * 1.2));
+  if (item.font_size > 0) {
+    const size = item.font_size;
+    const lines = [];
+    for (const typed of label.split("\n")) {
+      let line = "";
+      for (const word of typed.trim().split(/\s+/)) {
+        const next = line ? `${line} ${word}` : word;
+        if (line && measure(next) * size > room[0]) {
+          lines.push(line);
+          line = word;
+        } else line = next;
+      }
+      lines.push(line);
+    }
+    return { lines, size };
+  }
   const options = [];
   if (label.includes("\n")) options.push(label.split("\n").map((x) => x.trim()));
   else {
@@ -355,6 +393,17 @@ function drawRoom(r) {
   svg.append(s("g", {}, lines));
   // Shapes go underneath, so a dance floor never hides the tables placed on it.
   for (const item of [...items.filter((i) => i.kind === "shape"), ...items.filter((i) => i.kind !== "shape")]) svg.append(drawItem(item, r));
+  // A dashed outline round each group that's selected.
+  const outlined = new Set();
+  for (const item of items) {
+    const members = groupOf(item);
+    if (members.length < 2 || outlined.has(item.group_id) || !members.some((m) => picked.has(m.id))) continue;
+    outlined.add(item.group_id);
+    const boxes = members.map((m) => box(m));
+    const l = Math.min(...boxes.map((b) => b.l)) - 0.4;
+    const t = Math.min(...boxes.map((b) => b.t)) - 0.4;
+    svg.append(s("rect", { class: "group-box", x: l, y: t, width: Math.max(...boxes.map((b) => b.r)) + 0.4 - l, height: Math.max(...boxes.map((b) => b.b)) + 0.4 - t }));
+  }
   svg.append(s("g", { class: "guides" }));
   wireDragging(svg, r);
   return svg;
@@ -362,7 +411,8 @@ function drawRoom(r) {
 
 /**
  * Drag to move; a press that doesn't move selects (and, on a reception chair, seats
- * someone). Shift- or Ctrl/Cmd-click adds to the selection, and dragging any of a
+ * someone). Dragging on the empty floor draws a box that selects what's inside it.
+ * Shift- or Ctrl/Cmd-click (or box) adds to the selection, and dragging any of a
  * selection moves all of it. Locked items don't move. With "Snap to align" on, the
  * dragged item's edges and center snap to the other items' (a pink guide shows where).
  */
@@ -378,19 +428,67 @@ function wireDragging(svg, r) {
     pt.y = ev.clientY;
     return pt.matrixTransform(svg.getScreenCTM().inverse());
   };
+  // Dragging on an empty spot draws a box: what's wholly inside it gets selected.
+  let band = null;
+  const inBand = (b) => {
+    const hits = [];
+    for (const i of itemsOf(r.id)) {
+      const k = box(i);
+      if (k.l >= b.l && k.r <= b.r && k.t >= b.t && k.b <= b.b) hits.push(i.id);
+    }
+    // A group comes along only when all of it is inside.
+    const inside = new Set(hits);
+    return hits.filter((id) => groupOf(data.items.find((i) => i.id === id)).every((m) => inside.has(m.id)));
+  };
+  // A click (no drag) on an item: the first click on a group picks the group, the next
+  // picks the one item in it; a reception chair then asks who sits there.
+  const clickItem = (item, letter, adding) => {
+    const members = groupOf(item);
+    if (adding) {
+      const all = members.every((m) => picked.has(m.id));
+      for (const m of members) if (all) picked.delete(m.id); else picked.add(m.id);
+      selectedId = picked.size === 1 ? [...picked][0] : null;
+      render();
+      return;
+    }
+    const groupPicked = picked.size === members.length && members.every((m) => picked.has(m.id));
+    if (members.length > 1 && !groupPicked) {
+      picked = new Set(members.map((m) => m.id));
+      selectedId = null;
+      render();
+      return;
+    }
+    select(item.id);
+    render();
+    if (letter && r.kind === "reception") pickPerson(item, letter);
+  };
   svg.addEventListener("pointerdown", (ev) => {
     const g = ev.target.closest(".item");
     if (!g) {
-      if (picked.size) { select(null); render(); }
+      // A finger on the floor scrolls the room instead.
+      if (ev.pointerType !== "touch" && ev.button === 0) {
+        const p = toRoom(ev);
+        band = { x0: p.x, y0: p.y, pointer: ev.pointerId, adding: ev.shiftKey || ev.ctrlKey || ev.metaKey, moved: false, edges: null, click: null, node: s("rect", { class: "marquee" }) };
+        svg.setPointerCapture(ev.pointerId);
+        hideTooltip();
+      } else if (picked.size) { select(null); render(); }
       return;
     }
     const item = data.items.find((i) => i.id === Number(g.dataset.id));
     const p = toRoom(ev);
     const adding = ev.shiftKey || ev.ctrlKey || ev.metaKey;
-    // Dragging one of a selection moves the selection; anything else moves just itself.
-    const group = !adding && picked.has(item.id) && picked.size > 1
-      ? data.items.filter((i) => picked.has(i.id) && !i.locked)
-      : item.locked ? [] : [item];
+    // Dragging one of a selection moves the selection, one of a group moves the group;
+    // anything else moves just itself.
+    const set = !adding && picked.has(item.id) && picked.size > 1 ? data.items.filter((i) => picked.has(i.id)) : groupOf(item);
+    const group = set.length > 1 ? set.filter((i) => !i.locked) : item.locked ? [] : [item];
+    // Nothing here can move (a locked dance floor): a drag draws a box instead, and a
+    // click still picks it.
+    if (!adding && !group.length && ev.pointerType !== "touch" && ev.button === 0) {
+      band = { x0: p.x, y0: p.y, pointer: ev.pointerId, adding: false, moved: false, edges: null, click: { item, letter: ev.target.dataset.letter || null }, node: s("rect", { class: "marquee" }) };
+      svg.setPointerCapture(ev.pointerId);
+      hideTooltip();
+      return;
+    }
     const others = itemsOf(r.id).filter((i) => !group.includes(i));
     drag = {
       item, adding, group, others, dx: p.x - item.x, dy: p.y - item.y, moved: false, offX: 0, offY: 0,
@@ -402,6 +500,22 @@ function wireDragging(svg, r) {
     hideTooltip();
   });
   svg.addEventListener("pointermove", (ev) => {
+    if (band && ev.pointerId === band.pointer) {
+      const p = toRoom(ev);
+      if (!band.moved && Math.hypot(p.x - band.x0, p.y - band.y0) < 0.3) return;
+      band.moved = true;
+      const b = { l: Math.min(p.x, band.x0), r: Math.max(p.x, band.x0), t: Math.min(p.y, band.y0), b: Math.max(p.y, band.y0) };
+      band.edges = b;
+      Object.entries({ x: b.l, y: b.t, width: b.r - b.l, height: b.b - b.t }).forEach(([k, v]) => band.node.setAttribute(k, v));
+      guides.replaceChildren(band.node);
+      // Show what the box will pick as it grows.
+      const hits = new Set(inBand(b));
+      for (const node of svg.querySelectorAll(".item")) {
+        const id = Number(node.dataset.id);
+        node.classList.toggle("sel", hits.has(id) || (band.adding && picked.has(id)));
+      }
+      return;
+    }
     // Shift-click only selects; a locked item (with nothing else picked) stays put.
     if (!drag || ev.pointerId !== drag.pointer || drag.adding || !drag.group.length) return;
     const p = toRoom(ev);
@@ -447,6 +561,24 @@ function wireDragging(svg, r) {
     for (const [i, node] of drag.nodes) node?.setAttribute("transform", `translate(${i.x + offX} ${i.y + offY})`);
   });
   const finish = async (ev) => {
+    if (band && ev.pointerId === band.pointer) {
+      const { moved, adding, edges, click } = band;
+      band = null;
+      guides.replaceChildren();
+      if (click && !moved && ev.type !== "pointercancel") { clickItem(click.item, click.letter, false); return; }
+      if (!moved || ev.type === "pointercancel") {
+        // A plain click on the floor clears the selection.
+        if (!adding && picked.size) { select(null); render(); }
+        else if (moved) render();
+        return;
+      }
+      const hits = inBand(edges);
+      if (!adding) picked = new Set();
+      for (const id of hits) picked.add(id);
+      selectedId = picked.size === 1 ? [...picked][0] : null;
+      render();
+      return;
+    }
     if (!drag || ev.pointerId !== drag.pointer) return;
     const { item, moved, group, offX, offY, letter, adding } = drag;
     svg.querySelector(".dragging")?.classList.remove("dragging");
@@ -465,16 +597,7 @@ function wireDragging(svg, r) {
       }
       return;
     }
-    if (adding) {
-      if (picked.has(item.id)) picked.delete(item.id);
-      else picked.add(item.id);
-      selectedId = picked.size === 1 ? [...picked][0] : picked.has(item.id) ? item.id : null;
-      render();
-      return;
-    }
-    select(item.id);
-    render();
-    if (letter && r.kind === "reception") pickPerson(item, letter);
+    clickItem(item, letter, adding);
   };
   svg.addEventListener("pointerup", finish);
   svg.addEventListener("pointercancel", finish);
@@ -483,6 +606,8 @@ function wireDragging(svg, r) {
 /* -------------------------------------------------------------------- page ---- */
 
 function render() {
+  const old = document.getElementById("canvas");
+  const scroll = old && { room: Number(old.dataset.room), top: old.scrollTop, left: old.scrollLeft };
   document.getElementById("rooms").replaceChildren(
     ...data.rooms.map((r) => h("button", { class: r.id === roomId ? "on" : "", onclick: () => { roomId = r.id; select(null); history.replaceState(null, "", `?room=${r.id}`); render(); } },
       r.name, h("span", { class: "kind" }, KIND_LABEL[r.kind] || r.kind)))
@@ -497,14 +622,47 @@ function render() {
       h("div", { class: "layout" },
         h("div", {},
           toolbar(r),
-          h("div", { class: "canvas", id: "canvas" }, drawRoom(r)),
+          h("div", { class: "canvas", id: "canvas", "data-room": r.id }, drawRoom(r)),
           h("div", { class: "stats", style: "margin-top:10px" }, roomStats(r))),
         h("div", { class: "card panel" }, panel(r))),
       // Not a null: replaceChildren() would print it as the word "null" under a ceremony room.
       ...(r.kind === "reception" ? [whoSitsWhere()] : []),
     );
+    sizeCanvas(r, scroll && scroll.room === r.id ? scroll : null);
   }
   renderTemplates();
+}
+
+// The plan's box: as tall as the drawing, up to most of the window (two windows for a
+// room longer than it is wide), or the height someone dragged it to. Keeps the scroll
+// position across redraws of the same room.
+function sizeCanvas(r, scroll) {
+  const box = document.getElementById("canvas");
+  const svg = box.querySelector("svg");
+  const frame = box.offsetHeight - box.clientHeight; // borders, and a sideways scroll bar
+  const natural = Math.ceil(svg.getBoundingClientRect().height) + frame;
+  const cap = window.innerHeight * (r.length_ft > r.width_ft ? 2 : 0.76);
+  const height = Math.max(160, Math.round(boxHeights[r.id] || Math.min(natural, cap)));
+  box.style.height = `${height}px`;
+  if (scroll) { box.scrollTop = scroll.top; box.scrollLeft = scroll.left; }
+  boxWatch?.disconnect();
+  boxWatch = new ResizeObserver(() => {
+    if (Math.abs(box.offsetHeight - height) < 2) return;
+    boxHeights[r.id] = box.offsetHeight;
+    try { localStorage.setItem("seating-box-heights", JSON.stringify(boxHeights)); } catch {}
+  });
+  boxWatch.observe(box);
+}
+
+// The largest zoom (up to 100%) that shows the whole drawing in the box and the window.
+function fitZoom() {
+  const box = document.getElementById("canvas");
+  const svg = box?.querySelector("svg");
+  if (!svg) return;
+  const view = svg.viewBox.baseVal;
+  const space = Math.min(box.clientHeight, window.innerHeight - 24);
+  const tall = box.clientWidth * (view.height / view.width); // the drawing's height at 100%
+  setZoom(Math.min(1, space / tall));
 }
 
 function roomStats(r) {
@@ -557,9 +715,12 @@ function toolbar(r) {
     h("label", { class: "check", title: "While dragging, line up with the edges and centers of what's nearby" },
       h("input", { type: "checkbox", checked: snapOn, onchange: (ev) => { snapOn = ev.target.checked; try { localStorage.setItem("seating-snap", snapOn ? "on" : "off"); } catch {} } }),
       "Snap to align"),
-    h("label", { class: "check" }, "Zoom",
-      h("select", { onchange: (ev) => { zoom = Number(ev.target.value); try { localStorage.setItem("seating-zoom", zoom); } catch {} render(); } },
-        [1, 1.5, 2, 3, 4].map((z) => h("option", { value: z, selected: z === zoom }, `${z * 100}%`)))),
+    h("label", { class: "check", title: "Type any zoom from 10% to 800%" }, "Zoom",
+      h("input", { class: "zoom", type: "number", min: ZOOM_MIN * 100, max: ZOOM_MAX * 100, step: 5, list: "zoomSteps", value: Math.round(zoom * 100),
+        onchange: (ev) => { const v = Number(ev.target.value); if (v > 0) setZoom(v / 100); else ev.target.value = Math.round(zoom * 100); } }),
+      "%",
+      h("datalist", { id: "zoomSteps" }, [25, 50, 75, 100, 150, 200, 300, 400].map((z) => h("option", { value: z })))),
+    h("button", { class: "small", title: "Zoom so the whole room shows without scrolling", onclick: () => fitZoom() }, "Fit"),
     h("button", { class: "small", onclick: () => window.print() }, "Print"),
     h("button", { class: "small", onclick: () => editRoom(r) }, "Room settings"));
 }
@@ -708,6 +869,14 @@ async function arrange(items, how, r) {
   }
 }
 
+async function setGrouped(items, grouped) {
+  try {
+    await send("items/group", "POST", { ids: items.map((i) => i.id), grouped });
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
 async function setLocked(items, locked) {
   try {
     await send("items/lock", "POST", { ids: items.map((i) => i.id), locked });
@@ -721,6 +890,9 @@ function arrangeTools(items, r) {
   const b = (label, title, how, disabled = false) => h("button", { type: "button", class: "small", title, disabled, onclick: () => arrange(items, how, r) }, label);
   const many = items.length > 1;
   const locked = items.filter((i) => i.locked);
+  const inGroup = items.some((i) => groupOf(i).length > 1);
+  const members = groupOf(items[0]);
+  const oneGroup = many && members.length === items.length && items.every((i) => members.includes(i));
   return h("div", {},
     many ? h("div", {},
       h("h3", {}, "Align"),
@@ -734,6 +906,12 @@ function arrangeTools(items, r) {
     h("h3", {}, many ? "Center the selection in the room" : "Center in the room"),
     h("div", { class: "align", style: "grid-template-columns: 1fr 1fr" },
       b("Left to right", "Center across the room", "room-x"), b("Top to bottom", "Center up and down the room", "room-y")),
+    many || inGroup ? h("div", {},
+      h("h3", {}, "Group"),
+      oneGroup ? h("p", { class: "desc", style: "margin:0 0 6px" }, "A group: they select and move as one. Click one of them again to change just that one.") : null,
+      h("div", { class: "row" },
+        many && !oneGroup ? h("button", { type: "button", class: "small", title: "Select and move these as one", onclick: () => setGrouped(items, true) }, "Group") : null,
+        inGroup ? h("button", { type: "button", class: "small", onclick: () => setGrouped(items, false) }, "Ungroup") : null)) : null,
     h("h3", {}, "Lock"),
     locked.length
       ? h("p", { class: "desc", style: "margin:0 0 6px" }, many ? `${locked.length} of these ${locked.length === 1 ? "is" : "are"} locked and stay put; the rest line up with ${locked.length === 1 ? "it" : "them"}.` : "Locked in place: it can't be dragged, turned or resized until you unlock it.")
@@ -746,7 +924,7 @@ function arrangeTools(items, r) {
 function multiPanel(r) {
   const items = data.items.filter((i) => picked.has(i.id) && i.room_id === r.id);
   return h("div", {}, h("h2", {}, `${items.length} selected`),
-    h("p", { class: "desc" }, "Shift- or Ctrl-click to add or remove one. Drag any of them to move them together."),
+    h("p", { class: "desc" }, "Shift- or Ctrl-click to add or remove one, or Shift-drag a box to add more. Drag any of them to move them together."),
     arrangeTools(items, r),
     h("div", { class: "row", style: "margin-top:12px" }, h("button", { type: "button", class: "small", onclick: () => { select(null); render(); } }, "Clear selection")));
 }
@@ -756,7 +934,7 @@ function panel(r) {
   const item = data.items.find((i) => i.id === selectedId && i.room_id === r.id);
   if (!item) {
     return h("div", {}, h("h2", {}, r.name),
-      h("p", { class: "desc" }, "Click a table, chair, shape or note to change it. Drag to move it; positions snap to 3 inches, and to line up with what's nearby while Snap to align is on. Shift- or Ctrl-click to pick several, then align or space them evenly."),
+      h("p", { class: "desc" }, "Click a table, chair, shape or note to change it. Drag to move it; positions snap to 3 inches, and to line up with what's nearby while Snap to align is on. Drag a box on an empty spot, or Shift- or Ctrl-click, to pick several, then align, space or group them."),
       r.kind === "reception" ? h("p", { class: "desc" }, "Click a chair to seat someone in it. Blue chairs are taken. Orange ones hold someone who has since declined or lost their invitation.") : null);
   }
   const msg = h("p", { class: "msg" });
@@ -811,8 +989,9 @@ function panel(r) {
         field("Color", "color", { options: Object.entries(COLOR_LABEL), value: item.color || "gray" }),
         field("Width (ft)", "width_ft", { type: "number", step: 0.01, min: 0.1, value: item.width_ft }),
         field("Length (ft)", "length_ft", { type: "number", step: 0.01, min: 0.1, value: item.length_ft }),
-        field("Turn (degrees)", "rotation", { type: "number", step: 0.01, value: item.rotation })),
-      h("p", { class: "desc", style: "margin:0 0 8px" }, "The text sizes itself to fill the shape, with a margin."),
+        field("Turn (degrees)", "rotation", { type: "number", step: 0.01, value: item.rotation }),
+        field("Text size (ft tall)", "font_size", { type: "number", step: 0.05, min: 0.5, max: 10, value: item.font_size > 0 ? item.font_size : "", placeholder: "Fit" })),
+      h("p", { class: "desc", style: "margin:0 0 8px" }, "Leave the text size blank and the text sizes itself to fill the shape, with a margin."),
       h("div", { class: "row" }, h("button", { class: "primary" }, "Save"), h("button", { type: "button", class: "danger", onclick: remove }, "Remove")), msg);
     return h("div", {}, h("h2", {}, "Shape"), form, arrangeTools([item], r));
   }
