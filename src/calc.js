@@ -120,6 +120,9 @@ export const DEFAULT_SETTINGS = {
   rsvp_button_color: "",
   // The "Contact us" link in the footer of the website copy and the RSVP page.
   contact_email: "patricko.indy@gmail.com",
+  // The "See our registry" button after a guest asks for a call (public/call). Blank
+  // hides the button.
+  registry_url: "",
   // Communications (src/comms.js): scheduled sends and calendar times use this zone.
   time_zone: "America/Indiana/Indianapolis",
   email_from_name: "Kaitlyn & Patrick",

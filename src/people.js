@@ -51,6 +51,7 @@ export async function loadPeople(env) {
       rehearsal: Boolean(g.invite_rehearsal),
       out_of_town: Boolean(g.out_of_town),
       international: Boolean(g.international),
+      post_wedding_call: Boolean(g.post_wedding_call),
       email: g.email || "",
       phone: g.phone || "",
       address1: g.address1 || "",

@@ -43,7 +43,7 @@ const MAX_PAGES = 15;
 // Paths the copy can never take over.
 // Our own paths: every top-level entry in public/ plus the Worker's. A copied Zola page
 // can never take one of these (a test checks public/ against this list).
-export const RESERVED = new Set(["admin", "api", "rsvp", "submit", "dayof", "_site", "_headers", "favicon.svg"]);
+export const RESERVED = new Set(["admin", "api", "rsvp", "submit", "dayof", "call", "_site", "_headers", "favicon.svg"]);
 const BROWSER_HEADERS = {
   "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
   accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",

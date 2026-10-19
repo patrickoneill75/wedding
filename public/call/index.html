@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="/favicon.svg">
+<title>Let's catch up</title>
+<!-- Hidden page: opened only from the {call_link} in an email (src/comms.js). The link's
+     token says which household it is; submitting tags its guests "post-wedding call". -->
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f7f4ee; --card: #fffdf9; --ink: #1f1c18; --soft: #5f5850; --muted: #948b80;
+    --line: rgba(31, 28, 24, 0.12); --accent: #5b6b4f; --accent-ink: #fff; --bad: #b3261e;
+    --wash: rgba(31, 28, 24, 0.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #151412; --card: #1e1c19; --ink: #f2eee7; --soft: #c9c1b5; --muted: #8f877c;
+      --line: rgba(255, 255, 255, 0.12); --accent: #9db38c; --accent-ink: #151412; --bad: #f2b8b5;
+      --wash: rgba(255, 255, 255, 0.05);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 56px 16px 80px; }
+  header { text-align: center; margin-bottom: 32px; }
+  .eyebrow { letter-spacing: .22em; text-transform: uppercase; font-size: 12px; color: var(--muted); }
+  h1 { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; font-weight: 400; font-size: clamp(34px, 8vw, 50px);
+       line-height: 1.1; margin: 10px 0 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 24px; }
+  h2 { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; font-weight: 400; font-size: 24px; margin: 0 0 6px; }
+  p.help { color: var(--soft); margin: 0 0 18px; font-size: 15px; }
+  .names { margin: 0 0 20px; }
+  .names .one { font-size: 18px; font-weight: 600; }
+  .names label { display: flex; gap: 10px; align-items: center; padding: 8px 12px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+  .names input { width: 18px; height: 18px; accent-color: var(--accent); }
+  button, a.button { font: inherit; border-radius: 999px; border: 1px solid var(--line); padding: 11px 22px; cursor: pointer; background: var(--card); color: var(--ink); text-decoration: none; display: inline-block; }
+  button.primary, a.button { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button:disabled { opacity: .55; cursor: wait; }
+  .msg { min-height: 1.4em; margin: 12px 0 0; font-size: 14px; color: var(--bad); }
+  .done { text-align: center; }
+  .sample { background: #fff4d6; color: #5a4300; border: 1px solid #f0d27a; border-radius: 12px; padding: 12px 16px; margin: 0 0 20px; font-size: 14px; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .sample { background: #3a2f12; color: #f6dc95; border-color: #6b5520; } }
+  .site-foot { text-align: center; margin: 56px 0 0; padding: 28px 0 40px; border-top: 1px solid var(--line); font-size: 14px; color: var(--soft); }
+  .site-foot a { color: inherit; margin: 0 12px; text-underline-offset: 3px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">After the wedding</div>
+    <h1>Let's catch up</h1>
+  </header>
+
+  <div class="sample" id="sample" hidden><b>Sample.</b> This is the page a guest sees from a test email. Nothing you submit here is saved.</div>
+
+  <form class="card" id="ask" hidden>
+    <h2>We'll miss you there</h2>
+    <p class="help" id="askHelp">We're sorry you can't make it. We'd love to catch up with you on a video call after the wedding. Hit submit and we'll reach out to find a time.</p>
+    <div class="names" id="names"></div>
+    <button class="primary" type="submit">Submit</button>
+    <p class="msg" id="askMsg"></p>
+  </form>
+
+  <div class="card done" id="done" hidden>
+    <h2>Thank you!</h2>
+    <p class="help" id="doneText">We'll be in touch to find a time that works.</p>
+    <a class="button" id="registry" hidden target="_blank" rel="noopener">See our registry</a>
+  </div>
+
+  <div class="card" id="broken" hidden>
+    <h2>This link isn't working</h2>
+    <p class="help" id="brokenText">Reply to our email and we'll set up a time.</p>
+  </div>
+  <footer class="site-foot"><a href="/">Our wedding website</a><a id="contact" hidden>Contact us</a></footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const show = (id) => ["ask", "done", "broken"].forEach((c) => { $(c).hidden = c !== id; });
+const token = new URLSearchParams(location.search).get("t") || "";
+let registry = "";
+
+const showDone = () => {
+  if (registry) { $("registry").href = registry; $("registry").hidden = false; }
+  show("done");
+};
+
+async function start() {
+  let info;
+  try {
+    const response = await fetch(`/api/public/call?t=${encodeURIComponent(token)}`);
+    info = await response.json();
+    if (!response.ok) { show("broken"); return; }
+  } catch {
+    $("brokenText").textContent = "We couldn't load this page. Check your connection and try again.";
+    show("broken");
+    return;
+  }
+  registry = info.registry_url || "";
+  if (info.couple_names) document.title = `Let's catch up · ${info.couple_names}`;
+  if (info.contact_email) { $("contact").href = `mailto:${info.contact_email}`; $("contact").hidden = false; }
+  $("sample").hidden = !info.sample;
+  const names = $("names");
+  if (info.guests.length === 1) {
+    const g = info.guests[0];
+    names.append(Object.assign(document.createElement("div"), { className: "one", textContent: g.name }));
+    names.dataset.only = g.id;
+  } else {
+    for (const g of info.guests) {
+      const label = document.createElement("label");
+      const box = Object.assign(document.createElement("input"), { type: "checkbox", value: g.id, checked: true });
+      label.append(box, document.createTextNode(g.name));
+      names.append(label);
+    }
+  }
+  // Asked before: say so, and they can still send it again.
+  if (info.guests.length && info.guests.every((g) => g.requested)) {
+    $("askHelp").textContent = "You've already asked for a call, and we'll be in touch to find a time. You can send it again if you like.";
+  }
+  show("ask");
+}
+
+$("ask").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = $("ask").querySelector("button");
+  const guests = $("names").dataset.only
+    ? [Number($("names").dataset.only)]
+    : [...$("names").querySelectorAll("input:checked")].map((box) => Number(box.value));
+  $("askMsg").textContent = "";
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/public/call", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ t: token, guests }) });
+    const reply = await response.json();
+    if (!response.ok) throw new Error(reply.error || "That didn't go through. Please try again.");
+    registry = reply.registry_url || registry;
+    showDone();
+  } catch (error) {
+    $("askMsg").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+start();
+</script>
+</body>
+</html>

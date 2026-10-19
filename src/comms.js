@@ -77,6 +77,7 @@ export const AUDIENCE = [
   ["family", "Family and party", false, [["Wedding party", (g) => g.wedding_party], ["Immediate family", (g) => g.immediate_family], ["Extended family", (g) => g.extended_family]]],
   ["travel", "Travel", false, [["Out of town", (g) => g.out_of_town], ["International", (g) => g.international]]],
   ["plusone", "Plus-ones", false, [["Has a plus-one", (g) => g.plus_one_allowed]]],
+  ["followup", "Follow-up", false, [["Post-wedding call", (g) => g.post_wedding_call]]],
 ];
 export const HOUSEHOLD_AUDIENCE = ["household", "Household", false, [
   ["Save-the-date sent", (h) => h.save_the_date_sent],
@@ -147,6 +148,7 @@ export const FILL_INS = [
   ["rsvp_deadline", "The RSVP deadline, written out"],
   ["rsvp_link", "A link to the RSVP page"],
   ["calendar_link", "A link that downloads their calendar invite"],
+  ["call_link", "A \"click here\" link to their own page for asking for a video call after the wedding"],
 ];
 
 const longDate = (iso) => {
@@ -164,6 +166,9 @@ async function fillInsFor(env, origin, settings, household, guests) {
   const token = household.id
     ? await sign(env, { kind: "cal", h: household.id }, CALENDAR_TOKEN_TTL)
     : await sign(env, { kind: "cal", test: household.test || "both" }, CALENDAR_TOKEN_TTL);
+  // The call page knows the household from this; a test email's link opens a sample.
+  const call = await sign(env, household.id ? { kind: "call", h: household.id } : { kind: "call", test: true }, CALENDAR_TOKEN_TTL);
+  const callUrl = `${origin}/call/?t=${encodeURIComponent(call)}`;
   return {
     greeting: household.greeting || household.display_name || "friends",
     household: household.display_name || "",
@@ -175,12 +180,30 @@ async function fillInsFor(env, origin, settings, household, guests) {
     rsvp_deadline: longDate(settings.rsvp_deadline),
     rsvp_link: `${origin}/rsvp/`,
     calendar_link: `${origin}/api/public/calendar?t=${encodeURIComponent(token)}`,
+    call_link: linkValue("click here", callUrl),
   };
 }
 
-/** {name} becomes its value; anything in braces that isn't a fill-in is left as typed. */
+/** A fill-in that is a link: "text" in an HTML email, "text (url)" in a plain one. */
+const linkValue = (text, url) => ({
+  url,
+  html: `<a href="${url.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}">${text}</a>`,
+  text: `${text} (${url})`,
+});
+
+/**
+ * {name} becomes its value; anything in braces that isn't a fill-in is left as typed. A
+ * link value ({ url, html, text }) goes in as its link in HTML and as its text
+ * otherwise; text linked to it in the editor (href="{name}") links to its url.
+ */
 export function fillIn(template, values, { html = false } = {}) {
-  const put = html ? (v) => String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") : String;
+  const escape = (v) => String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const isLink = (v) => v !== null && typeof v === "object";
+  const put = (v) => (isLink(v) ? (html ? v.html : v.text) : html ? escape(v) : String(v));
+  if (html) {
+    template = String(template).replace(/href="\{([a-z_]+)\}"/g, (whole, name) =>
+      has(values, name) ? `href="${escape(isLink(values[name]) ? values[name].url : values[name])}"` : whole);
+  }
   return String(template).replace(/\{([a-z_]+)\}/g, (whole, name) => (has(values, name) ? put(values[name]) : whole));
 }
 

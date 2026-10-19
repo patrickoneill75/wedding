@@ -22,6 +22,15 @@
  *   plus-one is only accepted for a guest who was given one, and a rehearsal dinner
  *   answer only from a guest invited to it.
  *
+ * Post-wedding call (public/call, a hidden page opened from {call_link} in an email):
+ *   GET  call?t=           the names of the household's guests who said no (everyone in
+ *                          it when nobody did), whether each already asked, and the
+ *                          registry link. Names and the ids the form sends back; no
+ *                          emails or addresses.
+ *   POST call              { t, guests: [id] } tags those guests "post-wedding call". Only
+ *                          the household's own guests count. A test email's link opens
+ *                          a sample and saves nothing.
+ *
  * Expense form (/submit, for anyone with the Expenses page): every route needs the
  * control panel's Google sign-in (and the X-Wedding header on POSTs), and knows who is
  * signed in.
@@ -351,6 +360,46 @@ async function calendarDownload(env, request) {
   });
 }
 
+/* --------------------------------------------------------- post-wedding call ---- */
+
+const SAMPLE_CALL_GUESTS = [{ id: 1, name: "Jane Sample", requested: false }, { id: 2, name: "John Sample", requested: false }];
+
+async function callToken(env, raw) {
+  const token = await verify(env, raw);
+  if (!token || token.kind !== "call") throw new Error("This link isn't working. Reply to our email and we'll set up a time.");
+  return token;
+}
+
+/** The household's guests who said no, or everyone in it when nobody did. */
+async function callGuests(env, householdId) {
+  const rows = await all(env, "SELECT id, first_name, last_name, rsvp, post_wedding_call FROM guests WHERE household_id = ? ORDER BY sort_order, id", householdId);
+  const declined = rows.filter((g) => g.rsvp === "no");
+  return (declined.length ? declined : rows).map((g) => ({ id: g.id, name: `${g.first_name || ""} ${g.last_name || ""}`.trim(), requested: Boolean(g.post_wedding_call) }));
+}
+
+async function callInfo(env, request) {
+  const token = await callToken(env, new URL(request.url).searchParams.get("t"));
+  const s = await loadSettings(env);
+  const guests = token.test ? SAMPLE_CALL_GUESTS : await callGuests(env, token.h);
+  if (!guests.length) throw new Error("This link isn't working. Reply to our email and we'll set up a time.");
+  return json({ couple_names: s.couple_names, registry_url: s.registry_url || "", contact_email: s.contact_email, guests, sample: Boolean(token.test) });
+}
+
+async function callRequest(env, input) {
+  const token = await callToken(env, input.t);
+  const picked = new Set((Array.isArray(input.guests) ? input.guests : []).map(Number).filter(Number.isInteger));
+  const s = await loadSettings(env);
+  if (token.test) {
+    if (!SAMPLE_CALL_GUESTS.some((g) => picked.has(g.id))) throw new Error("Pick at least one name.");
+    return json({ ok: true, sample: true, registry_url: s.registry_url || "" });
+  }
+  const ids = (await callGuests(env, token.h)).filter((g) => picked.has(g.id)).map((g) => g.id);
+  if (!ids.length) throw new Error("Pick at least one name.");
+  await run(env, `UPDATE guests SET post_wedding_call = 1, updated_at = datetime('now') WHERE id IN (${ids.join(",")})`);
+  await markDirty(env);
+  return json({ ok: true, registry_url: s.registry_url || "" });
+}
+
 /* ------------------------------------------------------------- expense form ---- */
 
 async function expenseOptions(env, user) {
@@ -552,6 +601,8 @@ export async function handlePublicApi(route, request, env) {
       });
     }
     if (route === "calendar" && method === "GET") return await calendarDownload(env, request);
+    if (route === "call" && method === "GET") return await callInfo(env, request);
+    if (route === "call" && method === "POST") return await callRequest(env, await body(request));
     if (route.startsWith("rsvp/")) {
       const s = await loadSettings(env);
       const preview = !s.rsvp_open && (await previewer(request, env));
