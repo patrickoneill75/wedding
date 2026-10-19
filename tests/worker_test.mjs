@@ -2264,6 +2264,45 @@ test("day-of view: the coordinator's key reads and checks off steps, never budge
     "an admin's POST without the X-Wedding header is refused (CSRF)");
 });
 
+// Bug guards: the rehearsal dinner cohort kept guests who declined the dinner; the
+// day-of data carried each linked guest's "declined" RSVP flag and kept a declined
+// guest linked by name; a step saved with a bad link half-saved.
+test("run of show: the dinner cohort drops dinner declines; day-of carries no RSVP flags; a bad link saves nothing", async () => {
+  const { env, api } = await reportSetup();
+  const households = (await api("/api/admin/guests")).data.households;
+  const smiths = households.find((h) => h.display_name === "The Smiths");
+  await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: [smiths.id], field: "invite_rehearsal", value: true } });
+  const [avery, blake] = smiths.guests;
+  await api(`/api/admin/guests/${avery.id}`, { method: "PUT", body: { rsvp: "yes", rehearsal_rsvp: "no" } });
+  await api(`/api/admin/guests/${blake.id}`, { method: "PUT", body: { rsvp: "yes", rehearsal_rsvp: "yes" } });
+  const people = (await api("/api/admin/runofshow")).data.people;
+  const casey = people.find((p) => p.name === "Casey Jones");
+  const step = await api("/api/admin/runofshow/items", { method: "POST", body: { title: "Toasts", start_time: "19:00",
+    links: [{ kind: "preset", ref_key: "rehearsal_dinner" }, { kind: "guest", ref_id: Number(casey.key.split(":")[0]), plus_one: 0 }] } });
+  const s = step.data.steps[0];
+  assert.ok(!s.links.find((l) => l.kind === "preset").people.some((p) => p.name === "Avery Smith"), "Avery said no to the dinner");
+  assert.ok(s.links.find((l) => l.kind === "preset").people.some((p) => p.name === "Blake Smith"));
+  assert.equal(s.links.find((l) => l.kind === "guest").declined, true, "the couple see a declined guest flagged");
+
+  const key = new URL((await api("/api/admin/runofshow/link", { method: "POST" })).data.url).hash.slice(3);
+  const view = await call(env, "/api/dayof", { headers: { "x-dayof-key": key } });
+  assert.ok(!JSON.stringify(view.data).includes("declined"), "no RSVP flags on the day-of view");
+  assert.ok(!view.data.steps[0].links.some((l) => l.kind === "guest"), "a declined guest linked by name is left off");
+
+  const bad = await api(`/api/admin/runofshow/items/${step.data.id}`, { method: "PUT", body: { title: "Renamed", links: [{ kind: "vendor", ref_id: 999 }] } });
+  assert.equal(bad.status, 400);
+  assert.equal((await api("/api/admin/runofshow")).data.steps[0].title, "Toasts", "nothing saved");
+});
+
+// Bug guard: the Guests page could save answers the RSVP page forbids (a declined guest
+// still bringing a plus-one, or at the rehearsal dinner), and reports counted them.
+test("guests: a guest marked not coming brings no plus-one and skips the rehearsal dinner", async () => {
+  const { api, id } = await seatingSetup();
+  await api(`/api/admin/guests/${id.Avery}`, { method: "PUT", body: { invite_rehearsal: true, rsvp: "yes", plus_one_rsvp: "yes", rehearsal_rsvp: "yes", plus_one_rehearsal_rsvp: "yes" } });
+  const g = (await api(`/api/admin/guests/${id.Avery}`, { method: "PUT", body: { rsvp: "no" } })).data.guest;
+  assert.deepEqual([g.plus_one_rsvp, g.rehearsal_rsvp, g.plus_one_rehearsal_rsvp], ["no", "no", "no"]);
+});
+
 test("run of show: one lead vendor per step, listed first, then supporting vendors and guest cohorts", async () => {
   const { api } = await reportSetup();
   const mk = async (name) => (await api("/api/admin/vendors", { method: "POST", body: { name } })).data.vendor.id;

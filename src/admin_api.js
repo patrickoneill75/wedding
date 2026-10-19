@@ -495,6 +495,14 @@ export async function handleAdminApi(route, request, env) {
       if (id && method === "PUT") {
         const input = await body(request);
         const patch = cleanGuest(input);
+        // The RSVP page's rules hold here too: a guest who isn't coming brings no plus-one
+        // and isn't at the rehearsal dinner, and nor is a plus-one whose guest skips it.
+        const answers = ["rsvp", "plus_one_rsvp", "rehearsal_rsvp", "plus_one_rehearsal_rsvp"];
+        if (answers.some((k) => has(patch, k))) {
+          const now = { ...(await first(env, `SELECT ${answers.join(", ")} FROM guests WHERE id = ?`, id)), ...patch };
+          if (now.rsvp === "no") Object.assign(patch, { plus_one_rsvp: "no", rehearsal_rsvp: "no", plus_one_rehearsal_rsvp: "no" });
+          else if (now.plus_one_rsvp === "no" || now.rehearsal_rsvp === "no") patch.plus_one_rehearsal_rsvp = "no";
+        }
         if (has(input, "household_id")) {
           const target = await first(env, "SELECT id FROM households WHERE id = ?", Number(input.household_id));
           if (!target) return json({ error: "No such household." }, 400);

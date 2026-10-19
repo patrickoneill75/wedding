@@ -48,7 +48,8 @@ export const PRESETS = {
   groom_side: { label: "Groom's side", test: (p) => p.side === "Groom" },
   ceremony_guests: { label: "Ceremony guests", test: (p) => p.ceremony },
   reception_guests: { label: "Reception guests", test: (p) => p.reception },
-  rehearsal_dinner: { label: "Rehearsal dinner guests", test: (p) => p.rehearsal },
+  // Invited, and hasn't declined the dinner itself (the wedding's own no is checked too).
+  rehearsal_dinner: { label: "Rehearsal dinner guests", test: (p) => p.rehearsal && p.rehearsal_rsvp_code !== "no" },
   out_of_town: { label: "Out-of-town guests", test: (p) => p.out_of_town },
   international: { label: "International guests", test: (p) => p.international },
 };
@@ -183,7 +184,7 @@ export async function loadRunOfShow(env, { forDayOf = false } = {}) {
   for (const m of members) groupById.get(m.group_id)?.members.push(`${m.guest_id}:${m.plus_one}`);
 
   // Only what a step needs to show about a person; no addresses or RSVP details.
-  const who = (p) => ({ key: p.key, name: p.name, table_seat: p.table_seat, declined: p.rsvp_code === "no" });
+  const who = (p) => ({ key: p.key, name: p.name, table_seat: p.table_seat });
   const coming = (list) => list.filter(Boolean).filter((p) => p.rsvp_code !== "no");
   const vendorCard = (v) => ({
     id: v.id,
@@ -206,7 +207,11 @@ export async function loadRunOfShow(env, { forDayOf = false } = {}) {
     }
     if (link.kind === "guest") {
       const p = byKey.get(`${link.ref_id}:${link.plus_one}`);
-      return p ? { ...base, label: p.name, people: [who(p)] } : null;
+      if (!p) return null;
+      // A guest linked by name who has declined isn't counted. The couple's page says
+      // so; the day-of view (no RSVP details there) just leaves them off.
+      if (p.rsvp_code === "no") return forDayOf ? null : { ...base, label: p.name, declined: true, people: [] };
+      return { ...base, label: p.name, people: [who(p)] };
     }
     if (link.kind === "group") {
       const g = groupById.get(link.ref_id);
@@ -334,9 +339,11 @@ export async function handleRunOfShow(parts, method, request, env, body, user) {
       if (!(await first(env, "SELECT id FROM ros_items WHERE id = ?", id))) return json({ error: "No such step." }, 404);
       const input = await body(request);
       const patch = cleanItem(input);
+      // Links are checked before anything is saved, so a bad one changes nothing.
+      const links = has(input, "links") ? await cleanLinks(env, input.links) : null;
       const columns = Object.keys(patch);
       if (columns.length) await run(env, `UPDATE ros_items SET ${columns.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`, ...columns.map((c) => patch[c]), id);
-      if (has(input, "links")) await saveLinks(env, id, await cleanLinks(env, input.links));
+      if (links) await saveLinks(env, id, links);
       return json(await loadRunOfShow(env));
     }
     if (id && !action && method === "DELETE") {

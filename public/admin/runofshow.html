@@ -119,10 +119,11 @@ function stepCard(s) {
       s.duration_min != null ? h("small", {}, `${s.duration_min} min`) : null),
     h("div", {},
       h("div", { class: "row", style: "gap:8px" }, h("span", { class: "title" }, s.title),
-        s.status !== "todo" ? h("span", { class: `status ${s.status}` }, STATUS_TEXT[s.status]) : null),
+        s.status !== "todo" ? h("span", { class: `status ${s.status}` }, STATUS_TEXT[s.status]) : null,
+        s.status !== "todo" && s.status_by ? h("span", { class: "muted", style: "font-size:12px" }, `by ${s.status_by}`) : null),
       s.location ? h("div", { class: "where" }, s.location) : null,
       s.links.length ? h("div", { class: "chips" }, s.links.map((l) => h("span", { class: `chip${l.kind === "vendor" ? " vendor" : ""}${l.lead ? " lead" : ""}` },
-        l.lead ? "Lead: " : "", h("b", {}, l.label), l.kind !== "vendor" && l.kind !== "guest" ? ` · ${l.people.length}` : "", l.role ? ` · ${l.role}` : ""))) : null,
+        l.lead ? "Lead: " : "", h("b", {}, l.label), l.kind !== "vendor" && l.kind !== "guest" ? ` · ${l.people.length}` : "", l.declined ? " · not coming" : "", l.role ? ` · ${l.role}` : ""))) : null,
       people ? h("div", { class: "where", style: "margin-top:4px" }, `${people} ${people === 1 ? "person" : "people"}`) : null,
       s.details ? h("div", { class: "details" }, s.details) : null));
 }
@@ -155,7 +156,9 @@ function editStep(step, copyOf = null) {
     const msg = h("p", { class: "msg" });
     const linkList = h("div", {});
     const picker = h("div", { class: "picker", hidden: true });
-    const search = h("input", { type: "search", placeholder: "Add a guest, a group or a table…", oninput: () => fillPicker(), onfocus: () => fillPicker() });
+    // Enter in the search box searches; it never submits (and closes) the half-made step.
+    const search = h("input", { type: "search", placeholder: "Add a guest, a group or a table…", oninput: () => fillPicker(), onfocus: () => fillPicker(),
+      onkeydown: (ev) => { if (ev.key === "Enter") ev.preventDefault(); } });
     const vendorName = (id) => data.vendors.find((x) => x.id === id)?.name || "";
 
     const leadRole = h("input", { value: lead?.role || "", placeholder: "Their part (optional)", oninput: (e) => { if (lead) lead.role = e.target.value; } });
@@ -226,7 +229,7 @@ function editStep(step, copyOf = null) {
       field("What happens", "title", { value: copyOf ? `${v.title} (copy)` : v.title || "", required: true, placeholder: "First look" }),
       field("Day", "day", { type: "date", value: step || copyOf ? v.day : day || data.wedding_date || "" }),
       field("Starts", "start_time", { type: "time", value: v.start_time || "" }),
-      field("Length (minutes)", "duration_min", { type: "number", min: 0, step: 5, value: v.duration_min ?? "" }),
+      field("Length (minutes)", "duration_min", { type: "number", min: 0, step: 1, value: v.duration_min ?? "" }),
       field("Where", "location", { value: v.location || "", placeholder: "Garden terrace" })),
     h("div", { class: "fields" }, field("Details for the coordinator", "details", { type: "textarea", value: v.details || "", wide: true,
       placeholder: "Cue the DJ for the entrance song. Rings are with the best man." })),
@@ -326,13 +329,15 @@ function editGroup(group) {
 
 /* ------------------------------------------------------- coordinator link ---- */
 
-let link = null;
+let link; // undefined until loaded
 async function loadLink() {
   link = await api("/api/admin/runofshow/link");
   renderLink();
 }
 function renderLink() {
   const box = document.getElementById("linkCard");
+  // Until the link has loaded, say so (not "Make the link", which would replace one).
+  if (link === undefined) return box.replaceChildren(h("h2", {}, "Coordinator's day-of link"), h("p", { class: "muted" }, "Loading…"));
   const msg = h("p", { class: "msg" });
   const act = (method, confirmText) => async () => {
     if (confirmText && !confirm(confirmText)) return;
@@ -361,6 +366,9 @@ document.getElementById("addBtn").addEventListener("click", () => editStep(null)
 document.getElementById("addGroup").addEventListener("click", () => editGroup(null));
 await load();
 await loadLink();
+// The coordinator ticks steps off on the day: keep this page current while it's open
+// (not while a dialog is, so nothing being edited is redrawn).
+setInterval(() => { if (!document.hidden && !document.querySelector("dialog[open]")) load().catch(() => {}); }, 30000);
 </script>
 </body>
 </html>

@@ -344,12 +344,26 @@ function cardValues(card) {
   return out;
 }
 
+/** The fields whose values changed since `before`. */
+const changes = (now, before) => Object.fromEntries(Object.entries(now).filter(([k, v]) => !before || before[k] !== v));
+
 async function openHousehold(hh) {
+  // Open the household as it is now (a guest may have RSVP'd since this page loaded).
+  if (hh) {
+    await load();
+    hh = data.households.find((x) => x.id === hh.id) || hh;
+  }
   const changed = await openDialog(hh ? hh.display_name || "Household" : "New household", (close) => {
     const msg = h("p", { class: "msg" });
     const removed = [];
     const guestList = h("div", {});
-    const addGuest = (g) => guestList.append(guestCard(g, (card) => { if (card.guestId) removed.push(card.guestId); card.remove(); }));
+    // Saving sends only what was changed here, so it can't put back an answer from
+    // before an RSVP that arrived while the editor was open.
+    const addGuest = (g) => {
+      const card = guestCard(g, (c) => { if (c.guestId) removed.push(c.guestId); c.remove(); });
+      card.initial = card.guestId ? cardValues(card) : null;
+      guestList.append(card);
+    };
     (hh?.guests?.length ? hh.guests : [{ priority: "High" }]).forEach(addGuest);
 
     const form = h("form", { onsubmit: (ev) => ev.preventDefault() },
@@ -379,6 +393,7 @@ async function openHousehold(hh) {
       ),
       hh?.rsvp_message ? h("p", { class: "desc" }, `Message with their RSVP: “${hh.rsvp_message}”`) : null,
     );
+    let householdBefore = hh ? formValues(form) : null;
 
     // Remembered across tries: if a save fails partway (a bad email on the third guest),
     // saving again updates what the first try created instead of adding it twice.
@@ -391,16 +406,22 @@ async function openHousehold(hh) {
         return card.guestId || String(v.first_name || "").trim() || String(v.last_name || "").trim();
       });
       try {
-        if (householdId) await api(`/api/admin/households/${householdId}`, { method: "PUT", body: household });
-        else householdId = (await api("/api/admin/households", { method: "POST", body: household })).id;
+        if (householdId) {
+          const edits = changes(household, householdBefore);
+          if (Object.keys(edits).length) await api(`/api/admin/households/${householdId}`, { method: "PUT", body: edits });
+        } else householdId = (await api("/api/admin/households", { method: "POST", body: household })).id;
+        householdBefore = household;
         while (removed.length) {
           await api(`/api/admin/guests/${removed[0]}`, { method: "DELETE" });
           removed.shift();
         }
         for (const card of cards) {
           const g = cardValues(card);
-          if (card.guestId) await api(`/api/admin/guests/${card.guestId}`, { method: "PUT", body: g });
-          else card.guestId = (await api("/api/admin/guests", { method: "POST", body: { ...g, household_id: householdId } })).id;
+          if (card.guestId) {
+            const edits = changes(g, card.initial);
+            if (Object.keys(edits).length) await api(`/api/admin/guests/${card.guestId}`, { method: "PUT", body: edits });
+          } else card.guestId = (await api("/api/admin/guests", { method: "POST", body: { ...g, household_id: householdId } })).id;
+          card.initial = g;
         }
         close(true);
       } catch (error) {

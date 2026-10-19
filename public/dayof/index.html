@@ -119,8 +119,10 @@ async function refresh() {
     try { localStorage.setItem(CACHE, JSON.stringify(data)); } catch {}
   } catch (e) {
     if (e.status === 401) {
+      // The link was turned off or replaced: the copy kept for offline use goes too.
       error = e.message;
       data = null;
+      try { localStorage.removeItem(CACHE); } catch {}
     } else {
       offline = true;
       if (!data) try { data = JSON.parse(localStorage.getItem(CACHE) || "null"); } catch {}
