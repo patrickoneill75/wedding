@@ -1,6 +1,7 @@
 /**
- * Control panel API, mounted under /api/admin/*. Every route requires a signed-in
- * admin (src/auth.js requireAdmin).
+ * Control panel API, mounted under /api/admin/*. Every route needs someone signed in
+ * with access to the page it belongs to (ROUTE_PAGES below, src/auth.js requirePage);
+ * the rest are admin-only.
  *
  *   GET    summary                     dashboard numbers, charts' data, what's due
  *   GET    expenses                    every expense with computed totals
@@ -16,8 +17,8 @@
  *   POST   guests / PUT guests/:id / DELETE guests/:id
  *   POST   households/bulk             set a tracking flag on many households at once
  *   POST   households/reset-rsvp       { ids } -- clear RSVPs back to "awaiting reply"
- *   POST   guests/bulk                 { household_ids, field: "invite_ceremony" | "invite_reception",
- *                                       value: true | false }
+ *   POST   guests/bulk                 { household_ids, field: "invite_ceremony" | "invite_reception"
+ *                                       | "invite_rehearsal", value: true | false }
  *   GET    settings / PUT settings
  *   POST   basis                       { basis: "confirmed" | "weighted" }
  *   GET    form-link                   the expense form's address (PUBLIC_URL/submit)
@@ -26,13 +27,14 @@
  *   *      vendors/*                   vendors and their contacts (src/vendors.js)
  *   *      reports/*                   built-in and custom reports, CSV export (src/reports.js)
  *   *      runofshow/*                 the run of show and guest groups (src/runofshow.js)
+ *   *      users/*                     who can sign in, and their pages (src/users.js), admins only
  *   GET    site/status                 the Zola copy: address, last check, pages, warnings
  *   POST   site/refresh                fetch the Zola site now ("Refresh from Zola")
  *   GET    drive/status, GET drive/connect, GET drive/folders?parent=,
  *   POST   drive/folder, POST drive/folder/create, POST drive/sync, POST drive/disconnect
  */
 
-import { json, requireAdmin, startOAuth } from "./auth.js";
+import { json, requirePage, startOAuth } from "./auth.js";
 import { all, first, run, getSetting, setSetting, markDirty, updateClause } from "./db.js";
 import {
   DEFAULT_SETTINGS,
@@ -70,6 +72,7 @@ import { handleSeating, seatsByGuest } from "./seating.js";
 import { handleVendors } from "./vendors.js";
 import { handleReports } from "./reports.js";
 import { handleRunOfShow } from "./runofshow.js";
+import { handleUsers } from "./users.js";
 
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
@@ -94,10 +97,10 @@ const textOrNull = (v) => {
 /* ------------------------------------------------------------------- guests ---- */
 
 const HOUSEHOLD_TEXT = ["code", "display_name", "greeting", "address1", "address2", "city", "state", "zip", "country", "email", "phone", "gift", "rsvp_message", "notes"];
-const HOUSEHOLD_FLAGS = ["save_the_date_sent", "invite_sent", "gift_received", "thank_you_sent"];
+const HOUSEHOLD_FLAGS = ["save_the_date_sent", "invite_sent", "gift_received", "thank_you_sent", "out_of_town", "international"];
 const GUEST_TEXT = ["first_name", "last_name", "plus_one_name", "dietary", "plus_one_dietary", "table_name", "notes"];
-const GUEST_FLAGS = ["wedding_party", "immediate_family", "extended_family", "plus_one_allowed", "invite_ceremony", "invite_reception"];
-const INVITE_FLAGS = ["invite_ceremony", "invite_reception"];
+const GUEST_FLAGS = ["wedding_party", "immediate_family", "extended_family", "plus_one_allowed", "invite_ceremony", "invite_reception", "invite_rehearsal"];
+const INVITE_FLAGS = ["invite_ceremony", "invite_reception", "invite_rehearsal"];
 
 function cleanHousehold(input) {
   const patch = Object.create(null);
@@ -215,11 +218,29 @@ function cleanSettings(input) {
 
 /* ------------------------------------------------------------------- router ---- */
 
+/**
+ * Which control-panel page each route belongs to, for users limited to some pages.
+ * Anything not listed (settings, basis, import, site, drive, users) is admin-only.
+ */
+const ROUTE_PAGES = {
+  summary: "dashboard",
+  expenses: "expenses",
+  payments: "expenses",
+  "form-link": "expenses",
+  vendors: "vendors",
+  guests: "guests",
+  households: "guests",
+  seating: "seating",
+  runofshow: "runofshow",
+  reports: "reports",
+};
+
 export async function handleAdminApi(route, request, env) {
-  const [user, denied] = await requireAdmin(request, env);
+  const parts = route.split("/").filter(Boolean);
+  const page = Object.prototype.hasOwnProperty.call(ROUTE_PAGES, parts[0]) ? ROUTE_PAGES[parts[0]] : "admin";
+  const [user, denied] = await requirePage(request, env, page);
   if (denied) return denied;
   const method = request.method.toUpperCase();
-  const parts = route.split("/").filter(Boolean);
   const id = parts[1] && /^\d+$/.test(parts[1]) ? Number(parts[1]) : null;
 
   try {
@@ -473,6 +494,7 @@ export async function handleAdminApi(route, request, env) {
     if (parts[0] === "vendors") return await handleVendors(parts, method, request, env, body);
     if (parts[0] === "reports") return await handleReports(parts, method, request, env, body);
     if (parts[0] === "runofshow") return await handleRunOfShow(parts, method, request, env, body, user);
+    if (parts[0] === "users") return await handleUsers(parts, method, request, env, body, user);
 
     // ---- settings ----------------------------------------------------------------
     if (route === "settings" && method === "GET") {

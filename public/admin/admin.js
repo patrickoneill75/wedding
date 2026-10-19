@@ -66,27 +66,44 @@ export function setMsg(node, text, kind = "") {
   node.className = `msg ${kind}`;
 }
 
+// [file, label, page key]. "admin" pages are for admins only; the rest can be given to
+// a user on the Users page (PAGES in src/auth.js).
 const PAGES = [
-  ["index.html", "Dashboard"],
-  ["expenses.html", "Expenses"],
-  ["vendors.html", "Vendors"],
-  ["guests.html", "Guests"],
-  ["seating.html", "Seating"],
-  ["runofshow.html", "Run of show"],
-  ["reports.html", "Reports"],
-  ["settings.html", "Settings"],
+  ["index.html", "Dashboard", "dashboard"],
+  ["expenses.html", "Expenses", "expenses"],
+  ["vendors.html", "Vendors", "vendors"],
+  ["guests.html", "Guests", "guests"],
+  ["seating.html", "Seating", "seating"],
+  ["runofshow.html", "Run of show", "runofshow"],
+  ["reports.html", "Reports", "reports"],
+  ["settings.html", "Settings", "admin"],
+  ["users.html", "Users", "admin"],
 ];
 
-/** Render the top bar and confirm the session. Resolves to the signed-in user. */
+const canSee = (user, key) => user.role === "admin" || (key !== "admin" && user.pages.includes(key));
+
+/**
+ * Render the top bar and confirm the session. Resolves to the signed-in user. Someone
+ * without access to this page is sent to the first page they have.
+ */
 export async function initPage(active) {
   const bar = document.getElementById("topbar");
   const me = await api("/api/auth/me");
+  const mine = PAGES.filter(([, , key]) => canSee(me.user, key));
+  const here = PAGES.find(([href]) => href === active);
+  if (here && !canSee(me.user, here[2])) {
+    if (mine.length) location.replace(`/admin/${mine[0][0]}`);
+    else document.querySelector(".wrap").replaceChildren(h("div", { class: "card" }, h("h2", {}, "No pages yet"),
+      h("p", { class: "desc" }, `You're signed in as ${me.user.email}, but no pages have been given to you yet. Ask Patrick or Kaitlyn.`)));
+    // Never resolve: the page's own script stops here, without an error in the console.
+    return new Promise(() => {});
+  }
   bar.replaceChildren(
     h("span", { class: "brand" }, "Wedding planner"),
     h(
       "nav",
       {},
-      PAGES.map(([href, label]) => h("a", { href: `/admin/${href}`, class: href === active ? "active" : "" }, label))
+      mine.map(([href, label]) => h("a", { href: `/admin/${href}`, class: href === active ? "active" : "" }, label))
     ),
     h(
       "span",

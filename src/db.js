@@ -335,6 +335,24 @@ const MIGRATIONS = [
      )`,
     `CREATE INDEX IF NOT EXISTS ros_links_item ON ros_links(item_id)`,
   ],
+  // 11: people who may sign in besides the ADMIN_EMAILS owners, each an admin or a user
+  // limited to some pages (src/users.js); out-of-town and international households; and
+  // who is invited to the rehearsal dinner. Run-of-show vendor links say whether the
+  // vendor leads the step (ros_links.ref_key = 'lead') or supports it ('support', or
+  // NULL on links made before this).
+  [
+    `CREATE TABLE IF NOT EXISTS users (
+       email TEXT PRIMARY KEY COLLATE NOCASE,
+       name TEXT,
+       role TEXT NOT NULL DEFAULT 'user',
+       pages TEXT NOT NULL DEFAULT '[]',
+       created_by TEXT,
+       created_at TEXT NOT NULL DEFAULT (datetime('now'))
+     )`,
+    `ALTER TABLE households ADD COLUMN out_of_town INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE households ADD COLUMN international INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE guests ADD COLUMN invite_rehearsal INTEGER NOT NULL DEFAULT 0`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

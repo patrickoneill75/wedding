@@ -28,7 +28,8 @@ A Cloudflare Worker with two sides:
     progress while everything bought so far is paid and more is to come, and Paid once
     it's marked done buying.
   - **Guests**: households and guests like a small CRM. Address, side, priority, separate
-    ceremony and reception invitations, family and wedding-party flags, plus-ones (named by the
+    ceremony, reception and rehearsal dinner invitations, out-of-town and international
+    households, family and wedding-party flags, plus-ones (named by the
     guest when they RSVP), save-the-date / invite / gift / thank-you tracking, RSVPs,
     dietary needs and tables. Bulk edits and filters, and a Reset RSVP to un-answer a
     household.
@@ -38,14 +39,18 @@ A Cloudflare Worker with two sides:
     rectangular tables, single chairs, text notes ("North end", "DJ booth") and shapes of
     any size with centered text (dance floor, bar) you drag into place. Table templates (size and seats) for the sizes you rent. At the reception
     each guest and plus-one gets a table number and a seat letter (A, B, C ...).
-  - **Run of show**: the day step by step, each linked to the vendors, guests, groups
-    and tables it needs. The coordinator gets a private link to a day-of view at
+  - **Run of show**: the day step by step. Each step has a lead vendor, supporting
+    vendors, guest cohorts (ceremony, reception, rehearsal dinner, each side, families,
+    wedding party, out-of-town, international) and any other guests, groups or tables. The coordinator gets a private link to a day-of view at
     `/dayof/` for her iPad: now and next, tap to start and finish steps, who is in each
     and where they sit, and vendor phone numbers. It never shows budgets or addresses.
   - **Reports**: head counts, meal counts, dietary needs, table cards, the seating
     chart board, ceremony-only / reception-only / both lists, the chase list, mailing
     labels, thank-yous, vendor contacts and more, plus custom reports you build and
     save. Each downloads as a CSV.
+  - **Users**: the owners in `ADMIN_EMAILS` plus anyone you add, each an admin (everything)
+    or a user who sees only the pages ticked for them, such as a coordinator with Run of
+    show and Seating.
   - **Settings**: wedding details, 7% tax, budget, priority weights, the drinks
     calculator, the expense-form link, Google Drive, and the spreadsheet import.
 
@@ -89,6 +94,7 @@ src/vendors.js     vendors, their contacts, and what's spent with each
 src/people.js      one row per guest and plus-one, for reports and the run of show
 src/reports.js     built-in and custom reports, CSV export
 src/runofshow.js   the run of show, guest groups, and the coordinator's day-of API
+src/users.js       who can sign in besides the owners, and their pages
 src/sync.js        CSV exports and the Drive sync (cron every 5 minutes)
 src/site.js        the Zola website copy: fetch, clean, store, serve
 scripts/zola_refresh.mjs  runs src/site.js on GitHub and sends the pages to the site

@@ -30,7 +30,7 @@
  *                             records the payment by itself, so no amount is needed.
  */
 
-import { json, requireAdmin, sign, verify } from "./auth.js";
+import { json, requirePage, sign, verify } from "./auth.js";
 import { all, first, markDirty, run } from "./db.js";
 import { STATUSES, STATUS_LABELS } from "./calc.js";
 import { addPayment, createExpense, loadContext, loadSettings, listExpenses, listVendors, updateExpense } from "./store.js";
@@ -413,10 +413,10 @@ export async function handlePublicApi(route, request, env) {
       if (route === "rsvp/lookup" && method === "POST") return rsvpLookup(env, await body(request));
       if (route === "rsvp/submit" && method === "POST") return rsvpSubmit(env, await body(request));
     }
-    // The expense form is for the two of us: it takes the control panel's sign-in.
+    // The expense form takes the control panel's sign-in, with access to Expenses.
     let user = null;
     if (route === "expense" || route.startsWith("expense/")) {
-      const [admin, denied] = await requireAdmin(request, env);
+      const [admin, denied] = await requirePage(request, env, "expenses");
       if (denied) return denied;
       user = admin;
     }
