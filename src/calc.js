@@ -120,6 +120,31 @@ export const DEFAULT_SETTINGS = {
   rsvp_button_color: "",
   // The "Contact us" link in the footer of the website copy and the RSVP page.
   contact_email: "patricko.indy@gmail.com",
+  // Communications (src/comms.js): scheduled sends and calendar times use this zone.
+  time_zone: "America/Indiana/Indianapolis",
+  email_from_name: "Kaitlyn & Patrick",
+  // The RSVP page's wording, edited in Communications. A blank heading shows the
+  // couple's names.
+  rsvp_page: {
+    eyebrow: "Kindly reply",
+    heading: "",
+    lookup_help: "Start typing your first or last name, then pick yourself from the list.",
+    reply_help: "Let us know who's coming.",
+    accept_label: "Joyfully accepts",
+    decline_label: "Regretfully declines",
+    email_label: "Email for updates",
+    guest_email_label: "Their own email (optional)",
+    note_label: "A note for us (optional)",
+    thanks_heading: "Thank you!",
+    thanks_yes: "We can't wait to celebrate with you.",
+    thanks_no: "We'll miss you, and thank you for letting us know.",
+    calendar_button: "Add to your calendar",
+    closed_heading: "RSVPs are closed",
+    closed_text: "Please get in touch with us directly.",
+  },
+  // The calendar invite guests download after they RSVP (and emails can attach): one
+  // entry per event, each for everyone or for the guests invited to one part.
+  calendar_events: [],
 };
 
 export const PUBLIC_SETTING_KEYS = Object.keys(DEFAULT_SETTINGS);
@@ -141,6 +166,8 @@ export function mergeSettings(stored) {
   }
   merged.priority_weights = { ...DEFAULT_SETTINGS.priority_weights, ...(merged.priority_weights || {}) };
   merged.drinks = { ...DEFAULT_SETTINGS.drinks, ...(merged.drinks || {}) };
+  merged.rsvp_page = { ...DEFAULT_SETTINGS.rsvp_page, ...(merged.rsvp_page || {}) };
+  if (!Array.isArray(merged.calendar_events)) merged.calendar_events = [];
   return merged;
 }
 

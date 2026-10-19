@@ -42,7 +42,7 @@ export async function buildExports(env) {
   const ctx = await loadContext(env);
   const guests = await all(
     env,
-    `SELECT g.*, h.code AS household_code, h.display_name, h.greeting, h.address1, h.address2, h.city, h.state,
+    `SELECT g.*, g.email AS guest_email, h.code AS household_code, h.display_name, h.greeting, h.address1, h.address2, h.city, h.state,
             h.zip, h.country, h.email, h.phone, h.save_the_date_sent, h.invite_sent, h.gift, h.gift_received,
             h.thank_you_sent, h.rsvp_message, h.rsvp_at, h.notes AS household_notes
        FROM guests g JOIN households h ON h.id = g.household_id
@@ -73,6 +73,7 @@ export async function buildExports(env) {
       seat: seat.guest?.seat,
       plus_one_table: seat.plus_one?.table,
       plus_one_seat: seat.plus_one?.seat,
+      guest_email: g.guest_email,
       guest_notes: g.notes,
       mailing_name: g.display_name,
       greeting: g.greeting,

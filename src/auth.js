@@ -13,7 +13,8 @@
  *
  * Sessions are a signed cookie (HMAC-SHA256), HttpOnly and SameSite=Lax, valid for 30
  * days. The signing key is generated on first use and kept in D1 (_session_secret), so
- * there is no secret to set for it -- deleting that row signs everyone out.
+ * there is no secret to set for it -- deleting that row signs everyone out (within a
+ * minute; see signingKey).
  *
  * CSRF: every state-changing admin request must carry the X-Wedding header. A
  * cross-site form can't set a custom header, and a cross-site fetch() that does gets
@@ -23,6 +24,8 @@
  *   login  scopes openid/email/profile; sets the session cookie.
  *   drive  adds the Drive scope with offline access; stores the refresh token (see
  *          src/google.js). Requires an existing admin session.
+ *   gmail  adds gmail.send with offline access, for guest emails (src/gmail.js).
+ *          Requires an admin session.
  * The state also carries a nonce matched against a short-lived cookie, so a callback
  * URL can't be replayed into someone else's browser.
  */
@@ -39,6 +42,7 @@ export const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 export const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 
 export function json(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), {
@@ -72,7 +76,21 @@ export function randomToken(bytes = 24) {
   return b64url(crypto.getRandomValues(new Uint8Array(bytes)));
 }
 
+// The imported key is kept for a minute per environment: signing a link per email in a
+// batch shouldn't cost a D1 read each time (Workers Free allows 50 queries per request).
+// Deleting _session_secret still signs everyone out, within that minute.
+const keyCache = new WeakMap();
+const KEY_CACHE_MS = 60000;
+
 async function signingKey(env) {
+  const cached = keyCache.get(env);
+  if (cached && Date.now() - cached.at < KEY_CACHE_MS) return cached.key;
+  const key = await loadSigningKey(env);
+  keyCache.set(env, { key, at: Date.now() });
+  return key;
+}
+
+async function loadSigningKey(env) {
   let secret = await getSetting(env, "_session_secret");
   if (!secret) {
     secret = randomToken(32);
@@ -132,7 +150,7 @@ export function adminEmails(env) {
 }
 
 /** The control panel's pages a user can be given. Settings and Users are admin-only. */
-export const PAGES = ["dashboard", "expenses", "vendors", "guests", "seating", "runofshow", "reports"];
+export const PAGES = ["dashboard", "expenses", "vendors", "guests", "seating", "runofshow", "reports", "communications"];
 
 /**
  * Who this email is: { role: "admin" | "user", pages, owner } or null if they may not
@@ -213,8 +231,8 @@ export async function startOAuth(request, env, purpose, extra = {}) {
     state,
     prompt: "select_account",
   };
-  if (purpose === "drive") {
-    scopes.push(DRIVE_SCOPE);
+  if (purpose === "drive" || purpose === "gmail") {
+    scopes.push(purpose === "drive" ? DRIVE_SCOPE : GMAIL_SCOPE);
     params.access_type = "offline";
     // consent forces Google to issue a refresh token even if one was issued before.
     params.prompt = "consent select_account";
@@ -262,10 +280,11 @@ function redirect(location, cookies = []) {
 }
 
 /**
- * Google sends the browser here after consent. `onDriveTokens(env, tokens, userinfo)`
- * is supplied by src/google.js so this module doesn't import Drive code.
+ * Google sends the browser here after consent. `onTokens.drive` and `onTokens.gmail`
+ * (env, tokens, who) are supplied by src/google.js and src/gmail.js so this module
+ * doesn't import their code.
  */
-export async function handleOAuthCallback(request, env, onDriveTokens) {
+export async function handleOAuthCallback(request, env, onTokens) {
   const url = new URL(request.url);
   const clearState = cookie(STATE_COOKIE, "", 0);
   const fail = (page, msg) => redirect(`${page}?error=${encodeURIComponent(msg)}`, [clearState]);
@@ -274,7 +293,7 @@ export async function handleOAuthCallback(request, env, onDriveTokens) {
   if (!state || state.kind !== "oauth" || state.nonce !== readCookie(request, STATE_COOKIE)) {
     return fail("/admin/login.html", "That sign-in link expired or was already used. Try again.");
   }
-  const page = state.purpose === "drive" ? "/admin/settings.html" : "/admin/login.html";
+  const page = state.purpose === "drive" || state.purpose === "gmail" ? "/admin/settings.html" : "/admin/login.html";
   if (url.searchParams.get("error")) return fail(page, `Google said: ${url.searchParams.get("error")}`);
   const code = url.searchParams.get("code");
   if (!code) return fail(page, "Google didn't return a sign-in code.");
@@ -298,8 +317,22 @@ export async function handleOAuthCallback(request, env, onDriveTokens) {
     if (!String(tokens.scope || "").split(" ").includes(DRIVE_SCOPE)) {
       return fail(page, "Drive access wasn't granted. Tick the Google Drive box on the consent screen.");
     }
-    await onDriveTokens(env, tokens, { email, connected_by: user.email });
+    await onTokens.drive(env, tokens, { email, connected_by: user.email });
     return redirect("/admin/settings.html?drive=connected#drive", [clearState]);
+  }
+
+  // Gmail: an admin connects the account the guest emails come from (send only).
+  if (state.purpose === "gmail") {
+    const user = await currentUser(request, env);
+    if (!user || user.role !== "admin") return fail("/admin/login.html", "Sign in as an admin before connecting Gmail.");
+    if (!tokens.refresh_token) {
+      return fail(page, "Google didn't grant offline access. Remove the app at myaccount.google.com/permissions and try again.");
+    }
+    if (!String(tokens.scope || "").split(" ").includes(GMAIL_SCOPE)) {
+      return fail(page, "Sending email wasn't allowed. Tick the \"Send email on your behalf\" box on the consent screen.");
+    }
+    await onTokens.gmail(env, tokens, { email, connected_by: user.email });
+    return redirect("/admin/settings.html?gmail=connected#gmail", [clearState]);
   }
 
   if (!info.email_verified || !(await accessFor(env, email))) {

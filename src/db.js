@@ -363,6 +363,39 @@ const MIGRATIONS = [
        out_of_town = COALESCE((SELECT h.out_of_town FROM households h WHERE h.id = guests.household_id), 0),
        international = COALESCE((SELECT h.international FROM households h WHERE h.id = guests.household_id), 0)`,
   ],
+  // 13: communications (src/comms.js). Each guest may give their own email (the
+  // household's stays the required one). An email has an audience of guest tags and is
+  // a draft, sent now, scheduled, or sent automatically after an RSVP; comm_sends
+  // records one send per household per email, so nobody gets the same email twice.
+  [
+    `ALTER TABLE guests ADD COLUMN email TEXT`,
+    `CREATE TABLE IF NOT EXISTS comm_messages (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       subject TEXT NOT NULL DEFAULT '',
+       body TEXT NOT NULL DEFAULT '',
+       audience TEXT NOT NULL DEFAULT '{}',
+       attach_ics INTEGER NOT NULL DEFAULT 0,
+       status TEXT NOT NULL DEFAULT 'draft',
+       send_at TEXT,
+       sent_at TEXT,
+       created_by TEXT,
+       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+     )`,
+    `CREATE TABLE IF NOT EXISTS comm_sends (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       message_id INTEGER NOT NULL REFERENCES comm_messages(id) ON DELETE CASCADE,
+       household_id INTEGER NOT NULL,
+       recipients TEXT,
+       status TEXT NOT NULL DEFAULT 'queued',
+       error TEXT,
+       attempts INTEGER NOT NULL DEFAULT 0,
+       sent_at TEXT,
+       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+       UNIQUE (message_id, household_id)
+     )`,
+    `CREATE INDEX IF NOT EXISTS comm_sends_status ON comm_sends(status)`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

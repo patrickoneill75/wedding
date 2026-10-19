@@ -44,7 +44,7 @@ export const SOURCES = {
       ["rsvp", "RSVP", T], ["dietary", "Dietary needs", T],
       ["table", "Table", T], ["seat", "Seat", T], ["table_seat", "Table and seat", T],
       ["wedding_party", "Wedding party", B], ["immediate_family", "Immediate family", B], ["extended_family", "Extended family", B],
-      ["email", "Email", T], ["phone", "Phone", T],
+      ["email", "Household email", T], ["guest_email", "Their own email", T], ["phone", "Phone", T],
       ["address1", "Address", T], ["address2", "Address line 2", T], ["city", "City", T], ["state", "State", T],
       ["zip", "ZIP", T], ["country", "Country", T], ["notes", "Notes", T],
     ],

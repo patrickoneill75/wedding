@@ -3,6 +3,8 @@ import { currentUser, handleOAuthCallback, json, logoutResponse, sameSecret, sta
 import { handleAdminApi } from "./admin_api.js";
 import { handlePublicApi } from "./public_api.js";
 import { saveDriveTokens } from "./google.js";
+import { saveGmailTokens } from "./gmail.js";
+import { processComms } from "./comms.js";
 import { scheduledSync } from "./sync.js";
 import { ingestSite, serveFont, servePage } from "./site.js";
 import { loadSettings } from "./store.js";
@@ -47,8 +49,8 @@ import { handleDayOf } from "./runofshow.js";
  *                                   redirects to it.
  *   ANTHROPIC_API_KEY     (secret)  Claude, for the expense form's conversation.
  *
- * The cron (every five minutes) pushes CSV exports to Google Drive when something
- * changed since the last sync. The Zola copy is refreshed by the GitHub Action, daily.
+ * The cron (every five minutes) sends guest emails that are due (src/comms.js), then
+ * pushes CSV exports to Google Drive when something changed since the last sync. The Zola copy is refreshed by the GitHub Action, daily.
  */
 
 const SECRETS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "ADMIN_EMAILS"];
@@ -92,7 +94,7 @@ async function handleApi(route, request, env) {
   if (route === "auth/login" && method === "GET") {
     return startOAuth(request, env, "login", { next: new URL(request.url).searchParams.get("next") });
   }
-  if (route === "auth/callback" && method === "GET") return handleOAuthCallback(request, env, saveDriveTokens);
+  if (route === "auth/callback" && method === "GET") return handleOAuthCallback(request, env, { drive: saveDriveTokens, gmail: saveGmailTokens });
   if (route === "auth/logout" && method === "POST") return logoutResponse();
   if (route === "auth/me" && method === "GET") {
     const user = await currentUser(request, env);
@@ -140,9 +142,17 @@ export default {
 
   async scheduled(_event, env, ctx) {
     if (!env.DB) return;
+    // Emails first: they're time-sensitive. A run that sent emails leaves the Drive sync
+    // to the next run, five minutes later, so one run stays under the Workers Free limits
+    // (50 D1 queries and 50 subrequests).
     ctx.waitUntil(
       ensureSchema(env)
-        .then(() => scheduledSync(env))
+        .then(() => processComms(env))
+        .catch((error) => {
+          console.error("Sending emails failed:", error.message);
+          return null;
+        })
+        .then((comms) => (comms?.sent || comms?.failed ? null : scheduledSync(env)))
         .catch((error) => console.error("Drive sync failed:", error.message))
     );
   },

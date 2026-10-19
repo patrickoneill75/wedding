@@ -104,6 +104,14 @@
     <p class="msg" id="linkMsg"></p>
   </div>
 
+  <div class="card" id="gmail">
+    <h2>Gmail for guest emails</h2>
+    <p class="desc">The emails you write in Communications go out from this Gmail account, under the name set there. This only
+      lets the site send as you; it can't read your mail. Replies come back to this inbox.</p>
+    <div id="gmailBody">Loading…</div>
+    <p class="msg" id="gmailMsg"></p>
+  </div>
+
   <div class="card" id="drive">
     <h2>Google Drive</h2>
     <p class="desc">Guests, RSVPs, contact details, expenses, payments and price history are saved as CSV files in the folder you pick,
@@ -167,10 +175,7 @@ function fill() {
     field("Couple's names", "couple_names", { value: s.couple_names, placeholder: "Patrick & Kaitlyn" }),
     field("Wedding date", "wedding_date", { type: "date", value: s.wedding_date }),
     field("Venue", "venue", { value: s.venue }),
-    field("RSVP by", "rsvp_deadline", { type: "date", value: s.rsvp_deadline }),
     field("Contact email (the Contact us link at the bottom of the website and RSVP page)", "contact_email", { type: "email", value: s.contact_email, placeholder: "Leave blank for no link" }),
-    field("Message on the RSVP page", "rsvp_intro", { type: "textarea", value: s.rsvp_intro, wide: true }),
-    h("div", {}, check("RSVPs are open", "rsvp_open", s.rsvp_open)),
   );
   document.getElementById("budgetFields").replaceChildren(
     field("Sales tax %", "tax_percent", { type: "number", step: "any", value: Math.round(s.tax_rate * 10000) / 100 }),
@@ -495,6 +500,36 @@ const params = new URLSearchParams(location.search);
 if (params.get("error")) setMsg(driveMsg, params.get("error"), "err");
 if (params.get("drive") === "connected") setMsg(driveMsg, "Google Drive connected. Now pick a folder.", "ok");
 if (location.hash === "#drive") document.getElementById("drive").scrollIntoView();
+
+/* ------------------------------------------------------------------- gmail ---- */
+
+async function renderGmail() {
+  const body = document.getElementById("gmailBody");
+  const msg = document.getElementById("gmailMsg");
+  const { gmail } = await api("/api/admin/comms");
+  if (!gmail.client_configured) {
+    body.replaceChildren(h("p", { class: "desc" }, "Google sign-in isn't set up on this site yet (see SETUP.md)."));
+    return;
+  }
+  body.replaceChildren(gmail.connected
+    ? h("div", {},
+        h("p", { style: "margin:0 0 10px" }, "Sending from ", h("b", {}, gmail.email), gmail.connected_at ? h("span", { class: "muted" }, `, connected ${fmtDate(gmail.connected_at)}`) : null),
+        gmail.last_error ? h("p", { class: "msg err" }, `${gmail.last_error} (${fmtDate(gmail.last_error_at)})`) : null,
+        h("div", { class: "row" },
+          h("a", { class: "btn", href: "/api/admin/comms/gmail/connect" }, "Reconnect or switch account"),
+          h("button", { class: "danger", onclick: async () => {
+            if (!confirm("Disconnect Gmail? Scheduled and automatic emails will wait until you connect again.")) return;
+            await api("/api/admin/comms/gmail/disconnect", { method: "POST" });
+            renderGmail();
+          } }, "Disconnect")))
+    : h("div", {},
+        h("p", { class: "desc" }, "Not connected. Google will ask you to let this site send email as you."),
+        h("a", { class: "btn primary", href: "/api/admin/comms/gmail/connect" }, "Connect Gmail")));
+  if (params.get("gmail") === "connected") setMsg(msg, "Gmail connected. Emails from Communications will come from this account.", "ok");
+  if (params.get("error") && location.hash === "#gmail") setMsg(msg, params.get("error"), "err");
+}
+await renderGmail();
+if (location.hash === "#gmail") document.getElementById("gmail").scrollIntoView();
 
 /* ------------------------------------------------------------------- users ---- */
 
