@@ -3032,6 +3032,22 @@ test("post-wedding call: {call_link} is a personal \"click here\" link; the page
   assert.ok(RESERVED.has("call"), "the website copy never takes over /call");
 });
 
+// Bug guard: with no registry link typed into Settings, the call page hid its "See our
+// registry" button, though the website copies a Zola site that has a registry.
+test("post-wedding call: with no registry link in Settings, the button goes to the Zola site's registry", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const t = await sign(env, { kind: "call", test: true }, 600);
+  const page = async () => (await call(env, `/api/public/call?t=${encodeURIComponent(t)}`)).data.registry_url;
+  assert.equal(await page(), "", "no registry anywhere: no button");
+  await api("/api/admin/settings", { method: "PUT", body: { zola_url: "https://www.zola.com/wedding/sam-and-alex" } });
+  assert.equal(await page(), "https://www.zola.com/wedding/sam-and-alex/registry");
+  const sent = await call(env, "/api/public/call", { method: "POST", body: { t, guests: [1] } });
+  assert.equal(sent.data.registry_url, "https://www.zola.com/wedding/sam-and-alex/registry", "and after submitting");
+  await api("/api/admin/settings", { method: "PUT", body: { registry_url: "https://example.com/our-registry" } });
+  assert.equal(await page(), "https://example.com/our-registry", "a link typed into Settings wins");
+});
+
 test("things to do: hidden from guests until published, previewed by an admin, then added to the site's menu", async () => {
   const env = makeEnv();
   const api = await adminClient(env);

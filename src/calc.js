@@ -123,7 +123,7 @@ export const DEFAULT_SETTINGS = {
   // The "Contact us" link in the footer of the website copy and the RSVP page.
   contact_email: "patricko.indy@gmail.com",
   // The "See our registry" button after a guest asks for a call (public/call). Blank
-  // hides the button.
+  // uses the Zola site's registry page; with no Zola site either, the button is hidden.
   registry_url: "",
   // Communications (src/comms.js): scheduled sends and calendar times use this zone.
   time_zone: "America/Indiana/Indianapolis",
