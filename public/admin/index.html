@@ -93,7 +93,7 @@
 </div>
 
 <script type="module">
-import { api, initPage, h, money, fmtDate, showTooltip, hideTooltip } from "/admin/admin.js";
+import { api, canSee, initPage, h, money, fmtDate, showTooltip, hideTooltip } from "/admin/admin.js";
 
 let data;
 // Subcategories start collapsed; categories open. Keys: "c:<category>" / "s:<category>\u0000<subcategory>".
@@ -166,7 +166,7 @@ function renderUpcoming() {
   }
   host.replaceChildren(h("div", { class: "table-wrap" }, h("table", {},
     h("thead", {}, h("tr", {}, h("th", {}, "Due"), h("th", {}, "Item"), h("th", {}, "Category"), h("th", { class: "num" }, "Amount due"))),
-    h("tbody", {}, data.upcoming.slice(0, 10).map((u) => h("tr", { class: "clickable", onclick: () => (location.href = `/admin/expenses.html#${u.id}`) },
+    h("tbody", {}, data.upcoming.slice(0, 10).map((u) => h("tr", canSee(me, "expenses") ? { class: "clickable", onclick: () => (location.href = `/admin/expenses.html#${u.id}`) } : {},
       h("td", {}, u.overdue ? h("span", { class: "pill overdue" }, `Overdue · ${fmtDate(u.due_date)}`) : fmtDate(u.due_date)),
       h("td", {}, u.item, u.vendor ? h("div", { class: "muted" }, u.vendor) : null),
       h("td", { class: "muted" }, u.category || ""),
@@ -306,7 +306,7 @@ function renderPivot() {
       rows.push(h("tr", { class: "lvl1" }, h("td", { class: "label" }, toggle(subKey), sub), cell(subSum.estimate), cell(subSum.actual)));
       if (collapsed.has(subKey)) continue;
       for (const it of items) {
-        rows.push(h("tr", { class: "lvl2", onclick: () => (location.href = `/admin/expenses.html#${it.id}`) },
+        rows.push(h("tr", { class: "lvl2", ...(canSee(me, "expenses") ? { onclick: () => (location.href = `/admin/expenses.html#${it.id}`) } : {}) },
           h("td", { class: "label" }, it.item), cell(it.estimate), cell(it.actual)));
       }
     }

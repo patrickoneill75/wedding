@@ -19,7 +19,7 @@
 
 import { json } from "./auth.js";
 import { all, first, run } from "./db.js";
-import { loadPeople } from "./people.js";
+import { loadPeople, RSVP_TEXT } from "./people.js";
 import { vendorsWithSpending } from "./vendors.js";
 import { runOfShowRows } from "./runofshow.js";
 import { toCsv } from "./sync.js";
@@ -86,6 +86,14 @@ export const SOURCES = {
   },
 };
 for (const source of Object.values(SOURCES)) source.byKey = new Map(source.fields.map(([key, label, type]) => [key, { key, label, type }]));
+
+// Fields with a fixed set of values, as they read in a report: the builder offers these
+// in a list, so a filter can't miss by a word ("Awaiting reply" vs "Awaiting").
+const RSVP_WORDS = Object.values(RSVP_TEXT);
+const CHOICES = {
+  people: { rsvp: RSVP_WORDS, rehearsal_rsvp: RSVP_WORDS, side: ["Bride", "Groom"], priority: ["High", "Medium", "Low"] },
+  run_of_show: { status: ["Not started", "Happening now", "Done"] },
+};
 
 export const OPS = ["is", "is_not", "contains", "empty", "not_empty", "gt", "lt"];
 
@@ -257,8 +265,16 @@ function passes(row, filter, type) {
     case "is": return type === B ? Boolean(value) === truthy(want) : text === want;
     case "is_not": return type === B ? Boolean(value) !== truthy(want) : text !== want;
     case "contains": return text.includes(want);
-    case "gt": return Number(value) > Number(want);
-    case "lt": return Number(value) < Number(want);
+    case "gt":
+    case "lt": {
+      // Numbers compare as numbers; dates and times ("2026-09-01", "16:00") as text,
+      // which orders them. A blank never counts as less than anything.
+      if (blank(value) || want === "") return false;
+      const a = Number(value);
+      const b = Number(filter.value);
+      const c = Number.isFinite(a) && Number.isFinite(b) ? a - b : collator.compare(String(value).trim(), String(filter.value).trim());
+      return filter.op === "gt" ? c > 0 : c < 0;
+    }
     default: return true;
   }
 }
@@ -281,12 +297,18 @@ export async function runDefinition(env, definition) {
 
   if (definition.group_by) {
     const field = source.byKey.get(definition.group_by);
+    // Yes/No for a yes-or-no field, 0 stays 0, and text is counted ignoring case and
+    // spacing ("Vegetarian" and "vegetarian " are one need), shown as first typed.
     const counts = new Map();
     for (const r of rows) {
-      const label = String(display(r[field.key], field.type) || "").trim() || "(none)";
-      counts.set(label, (counts.get(label) || 0) + 1);
+      const v = r[field.key];
+      const label = field.type === B ? (v ? "Yes" : "No") : String(v ?? "").replace(/\s+/g, " ").trim() || "(none)";
+      const key = field.type === T ? label.toLowerCase() : label;
+      const seen = counts.get(key) || [label, 0];
+      seen[1]++;
+      counts.set(key, seen);
     }
-    const out = [...counts.entries()].sort((a, b) => b[1] - a[1] || collator.compare(a[0], b[0]));
+    const out = [...counts.values()].sort((a, b) => b[1] - a[1] || collator.compare(a[0], b[0]));
     out.push(["Total", rows.length]);
     return { columns: [{ key: field.key, label: field.label }, { key: "count", label: "Count" }], rows: out };
   }
@@ -365,7 +387,8 @@ export async function handleReports(parts, method, request, env, body) {
     return json({
       builtins: BUILTINS,
       custom: saved.map((r) => ({ id: r.id, name: r.name, definition: JSON.parse(r.definition), updated_at: r.updated_at })),
-      sources: Object.fromEntries(Object.entries(SOURCES).map(([key, s]) => [key, { label: s.label, fields: s.fields.map(([k, label, type]) => ({ key: k, label, type })) }])),
+      sources: Object.fromEntries(Object.entries(SOURCES).map(([key, s]) => [key, { label: s.label,
+        fields: s.fields.map(([k, label, type]) => ({ key: k, label, type, ...(CHOICES[key]?.[k] ? { choices: CHOICES[key][k] } : {}) })) }])),
       ops: OPS,
     });
   }

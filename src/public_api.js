@@ -22,10 +22,12 @@
  *   plus-one is only accepted for a guest who was given one, and a rehearsal dinner
  *   answer only from a guest invited to it.
  *
- * Expense form (/submit, for the two of us): every route needs the control panel's
- * Google sign-in (and the X-Wedding header on POSTs), and knows who is signed in.
- *   GET  expense/options      categories, items (top level, not line items), vendors,
- *                             payers, methods, and `me`: the payer who is signed in
+ * Expense form (/submit, for anyone with the Expenses page): every route needs the
+ * control panel's Google sign-in (and the X-Wedding header on POSTs), and knows who is
+ * signed in.
+ *   GET  expense/options      stages, categories, subcategories, items (top level, not
+ *                             line items), vendors, payers, and `me`: the payer who is
+ *                             signed in
  *   POST expense/chat         { messages, who, today }: one turn of the conversational
  *                             form (src/intake.js). Proposes an entry; never saves one.
  *   POST expense              multipart: a new item, a line item under an existing item

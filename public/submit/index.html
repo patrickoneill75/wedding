@@ -151,11 +151,12 @@ function showAttached() {
   const box = $("attached");
   box.hidden = !pending;
   if (!pending) return box.replaceChildren();
-  box.replaceChildren(
+  // A PDF has no preview image (and replaceChildren would print a null as "null").
+  box.replaceChildren(...[
     pending.preview ? el("img", { src: pending.preview, alt: "" }) : null,
     el("span", {}, pending.file.name || "Receipt"),
     el("button", { type: "button", class: "small", onclick: () => { pending = null; showAttached(); } }, "Remove"),
-  );
+  ].filter(Boolean));
 }
 
 $("attach").addEventListener("click", () => $("file").click());
