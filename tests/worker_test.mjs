@@ -60,9 +60,17 @@ class FakeD1 {
   prepare(sql) {
     return new FakeStatement(this.db, sql);
   }
+  // Like D1, a batch is one transaction: all of it applies, or none of it.
   async batch(statements) {
     const out = [];
-    for (const s of statements) out.push(await s.run());
+    this.db.exec("BEGIN");
+    try {
+      for (const s of statements) out.push(await s.run());
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
     return out;
   }
 }
@@ -1519,6 +1527,63 @@ test("Drive sync creates each CSV once, then updates the same files in place", a
   assert.equal(status.pending_changes, false);
 });
 
+// Bug guard: two syncs into an empty folder each created every file, leaving a stale
+// second copy; the next sync now keeps the oldest and bins the rest.
+test("Drive sync keeps one copy of each file when a race made two", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const { setSetting } = await import("../src/db.js");
+  await setSetting(env, "_google_drive", { refresh_token: "rt", access_token: "at", expires_at: Date.now() + 3600e3, email: "a@example.com" });
+  await setSetting(env, "_drive_folder", { id: "folder1", name: "Wedding" });
+  const trashed = [];
+  const r = await withFetch((url, init) => {
+    if (url.startsWith("https://www.googleapis.com/drive/v3/files?")) {
+      const name = /name = '([^']+)'/.exec(new URL(url).searchParams.get("q"))?.[1];
+      return okJson({ files: [{ id: `${name}-old`, name }, { id: `${name}-new`, name }] });
+    }
+    if (/\/drive\/v3\/files\/[^?]+-new\?/.test(url) && init.method === "PATCH") {
+      trashed.push(decodeURIComponent(url.split("/files/")[1].split("?")[0]));
+      return okJson({});
+    }
+    if (/\/upload\/drive\/v3\/files\/[^?]+-old\?uploadType=media/.test(url) && init.method === "PATCH") return okJson({ id: "patched" });
+    throw new Error(`unexpected fetch ${init.method || "GET"} ${url}`);
+  }, () => api("/api/admin/drive/sync", { method: "POST" }));
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.ok(trashed.includes("guests.csv-new") && trashed.length === 6, trashed.join(","));
+});
+
+// Bug guard: the cron entry point had no test, so breaking "a run that sent email
+// leaves the Drive sync to the next run" would have passed.
+test("cron: a run that sends email skips the Drive sync; the next quiet run syncs", async () => {
+  const { env, api } = await commsSetup({ households: 2 });
+  const { setSetting } = await import("../src/db.js");
+  await setSetting(env, "_google_drive", { refresh_token: "rt", access_token: "at", expires_at: Date.now() + 3600e3, email: "a@example.com" });
+  await setSetting(env, "_drive_folder", { id: "folder1", name: "Wedding" });
+  await setSetting(env, "_sync_dirty_at", new Date().toISOString());
+  const id = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Hi", body: "Hi" } })).data.id;
+  await api(`/api/admin/comms/messages/${id}/schedule`, { method: "POST", body: { send_at: "2099-01-01T09:00" } });
+  env.DB.db.prepare("UPDATE comm_messages SET send_at = '2000-01-01T00:00:00Z'").run();
+  const cron = async () => {
+    const waits = [];
+    const calls = [];
+    await withFetch((url, init) => {
+      calls.push(url);
+      if (url.includes("gmail.googleapis.com")) return okJson({ id: "m" });
+      if (url.startsWith("https://www.googleapis.com/drive/v3/files?")) return okJson({ files: [] });
+      if (url.includes("uploadType=multipart")) return okJson({ id: "f", name: "x" });
+      throw new Error(`unexpected fetch ${url}`);
+    }, async () => {
+      await worker.scheduled({}, env, { waitUntil: (p) => waits.push(p) });
+      await Promise.all(waits);
+    });
+    return calls;
+  };
+  const first = await cron();
+  assert.ok(first.some((u) => u.includes("gmail")) && !first.some((u) => u.includes("drive")), "emails, and no Drive calls");
+  const second = await cron();
+  assert.ok(second.some((u) => u.includes("drive")), "the next run syncs Drive");
+});
+
 test("guests.csv carries addresses and RSVP answers for each guest", async () => {
   const env = makeEnv();
   const api = await adminClient(env);
@@ -2200,6 +2265,33 @@ test("reports: head count, table cards, chase list and mailing labels count the 
   assert.deepEqual((await runReport(api, { id: "ceremony-only" })).map((r) => r.Name), ["Dana Lee"]);
 });
 
+// Bug guards: "is more than"/"is less than" never matched dates or times and "less
+// than" took in blanks; counting by a yes/no field labeled No as "(none)"; meal counts
+// split "Vegetarian" and "vegetarian"; an RSVP filter typed "Awaiting reply" matched nobody.
+test("reports: before/after works on dates and times, counts read Yes/No and 0, and text counts ignore case", async () => {
+  const { api } = await reportSetup();
+  const run = (definition) => runReport(api, { definition });
+  await api("/api/admin/runofshow/items", { method: "POST", body: { title: "Dinner", start_time: "18:00", duration_min: 0 } });
+  await api("/api/admin/runofshow/items", { method: "POST", body: { title: "Toasts", start_time: "19:30" } });
+  await api("/api/admin/runofshow/items", { method: "POST", body: { title: "Unscheduled" } });
+  assert.deepEqual((await run({ source: "run_of_show", columns: ["title"], filters: [{ field: "start_time", op: "gt", value: "18:30" }] })).map((r) => r.Step), ["Toasts"]);
+  assert.deepEqual((await run({ source: "run_of_show", columns: ["title"], filters: [{ field: "duration_min", op: "lt", value: "30" }] })).map((r) => r.Step), ["Dinner"], "a blank isn't less than 30");
+  const minutes = await run({ source: "run_of_show", group_by: "duration_min", filters: [] });
+  assert.ok(minutes.some((r) => r.Minutes === "0"), JSON.stringify(minutes));
+  const plusOnes = await run({ source: "people", group_by: "plus_one", filters: [] });
+  assert.ok(plusOnes.some((r) => r["Is a plus-one"] === "No") && !plusOnes.some((r) => r["Is a plus-one"] === "(none)"), JSON.stringify(plusOnes));
+
+  const households = (await api("/api/admin/guests")).data.households;
+  const [a, b] = households.find((h) => h.display_name === "The Smiths").guests;
+  await api(`/api/admin/guests/${a.id}`, { method: "PUT", body: { rsvp: "yes", dietary: "Vegetarian" } });
+  await api(`/api/admin/guests/${b.id}`, { method: "PUT", body: { rsvp: "yes", dietary: "vegetarian " } });
+  const meals = await runReport(api, { id: "meal-counts" });
+  assert.equal(meals.filter((r) => /vegetarian/i.test(r["Dietary needs"])).length, 1, JSON.stringify(meals));
+
+  const fields = (await api("/api/admin/reports")).data.sources.people.fields;
+  assert.deepEqual(fields.find((f) => f.key === "rsvp").choices, ["Awaiting", "Coming", "Not coming"], "the builder offers the stored words");
+});
+
 test("reports: CSV downloads defuse formulas, and custom reports save, filter and count", async () => {
   const { api } = await reportSetup();
   const csv = await api("/api/admin/reports/full-list/csv");
@@ -2827,7 +2919,10 @@ test("emails: a Communications user can write and send, but only an admin connec
   const jo = `wedding_session=${await sign(env, { kind: "session", email: "jo@example.com", name: "Jo" }, 3600)}`;
   const as = (path, opts = {}) => call(env, path, { ...opts, cookie: jo, headers: { "x-wedding": "1" } });
   assert.equal((await as("/api/admin/comms")).status, 200);
-  assert.equal((await as("/api/admin/comms/messages", { method: "POST", body: { subject: "Hi", body: "Hi" } })).status, 201);
+  const made = await as("/api/admin/comms/messages", { method: "POST", body: { subject: "Hi", body: "Hi" } });
+  assert.equal(made.status, 201);
+  const { sent } = await withGmail(() => as(`/api/admin/comms/messages/${made.data.id}/send`, { method: "POST", body: {} }));
+  assert.equal(sent.length, 3, "Jo's send goes out");
   assert.equal((await as("/api/admin/comms/gmail/connect")).status, 403);
   assert.equal((await as("/api/admin/comms/gmail/disconnect", { method: "POST" })).status, 403);
   const nobody = `wedding_session=${await sign(env, { kind: "session", email: "jo@example.com" }, 3600)}`;

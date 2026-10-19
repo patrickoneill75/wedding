@@ -411,13 +411,14 @@ async function sendClaimed(env, ids, origin) {
 export async function processComms(env) {
   const due = await all(env, "SELECT * FROM comm_messages WHERE status = 'scheduled' AND send_at <= ?", new Date().toISOString());
   if (due.length) {
+    // (The run also tells the cron it started emails, so the Drive sync waits a run.)
     const entries = await loadHouseholds(env);
     for (const message of due) {
       await enqueue(env, message, entries);
       await run(env, "UPDATE comm_messages SET status = 'sending', updated_at = datetime('now') WHERE id = ?", message.id);
     }
   }
-  return sendQueued(env);
+  return { ...(await sendQueued(env)), started: due.length };
 }
 
 /* -------------------------------------------------------------------- API ---- */

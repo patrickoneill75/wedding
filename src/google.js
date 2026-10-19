@@ -35,7 +35,11 @@ export async function saveDriveTokens(env, tokens, who) {
 export async function disconnectDrive(env) {
   const stored = await getSetting(env, "_google_drive");
   await deleteSetting(env, "_google_drive");
-  if (stored?.refresh_token) {
+  tokenCache.delete(env);
+  // Revoking ends the whole Google grant for this app, which would cut Gmail off too
+  // when it's the same account: then only the stored token goes.
+  const gmail = await getSetting(env, "_gmail");
+  if (stored?.refresh_token && !(gmail?.refresh_token && gmail.email && gmail.email === stored.email)) {
     // Best effort: revoke so the grant disappears from the Google account too.
     await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(stored.refresh_token)}`, {
       method: "POST",
@@ -59,11 +63,26 @@ export async function driveStatus(env) {
   };
 }
 
+// The token read is kept for a minute per env: a sync makes a dozen Drive calls, and one
+// D1 read for all of them keeps the cron inside the 50-query limit.
+const tokenCache = new WeakMap();
+const TOKEN_CACHE_MS = 60000;
+
 /** A valid access token, refreshing it if it's within two minutes of expiring. */
 export async function driveAccessToken(env) {
+  const cached = tokenCache.get(env);
+  if (cached && Date.now() - cached.at < TOKEN_CACHE_MS && cached.expires_at - Date.now() > 120000) return cached.token;
+  const token = await loadDriveToken(env);
+  return token;
+}
+
+async function loadDriveToken(env) {
   const stored = await getSetting(env, "_google_drive");
   if (!stored?.refresh_token) throw new Error("Google Drive isn't connected. Connect it in Settings.");
-  if (stored.access_token && stored.expires_at - Date.now() > 120000) return stored.access_token;
+  if (stored.access_token && stored.expires_at - Date.now() > 120000) {
+    tokenCache.set(env, { token: stored.access_token, expires_at: stored.expires_at, at: Date.now() });
+    return stored.access_token;
+  }
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -86,6 +105,7 @@ export async function driveAccessToken(env) {
   };
   if (body.refresh_token) fresh.refresh_token = body.refresh_token;
   await setSetting(env, "_google_drive", fresh);
+  tokenCache.set(env, { token: fresh.access_token, expires_at: fresh.expires_at, at: Date.now() });
   return fresh.access_token;
 }
 
@@ -127,12 +147,15 @@ export async function createFolder(env, name, parentId = "root") {
   });
 }
 
-async function findByName(env, parentId, name, mimeType = null) {
+async function findAllByName(env, parentId, name, mimeType = null) {
   let q = `${quote(parentId)} in parents and name = ${quote(name)} and trashed = false`;
   if (mimeType) q += ` and mimeType = '${mimeType}'`;
-  const url = `${DRIVE_API}/files?${new URLSearchParams({ q, fields: "files(id,name,webViewLink)", pageSize: "10" })}&${ALL_DRIVES}`;
+  const url = `${DRIVE_API}/files?${new URLSearchParams({ q, fields: "files(id,name,webViewLink)", orderBy: "createdTime", pageSize: "10" })}&${ALL_DRIVES}`;
   const body = await driveFetch(env, url);
-  return (body.files || [])[0] || null;
+  return body.files || [];
+}
+async function findByName(env, parentId, name, mimeType = null) {
+  return (await findAllByName(env, parentId, name, mimeType))[0] || null;
 }
 
 function multipartBody(metadata, content, contentType) {
@@ -157,8 +180,15 @@ async function createFile(env, parentId, name, content, contentType) {
 
 /** Create the file, or upload a new revision of the one already there with that name. */
 export async function upsertFile(env, parentId, name, content, contentType) {
-  const existing = await findByName(env, parentId, name);
+  const [existing, ...extra] = await findAllByName(env, parentId, name);
   if (!existing) return createFile(env, parentId, name, content, contentType);
+  // Two syncs racing into an empty folder can each create the file: keep the oldest,
+  // bin the rest, so there's one copy that stays current.
+  for (const copy of extra) {
+    await driveFetch(env, `${DRIVE_API}/files/${encodeURIComponent(copy.id)}?supportsAllDrives=true`, {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashed: true }),
+    }).catch(() => {});
+  }
   return driveFetch(
     env,
     `${DRIVE_UPLOAD}/files/${encodeURIComponent(existing.id)}?uploadType=media&fields=id,name,webViewLink&supportsAllDrives=true`,

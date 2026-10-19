@@ -262,7 +262,8 @@ function draw() {
 
 await refresh();
 // Stay in step with everyone else's taps, and keep the clock and "Now" moving.
-setInterval(refresh, 30000);
+// Not while the iPad is asleep or another app is up; coming back refreshes at once.
+setInterval(() => { if (!document.hidden) refresh(); }, 30000);
 setInterval(render, 60000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 </script>

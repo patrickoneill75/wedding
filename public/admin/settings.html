@@ -169,23 +169,26 @@ const DRINK_LABELS = {
   nonalc_per_guest_hour: "Non-alcoholic drinks per guest per hour",
 };
 
-function fill() {
+/** Draw the cards' fields from the saved settings: all of them, or only `only` (a form's
+ * id), so saving one card doesn't throw away what's typed in another. */
+function fill(only = null) {
   const s = state.settings;
-  document.getElementById("weddingFields").replaceChildren(
+  const draw = (formId) => !only || only === formId;
+  if (draw("weddingForm")) document.getElementById("weddingFields").replaceChildren(
     field("Couple's names", "couple_names", { value: s.couple_names, placeholder: "Patrick & Kaitlyn" }),
     field("Wedding date", "wedding_date", { type: "date", value: s.wedding_date }),
     field("Venue", "venue", { value: s.venue }),
     field("Contact email (the Contact us link at the bottom of the website and RSVP page)", "contact_email", { type: "email", value: s.contact_email, placeholder: "Leave blank for no link" }),
   );
-  document.getElementById("budgetFields").replaceChildren(
+  if (draw("budgetForm")) document.getElementById("budgetFields").replaceChildren(
     field("Sales tax %", "tax_percent", { type: "number", step: "any", value: Math.round(s.tax_rate * 10000) / 100 }),
     field("Total budget ($, optional)", "budget_target", { type: "number", step: "1", value: s.budget_target ?? "" }),
     field("Who pays (comma-separated)", "payers", { value: s.payers.join(", ") }),
   );
-  document.getElementById("weightFields").replaceChildren(
+  if (draw("calcForm")) document.getElementById("weightFields").replaceChildren(
     ...["High", "Medium", "Low"].map((p) => field(`${p} priority`, `w_${p}`, { type: "number", step: "any", value: s.priority_weights[p], oninput: preview })),
   );
-  document.getElementById("drinkFields").replaceChildren(
+  if (draw("calcForm")) document.getElementById("drinkFields").replaceChildren(
     ...Object.entries(DRINK_LABELS).map(([key, label]) => field(label, `d_${key}`, { type: "number", step: "any", value: s.drinks[key], oninput: preview })),
   );
   preview();
@@ -269,7 +272,7 @@ async function save(form, payload) {
   const msg = form.querySelector(".msg");
   try {
     state = { ...state, ...(await api("/api/admin/settings", { method: "PUT", body: payload })) };
-    fill();
+    fill(form.id);
     setMsg(msg, "Saved.", "ok");
   } catch (error) {
     setMsg(msg, error.message, "err");

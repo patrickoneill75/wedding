@@ -155,7 +155,7 @@ export default {
           console.error("Sending emails failed:", error.message);
           return null;
         })
-        .then((comms) => (comms?.sent || comms?.failed ? null : scheduledSync(env)))
+        .then((comms) => (comms?.sent || comms?.failed || comms?.started ? null : scheduledSync(env)))
         .catch((error) => console.error("Drive sync failed:", error.message))
     );
   },
