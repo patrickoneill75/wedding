@@ -23,7 +23,8 @@
 8. Guests never see budget data. `GET /api/public/info`, the RSVP name search and the
    lookup return only what the RSVP page needs; tests check for leaks. The search
    returns names and signed picks only (2+ letters, 8 results), and a household opens
-   from a pick, never from a raw guest id. The coordinator's day-of view (`/api/dayof`,
+   from a pick, never from a raw guest id. While RSVPs are closed, the RSVP routes answer only a
+   signed-in admin, as a preview: submit runs every check but saves nothing and sends no email. The coordinator's day-of view (`/api/dayof`,
    a key in the link instead of a sign-in) gets steps, names, tables and vendor contacts
    only: no budgets, addresses or RSVP details, also checked by a test.
 

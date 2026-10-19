@@ -1067,6 +1067,34 @@ test("RSVP name search is off while RSVPs are closed", async () => {
   assert.equal((await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "jor" } })).status, 403);
 });
 
+test("RSVP preview: while RSVPs are closed only a signed-in admin can try the page, and nothing they send is saved", async () => {
+  const { env, api } = await rsvpSetup();
+  await api("/api/admin/settings", { method: "PUT", body: { rsvp_open: false } });
+  const auto = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Thanks", body: "Hi" } })).data.id;
+  await api(`/api/admin/comms/messages/${auto}/automate`, { method: "POST", body: {} });
+  const owner = await sessionCookie(env);
+  await api("/api/admin/users", { method: "POST", body: { email: "jo@example.com", role: "user", pages: ["guests"] } });
+  const jo = await sessionCookie(env, "jo@example.com");
+
+  assert.ok(!("preview" in (await call(env, "/api/public/info")).data), "guests see it closed");
+  assert.ok(!("preview" in (await call(env, "/api/public/info", { cookie: jo })).data), "so does a user who isn't an admin");
+  assert.equal((await call(env, "/api/public/info", { cookie: owner })).data.preview, true);
+  assert.equal((await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "jor" }, cookie: jo })).status, 403);
+
+  const pick = (await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "alex" }, cookie: owner })).data.results[0].pick;
+  const alex = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick }, cookie: owner })).data.matches[0];
+  const submit = (guests) => call(env, "/api/public/rsvp/submit", { method: "POST", cookie: owner,
+    body: { token: alex.token, email: "preview@example.com", message: "testing", guests } });
+  assert.equal((await submit([{ id: alex.guests[0].id }])).status, 400, "a preview still checks the answers");
+  const sent = await submit(alex.guests.map((g) => ({ id: g.id, rsvp: "yes", dietary: "Vegan" })));
+  assert.equal(sent.status, 200, JSON.stringify(sent.data));
+  assert.equal(sent.data.preview, true);
+  assert.deepEqual(sent.data.household.guests.map((g) => [g.rsvp, g.dietary]), alex.guests.map(() => ["yes", "Vegan"]), "it shows what would be saved");
+  const stored = (await api("/api/admin/guests")).data.households.find((h) => h.code === "H-001");
+  assert.deepEqual([stored.rsvp_at, stored.email === "preview@example.com", ...stored.guests.map((g) => g.rsvp)], [null, false, ...alex.guests.map(() => "pending")], "nothing is saved");
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM comm_sends").get().n, 0, "and no after-RSVP email is queued");
+});
+
 test("RSVP lookup never exposes addresses, priority or budget fields", async () => {
   const { env } = await rsvpSetup();
   const r = await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Alex", last: "Example" } });
