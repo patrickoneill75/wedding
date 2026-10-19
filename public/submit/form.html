@@ -128,7 +128,11 @@ const $ = (id) => document.getElementById(id);
 const form = $("form");
 const money = (n) => (n == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n));
 const opt = (value, text, selected) => { const o = document.createElement("option"); o.value = value; o.textContent = text; o.selected = Boolean(selected); return o; };
-const today = () => new Date().toISOString().slice(0, 10);
+// Today's date on this phone, not in UTC: an evening entry is today's.
+const today = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 const remember = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 const recall = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 let options;

@@ -228,16 +228,17 @@ function drawBasis() {
 
 /* Mirrors drinksPlan() in src/calc.js for a live preview; the server recalculates on save. */
 function drinksPlan(p, g) {
+  const size = (value, fallback) => (value > 0 ? value : fallback);
   const total = Math.ceil(p.first_hour_drinks * g + Math.max(p.hours - 1, 0) * p.later_hour_drinks * g - 1e-9);
   const wineDrinks = Math.round(total * p.wine_share);
-  const wineBottles = Math.round(wineDrinks / Math.max(p.drinks_per_wine_bottle || 5, 1));
+  const wineBottles = Math.round(wineDrinks / Math.max(size(p.drinks_per_wine_bottle, 5), 1));
   const beerDrinks = Math.round(total * p.beer_share);
-  const beerOunces = beerDrinks * (p.ounces_per_beer || 12);
+  const beerOunces = beerDrinks * size(p.ounces_per_beer, 12);
   const liquorDrinks = Math.round(total * p.liquor_share);
   return {
     total, wineBottles, red: Math.round(wineBottles * p.red_share), white: Math.round(wineBottles * p.white_share),
     beerDrinks, beerOunces, half: beerOunces / 1984, quarter: beerOunces / 992, sixth: beerOunces / 672,
-    liquorBottles: Math.round(liquorDrinks / Math.max(p.drinks_per_liquor_bottle || 15, 1)),
+    liquorBottles: Math.round(liquorDrinks / Math.max(size(p.drinks_per_liquor_bottle, 15), 1)),
     nonalc: Math.round(p.hours * g * p.nonalc_per_guest_hour),
   };
 }

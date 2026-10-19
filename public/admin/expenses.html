@@ -196,9 +196,12 @@ function sourceValue(source) {
 function previewTotals(v) {
   let qty;
   if (v.pricing === "variable") {
-    const raw = sourceValue(v.quantity_source) * (Number(v.quantity_factor) || 1);
+    // Blank means the default, as cleanExpensePatch saves it: a factor of 1, 1 unit. A 0
+    // typed in stays 0.
+    const n = (x, d) => (x === "" || x == null || !Number.isFinite(Number(x)) ? d : Number(x));
+    const raw = sourceValue(v.quantity_source) * n(v.quantity_factor, 1);
     qty = v.round_up ? Math.ceil(raw - 1e-9) : Math.round(raw * 100) / 100;
-  } else qty = Number(v.units) || 0;
+  } else qty = v.units === "" || v.units == null ? 1 : Number(v.units) || 0;
   const subtotal = Math.round((Number(v.unit_cost) || 0) * qty * 100) / 100;
   const tax = v.taxable ? Math.round(subtotal * data.settings.tax_rate * 100) / 100 : 0;
   const grat = Math.round(subtotal * ((Number(v.gratuity_percent) || 0) / 100) * 100) / 100;
@@ -265,7 +268,7 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
   history.replaceState(null, "", id ? `#${id}` : location.pathname);
 
   const title = id ? (isLine ? `${parent.item} › ${e.item}` : e.item) : isLine ? `New line item for ${parent.item}` : "New expense";
-  await openDialog(title, (close) => {
+  const result = await openDialog(title, (close) => {
     // A container's stage comes from its line items; it's only open, done buying, or cancelled.
     let status = isContainer ? (e.own_status === "cancelled" ? "cancelled" : e.done ? "paid" : "open") : e.status;
     const paidNote = h("p", { class: "desc", style: "margin:6px 0 0" });
@@ -405,7 +408,9 @@ async function openEditor(id, { parentId = null, returnTo = null } = {}) {
   });
   history.replaceState(null, "", location.pathname);
   await load();
-  if (returnTo) await openEditor(returnTo);
+  // A payment added or deleted reopens this editor (and, after it, the item it came from).
+  if (result === "reopen") await openEditor(id, { returnTo });
+  else if (returnTo) await openEditor(returnTo);
 }
 
 function lineItemsSection(id, detail, closeDialog) {
@@ -458,8 +463,7 @@ function paymentsSection(id, detail, closeDialog) {
           alert(`Payment saved, but the receipt didn't upload: ${error.message}`);
         });
       }
-      closeDialog(true);
-      openEditor(id);
+      closeDialog("reopen");
     } catch (error) {
       setMsg(msg, error.message, "err");
     }
@@ -472,8 +476,7 @@ function paymentsSection(id, detail, closeDialog) {
         h("button", { class: "small danger", onclick: async () => {
           if (!confirm("Delete this payment? The stage won't move back on its own.")) return;
           await api(`/api/admin/payments/${p.id}`, { method: "DELETE" });
-          closeDialog(true);
-          openEditor(id);
+          closeDialog("reopen");
         } }, "Delete"))))
     : h("p", { class: "muted", style: "margin:0 0 10px" }, "No payments yet.");
   return h("section", {}, h("h3", {}, `Payments · ${money(detail.expense.paid)} paid, ${money(detail.expense.owed)} owed`), list, h("div", { style: "margin-top:12px" }, form));

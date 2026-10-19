@@ -369,7 +369,8 @@ export async function handleAdminApi(route, request, env) {
     // ---- guests ------------------------------------------------------------------
     if (route === "guests" && method === "GET") {
       const ctx = await loadContext(env);
-      return json({ households: await listGuests(env), counts: ctx.counts, settings: ctx.settings });
+      // No settings here: a user with only the Guests page doesn't get the budget's.
+      return json({ households: await listGuests(env), counts: ctx.counts });
     }
 
     if (parts[0] === "households") {

@@ -37,7 +37,11 @@ export function fmtDate(iso) {
   const d = new Date(`${String(iso).slice(0, 10)}T12:00:00`);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
-export const today = () => new Date().toISOString().slice(0, 10);
+/** Today's date on this device (YYYY-MM-DD), not in UTC: an evening entry is today's. */
+export const today = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 
 /** h("div", { class: "x", onclick }, child, "text", [children]) -> Element */
 export function h(tag, attrs = {}, ...children) {

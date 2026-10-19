@@ -17,7 +17,7 @@
  * to the plain form.
  */
 
-import { STATUSES, STATUS_LABELS } from "./calc.js";
+import { localToday, STATUSES, STATUS_LABELS } from "./calc.js";
 import { listExpenses, listVendors } from "./store.js";
 
 /** Which of the payers a signed-in person is, by their Google name or email ("" if neither fits). */
@@ -78,8 +78,8 @@ const PROPOSE_TOOL = {
       subcategory: { type: ["string", "null"], description: "For new: the subcategory, or null." },
       vendor: { type: ["string", "null"], description: "Vendor or shop, spelled like an existing vendor when it is one." },
       stage: { type: "string", enum: ["estimate", "quote", "booked", "partially_paid", "paid"] },
-      price: { type: ["number", "null"], description: "Price per unit in dollars (a receipt's total), or null if unknown." },
-      quantity: { type: "number", description: "Units at that price; 1 for a receipt total." },
+      price: { type: ["number", "null"], description: "Price per unit in dollars (a receipt's total), or null if unknown. For an update of a per-guest item, the price per guest." },
+      quantity: { type: ["number", "null"], description: "Units at that price; 1 for a receipt total. For an update, null to keep the item's units as they are." },
       taxable: { type: "boolean", description: "Add sales tax on top of the price. false when the price already includes it." },
       gratuity_percent: { type: "number", description: "Tip to add on top, in percent; 0 when none or already included." },
       due_date: { type: ["string", "null"], description: "Next payment due, YYYY-MM-DD, or null." },
@@ -94,6 +94,19 @@ const PROPOSE_TOOL = {
 const money = (n) => `$${Number(n || 0).toFixed(2)}`;
 const where = (e) => [e.category, e.subcategory].filter(Boolean).join(" › ") || "Uncategorized";
 
+/**
+ * An item's price as Claude should read it: per guest (or per unit) and the total, plus
+ * tax and tip, so an update to "$85 a head" isn't mistaken for a lump sum.
+ */
+function priceText(e) {
+  if (!e.priced) return "no price";
+  const extras = [e.taxable ? "+ tax" : "", Number(e.gratuity_rate) > 0 ? `+ ${Math.round(Number(e.gratuity_rate) * 1000) / 10}% tip` : ""].filter(Boolean).join(" ");
+  const each = e.pricing === "variable"
+    ? `${money(e.unit_cost)} per guest × ${e.quantity}`
+    : Number(e.quantity) !== 1 ? `${money(e.unit_cost)} × ${e.quantity}` : "";
+  return [each ? `${each} = ${money(e.current)}` : money(e.current), extras].filter(Boolean).join(" ");
+}
+
 /** Everything Claude needs to place an expense: items with their line items, categories, vendors. */
 export function catalog(expenses, vendors, settings, { who, signedIn, today }) {
   const open = expenses.filter((e) => e.status !== "cancelled");
@@ -105,10 +118,10 @@ export function catalog(expenses, vendors, settings, { who, signedIn, today }) {
     if (list.length) {
       lines.push(`#${e.id} ${e.item} · ${where(e)} · ${STATUS_LABELS[e.status] || e.status} · ${list.length} line item${list.length === 1 ? "" : "s"}:`);
       for (const k of list) {
-        lines.push(`    #${k.id} ${k.item}${k.vendor ? ` · ${k.vendor}` : ""} · ${STATUS_LABELS[k.status]} · ${k.priced ? money(k.current) : "no price"}${k.paid ? ` · ${money(k.paid)} paid` : ""}`);
+        lines.push(`    #${k.id} ${k.item}${k.vendor ? ` · ${k.vendor}` : ""} · ${STATUS_LABELS[k.status]} · ${priceText(k)}${k.paid ? ` · ${money(k.paid)} paid` : ""}`);
       }
     } else {
-      lines.push(`#${e.id} ${e.item} · ${where(e)} · ${STATUS_LABELS[e.status]} · ${e.priced ? money(e.current) : "no price"}${e.paid ? ` · ${money(e.paid)} paid` : ""}${e.vendor ? ` · vendor ${e.vendor}` : ""}`);
+      lines.push(`#${e.id} ${e.item} · ${where(e)} · ${STATUS_LABELS[e.status]} · ${priceText(e)}${e.paid ? ` · ${money(e.paid)} paid` : ""}${e.vendor ? ` · vendor ${e.vendor}` : ""}`);
     }
   }
   const categories = [...new Set(open.filter((e) => !e.parent_id).map(where))].sort();
@@ -144,24 +157,27 @@ export function checkProposal(p, expenses, settings, who = "") {
   if (p.payer && !settings.payers.includes(p.payer)) return { error: `Payer must be one of: ${settings.payers.join(", ")}.` };
   for (const k of ["due_date", "paid_on"]) if (p[k] && !isDate(p[k])) return { error: `${k} must be YYYY-MM-DD.` };
   for (const k of ["price", "payment_amount"]) if (p[k] != null && !(Number(p[k]) >= 0)) return { error: `${k} can't be negative.` };
+  const update = p.mode === "update";
 
   const paid = p.stage === "paid";
   // Whoever is signed in paid, unless Claude was told otherwise.
   const payer = p.payer || (paid || p.payment_amount != null ? who : "");
   const form = {
     mode: p.mode === "line_item" ? "purchase" : p.mode === "update" ? "update" : "",
-    expense_id: target ? String(target.id) : "",
+    // A new item never carries an id, so it can't save over the item it was named after.
+    expense_id: target && p.mode !== "new" ? String(target.id) : "",
     item: p.mode === "update" ? "" : text(p.item),
     category: p.mode === "new" ? text(p.category) : "",
     subcategory: p.mode === "new" ? text(p.subcategory) : "",
     vendor: text(p.vendor),
     status: p.stage,
     price: p.price == null ? "" : String(p.price),
-    units: String(p.quantity > 0 ? p.quantity : 1),
+    // An update without a quantity keeps the item's units (a per-guest count stays one).
+    units: update && !(p.quantity > 0) ? "" : String(p.quantity > 0 ? p.quantity : 1),
     taxable: p.taxable ? "on" : "",
     gratuity_percent: String(p.gratuity_percent || 0),
     due_date: paid ? "" : p.due_date || "",
-    payment_amount: paid || p.payment_amount == null ? "" : String(p.payment_amount),
+    payment_amount: paid || !(Number(p.payment_amount) > 0) ? "" : String(p.payment_amount),
     paid_on: p.paid_on || "",
     payer: payer || "",
     notes: text(p.notes),
@@ -174,7 +190,12 @@ export function checkProposal(p, expenses, settings, who = "") {
   if (form.vendor) summary.push(["Vendor", form.vendor]);
   summary.push(["Stage", STATUS_LABELS[p.stage]]);
   if (form.price !== "") {
-    const extras = [p.quantity > 1 ? `× ${p.quantity}` : "", p.taxable ? "+ tax" : "", p.gratuity_percent ? `+ ${p.gratuity_percent}% tip` : ""].filter(Boolean);
+    // An update keeps the item's tax, tip and units unless it adds to them.
+    const taxed = p.taxable || (update && target.taxable);
+    const tip = p.gratuity_percent || (update ? Math.round(Number(target.gratuity_rate || 0) * 1000) / 10 : 0);
+    const per = update && target.pricing === "variable" ? `per guest × ${target.quantity}` : "";
+    const units = form.units !== "" ? Number(form.units) : update ? Number(target.quantity) : 1;
+    const extras = [per || (units > 1 ? `× ${units}` : ""), taxed ? "+ tax" : "", tip ? `+ ${tip}% tip` : ""].filter(Boolean);
     summary.push(["Price", [money(form.price), ...extras].join(" ")]);
   }
   if (paid || form.payment_amount) {
@@ -339,7 +360,7 @@ export async function intakeTurn(env, input, ctx, user = null) {
   const who = payerFor(user, ctx.settings.payers) || (ctx.settings.payers.includes(input.who) ? input.who : "");
   const system = [
     { type: "text", text: INSTRUCTIONS },
-    { type: "text", text: catalog(expenses, vendors, ctx.settings, { who, signedIn: user?.name || "", today: input.today && isDate(input.today) ? input.today : new Date().toISOString().slice(0, 10) }) },
+    { type: "text", text: catalog(expenses, vendors, ctx.settings, { who, signedIn: user?.name || "", today: input.today && isDate(input.today) ? input.today : localToday(ctx.settings.time_zone) }) },
   ];
 
   const { readable, writable } = new TransformStream();

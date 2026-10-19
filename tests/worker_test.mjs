@@ -949,6 +949,103 @@ test("every proposal in the conversation is answered before it goes back to Clau
   assert.deepEqual(sent.messages[2].content.map((b) => b.type), ["tool_result", "tool_result", "text"]);
 });
 
+// Bug guards for the expense form and chat: a bad payment amount used to fail after the
+// item was saved (so Save again duplicated it); a "new item" carrying an id saved over
+// that item; an update's tax and tip never saved; an update always reset the units.
+test("expense form: payment checked before saving, new items never overwrite, updates keep units and add tax", async () => {
+  const { checkProposal } = await import("../src/intake.js");
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const post = (fields) => api("/api/public/expense", { method: "POST", form: formOf(fields) });
+  const count = () => env.DB.db.prepare("SELECT COUNT(*) AS n FROM expenses").get().n;
+  assert.equal((await post({ item: "Florist", status: "quote", price: "500", payment_amount: "-200" })).status, 400);
+  assert.equal(count(), 0, "nothing saved before the bad amount was caught");
+  const florist = (await post({ item: "Florist", status: "quote", price: "500", payment_amount: "0" })).data.expense_id;
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM payments").get().n, 0, "0 paid is no payment");
+
+  const catering = (await api("/api/admin/expenses", { method: "POST", body: { category: "Food", item: "Catering", pricing: "variable", quantity_source: "guests", unit_cost: 80, status: "quote" } })).data.expense.id;
+  const expenses = (await api("/api/admin/expenses")).data.expenses;
+  const settings = { payers: ["Patrick"], payment_methods: [] };
+  const base = { mode: "new", expense_id: florist, item: "Cake", category: "Food", subcategory: null, vendor: null, stage: "quote", price: 300, quantity: 1,
+    taxable: false, gratuity_percent: 0, due_date: null, payment_amount: 0, paid_on: null, payer: null, notes: null };
+  const fresh = checkProposal(base, expenses, settings);
+  assert.deepEqual([fresh.form.expense_id, fresh.form.payment_amount], ["", ""]);
+  const viaForm = await post({ ...fresh.form, mode: "", expense_id: String(florist) });
+  assert.equal(viaForm.status, 201);
+  assert.notEqual(viaForm.data.expense_id, florist, "a new item never saves over the item named by the id");
+  assert.equal((await api(`/api/admin/expenses/${florist}`)).data.expense.item, "Florist");
+
+  const update = checkProposal({ ...base, mode: "update", expense_id: catering, item: null, category: null, price: 85, quantity: null, taxable: true, gratuity_percent: 20 }, expenses, settings);
+  assert.equal(update.form.units, "", "an update without a quantity keeps the units");
+  assert.match(update.summary.find(([k]) => k === "Price")[1], /per guest .*\+ tax \+ 20% tip/);
+  assert.equal((await post(Object.fromEntries(Object.entries(update.form).filter(([, v]) => v !== "")))).status, 201);
+  const after = (await api(`/api/admin/expenses/${catering}`)).data.expense;
+  assert.deepEqual([after.unit_cost, after.pricing, after.taxable, after.gratuity_rate], [85, "variable", 1, 0.2]);
+  const plain = checkProposal({ ...base, mode: "update", expense_id: catering, item: null, category: null, price: 90, quantity: null }, expenses, settings);
+  await post(Object.fromEntries(Object.entries(plain.form).filter(([, v]) => v !== "")));
+  const kept = (await api(`/api/admin/expenses/${catering}`)).data.expense;
+  assert.deepEqual([kept.unit_cost, kept.taxable, kept.gratuity_rate], [90, 1, 0.2], "an update without tax or tip leaves them on");
+});
+
+// Bug guards for the budget math: a cancelled item's line items stayed due; paying what
+// was due left the date to go overdue; a deposit on an unpriced item projected $0;
+// line items kept the old category; editing a Paid item put a deleted payment back; an
+// item saved down to what's paid stayed Partially paid; and an item created past
+// Estimate never froze its original estimate.
+test("budget: cancelled items, due dates, deposits, categories and Paid behave", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const make = async (body) => (await api("/api/admin/expenses", { method: "POST", body })).data.expense.id;
+  const summary = async () => (await api("/api/admin/summary")).data;
+
+  const venue = await make({ category: "Venue", item: "Venue" });
+  const balance = await make({ parent_id: venue, item: "Balance", unit_cost: 9000, status: "booked", due_date: "2020-01-01" });
+  await api(`/api/admin/expenses/${venue}`, { method: "PUT", body: { status: "cancelled" } });
+  const s1 = await summary();
+  assert.equal(s1.overdue.count, 0, "nothing on a cancelled item is overdue");
+  assert.equal(s1.totals.owed, 0);
+  await api(`/api/admin/expenses/${venue}`, { method: "PUT", body: { category: "Reception venue" } });
+  assert.equal((await api(`/api/admin/expenses/${balance}`)).data.expense.category, "Reception venue", "line items follow the item's category");
+
+  const dj = await make({ category: "Music", item: "DJ", unit_cost: 2000, status: "booked", due_date: "2020-01-01", due_amount: 500 });
+  await api(`/api/admin/expenses/${dj}/payments`, { method: "POST", body: { amount: 500, paid_on: "2019-12-30" } });
+  const djRow = (await api(`/api/admin/expenses/${dj}`)).data.expense;
+  assert.deepEqual([djRow.due_date, djRow.due_amount, djRow.status], [null, null, "partially_paid"], "paying what was due clears the due date");
+
+  const cake = await make({ category: "Food", item: "Cake", status: "quote" });
+  await api(`/api/admin/expenses/${cake}/payments`, { method: "POST", body: { amount: 100 } });
+  assert.equal((await api(`/api/admin/expenses/${cake}`)).data.expense.projected, 100, "a deposit counts before there's a price");
+
+  const flowers = await make({ category: "Flowers", item: "Flowers", unit_cost: 400, status: "paid" });
+  const pay = (await api(`/api/admin/expenses/${flowers}`)).data.payments[0];
+  await api(`/api/admin/payments/${pay.id}`, { method: "DELETE" });
+  await api(`/api/admin/expenses/${flowers}`, { method: "PUT", body: { notes: "refunded" } });
+  assert.equal((await api(`/api/admin/expenses/${flowers}`)).data.payments.length, 0, "editing a Paid item doesn't add the payment back");
+
+  const band = await make({ category: "Music", item: "Band", unit_cost: 1000, status: "booked" });
+  assert.equal(env.DB.db.prepare("SELECT baseline_total FROM expenses WHERE id = ?").get(band).baseline_total, 1000, "created past Estimate: its price is the original estimate");
+  await api(`/api/admin/expenses/${band}/payments`, { method: "POST", body: { amount: 600 } });
+  await api(`/api/admin/expenses/${band}`, { method: "PUT", body: { unit_cost: 600 } });
+  assert.equal((await api(`/api/admin/expenses/${band}`)).data.expense.status, "paid", "saved down to what's paid, it's Paid");
+});
+
+// Bug guard: GET guests sent the budget settings to a user who only has the Guests page.
+test("a Guests-only user's guest list carries no budget settings", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  await api("/api/admin/settings", { method: "PUT", body: { budget_target: 42000 } });
+  await api("/api/admin/users", { method: "POST", body: { email: "mom@example.com", role: "user", pages: ["guests"] } });
+  const mom = await sessionCookie(env, "mom@example.com");
+  const r = await call(env, "/api/admin/guests", { cookie: mom });
+  assert.equal(r.status, 200);
+  assert.ok(!JSON.stringify(r.data).includes("42000") && !("settings" in r.data));
+});
+
+test("drinks: a bottle or beer size of 0 or blank uses the usual size", () => {
+  const usual = drinksPlan({}, 100);
+  assert.deepEqual(drinksPlan({ drinks_per_wine_bottle: 0, drinks_per_liquor_bottle: "", ounces_per_beer: -1 }, 100), usual);
+});
+
 // Asked for after saving books as a quote: "update the quote for the book to $25 a piece"
 // -- a line item couldn't be updated, by the form or by Claude.
 test("a line item can be updated through the expense form, and Claude may propose that", async () => {

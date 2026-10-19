@@ -393,7 +393,16 @@ async function submitExpense(env, form) {
   const status = field("status") || "estimate";
   if (!STATUSES.includes(status)) return json({ error: "Pick a stage." }, 400);
 
-  let expenseId = Number(field("expense_id")) || null;
+  // Only a line item or an update names an existing item: a new item never does, even
+  // if an id comes along with it.
+  const mode = field("mode");
+  let expenseId = mode === "purchase" || mode === "update" ? Number(field("expense_id")) || null : null;
+  if ((mode === "purchase" || mode === "update") && !expenseId) return json({ error: "Pick the item first." }, 400);
+  // Check the payment before anything is saved, so a bad amount can't leave a saved
+  // item behind for a second Save to duplicate. Blank or 0 means nothing was paid.
+  const paymentText = field("payment_amount");
+  const paymentAmount = paymentText === "" ? 0 : Number(paymentText);
+  if (!Number.isFinite(paymentAmount) || paymentAmount < 0) return json({ error: "The amount paid must be a number, zero or more." }, 400);
   const price = field("price");
   const note = field("notes");
   // Who/when/how it was paid: used for the payment Paid records, or the one typed in.
@@ -402,12 +411,12 @@ async function submitExpense(env, form) {
     const existing = await first(env, "SELECT id, pricing, parent_id FROM expenses WHERE id = ?", expenseId);
     if (!existing) return json({ error: "That item no longer exists. Reload the form." }, 400);
     // A line item can be updated (its quote went up), but takes no line items of its own.
-    if (existing.parent_id && field("mode") === "purchase") return json({ error: "A line item can't have line items of its own." }, 400);
+    if (existing.parent_id && mode === "purchase") return json({ error: "A line item can't have line items of its own." }, 400);
     const split = await first(env, "SELECT id FROM expenses WHERE parent_id = ? LIMIT 1", existing.id);
-    if (field("mode") !== "purchase" && split) {
+    if (mode !== "purchase" && split) {
       return json({ error: "That item is split into line items. Add a line item to it instead." }, 400);
     }
-    if (field("mode") === "purchase") {
+    if (mode === "purchase") {
       // A new line item filed under the chosen item.
       expenseId = await createExpense(
         env,
@@ -436,6 +445,10 @@ async function submitExpense(env, form) {
       if (field("units")) patch.units = field("units");
       if (field("vendor")) patch.vendor = field("vendor");
       if (field("due_date")) patch.due_date = field("due_date");
+      // Tax and tip are only ever added by an update (the chat can't see what an item
+      // has), never cleared.
+      if (field("taxable") === "on" || field("taxable") === "1") patch.taxable = true;
+      if (Number(field("gratuity_percent")) > 0) patch.gratuity_rate = Number(field("gratuity_percent")) / 100;
       if (!payment.payer) delete patch.payer;
       await updateExpense(env, expenseId, patch, ctx, by);
     }
@@ -467,12 +480,12 @@ async function submitExpense(env, form) {
 
   let paymentId = null;
   // At the Paid stage the payment was already recorded for the full amount.
-  if (field("payment_amount") && status !== "paid") {
+  if (paymentAmount > 0 && status !== "paid") {
     paymentId = await addPayment(
       env,
       expenseId,
       {
-        amount: field("payment_amount"),
+        amount: paymentAmount,
         paid_on: field("paid_on"),
         payer: field("payer"),
         method: field("method"),
@@ -536,14 +549,14 @@ export async function handlePublicApi(route, request, env) {
         contact_email: s.contact_email,
       });
     }
-    if (route === "calendar" && method === "GET") return calendarDownload(env, request);
+    if (route === "calendar" && method === "GET") return await calendarDownload(env, request);
     if (route.startsWith("rsvp/")) {
       const s = await loadSettings(env);
       const preview = !s.rsvp_open && (await previewer(request, env));
       if (!s.rsvp_open && !preview) return json({ error: "RSVPs are closed. Please contact us directly." }, 403);
-      if (route === "rsvp/search" && method === "POST") return rsvpSearch(env, await body(request));
-      if (route === "rsvp/lookup" && method === "POST") return rsvpLookup(env, await body(request));
-      if (route === "rsvp/submit" && method === "POST") return rsvpSubmit(env, await body(request), { preview });
+      if (route === "rsvp/search" && method === "POST") return await rsvpSearch(env, await body(request));
+      if (route === "rsvp/lookup" && method === "POST") return await rsvpLookup(env, await body(request));
+      if (route === "rsvp/submit" && method === "POST") return await rsvpSubmit(env, await body(request), { preview });
     }
     // The expense form takes the control panel's sign-in, with access to Expenses.
     let user = null;
@@ -552,6 +565,7 @@ export async function handlePublicApi(route, request, env) {
       if (denied) return denied;
       user = admin;
     }
+    // `return await` throughout, so a thrown error lands in the catch below as a 400.
     if (route === "expense/options" && method === "GET") return json(await expenseOptions(env, user));
     if (route === "expense/chat" && method === "POST") {
       const input = await body(request);
@@ -562,7 +576,7 @@ export async function handlePublicApi(route, request, env) {
     if (route === "expense" && method === "POST") {
       const form = await request.formData();
       if (!form.get("submitted_by")) form.set("submitted_by", payerFor(user, (await loadSettings(env)).payers) || user.name);
-      return submitExpense(env, form);
+      return await submitExpense(env, form);
     }
     return json({ error: "Not found." }, 404);
   } catch (error) {

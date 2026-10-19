@@ -181,6 +181,9 @@ async function send(text) {
   busy = true;
   $("send").disabled = true;
   const content = [];
+  // Kept until the reply arrives: if this send fails, the next one still tells Claude
+  // the entry was saved.
+  const answered = savedCall;
   // A reply to a proposal instead of saving it answers that proposal first.
   if (savedCall) {
     content.push({ type: "tool_result", tool_use_id: savedCall.id, content: `Saved as #${savedCall.expense_id}.` });
@@ -252,6 +255,7 @@ async function send(text) {
   } catch (error) {
     if (!written) bubble.remove();
     messages.pop();
+    savedCall = answered;
     say("them", error instanceof TypeError ? "Couldn't reach the server. Check your connection and send it again." : error.message);
   } finally {
     busy = false;
