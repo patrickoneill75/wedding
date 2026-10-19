@@ -96,7 +96,11 @@ export async function initPage(active) {
   if (here && !canSee(me.user, here[2])) {
     if (mine.length) location.replace(`/admin/${mine[0][0]}`);
     else document.querySelector(".wrap").replaceChildren(h("div", { class: "card" }, h("h2", {}, "No pages yet"),
-      h("p", { class: "desc" }, `You're signed in as ${me.user.email}, but no pages have been given to you yet. Ask Patrick or Kaitlyn.`)));
+      h("p", { class: "desc" }, `You're signed in as ${me.user.email}, but no pages have been given to you yet. Ask Patrick or Kaitlyn.`),
+      h("button", { onclick: async () => {
+        await api("/api/auth/logout", { method: "POST" });
+        location.href = "/admin/login.html";
+      } }, "Sign out")));
     // Never resolve: the page's own script stops here, without an error in the console.
     return new Promise(() => {});
   }
@@ -105,7 +109,9 @@ export async function initPage(active) {
     h(
       "nav",
       {},
-      mine.filter(([, , , inNav]) => inNav).map(([href, label]) => h("a", { href: `/admin/${href}`, class: href === active ? "active" : "" }, label))
+      // Reports is reached from Guests and Vendors; someone given Reports without either
+      // gets it in the bar.
+      mine.filter(([, , key, inNav]) => inNav || (key === "reports" && !canSee(me.user, "guests") && !canSee(me.user, "vendors"))).map(([href, label]) => h("a", { href: `/admin/${href}`, class: href === active ? "active" : "" }, label))
     ),
     h(
       "span",

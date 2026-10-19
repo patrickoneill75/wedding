@@ -30,7 +30,10 @@
   const params = new URLSearchParams(location.search);
   const error = params.get("error");
   // Back to the page that sent you here (the expense form), once you're signed in.
-  const next = /^\/(?!\/)/.test(params.get("next") || "") ? params.get("next") : "";
+  // The same rule as safeNext in src/auth.js: a path on this site, nothing a browser
+  // could read as another host ("/\\evil", "/<tab>/evil").
+  const raw = params.get("next") || "";
+  const next = /^\/(?!\/)[A-Za-z0-9\/_.#-]*$/.test(raw) ? raw : "";
   if (next) document.getElementById("signin").href = `/api/auth/login?next=${encodeURIComponent(next)}`;
   if (error) document.getElementById("msg").textContent = error;
   else fetch("/api/auth/me").then((r) => { if (r.ok) location.href = next || "/admin/index.html"; });

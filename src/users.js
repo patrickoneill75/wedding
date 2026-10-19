@@ -49,9 +49,10 @@ async function listUsers(env) {
   const owners = adminEmails(env);
   return {
     owners,
-    users: rows
-      .filter((u) => !owners.includes(u.email.toLowerCase()))
-      .map((u) => ({ email: u.email, name: u.name || "", role: u.role, pages: JSON.parse(u.pages || "[]"), created_by: u.created_by, created_at: u.created_at })),
+    // An entry for someone who is now an owner is listed (marked) so it can be removed:
+    // it would apply again the moment they left ADMIN_EMAILS.
+    users: rows.map((u) => ({ email: u.email, name: u.name || "", role: u.role, pages: JSON.parse(u.pages || "[]"), created_by: u.created_by,
+      created_at: u.created_at, ...(owners.includes(u.email.toLowerCase()) ? { also_owner: true } : {}) })),
     pages: PAGES.map((key) => ({ key, label: PAGE_LABELS[key] })),
   };
 }
@@ -81,8 +82,11 @@ export async function handleUsers(parts, method, request, env, body, user) {
   }
 
   if (email && (method === "PUT" || method === "DELETE")) {
-    if (adminEmails(env).includes(email)) throw new Error("Owners come from the ADMIN_EMAILS secret and can't be changed here.");
-    if (!(await first(env, "SELECT email FROM users WHERE email = ?", email))) return json({ error: "No such person." }, 404);
+    const owner = adminEmails(env).includes(email);
+    const row = await first(env, "SELECT email FROM users WHERE email = ?", email);
+    // An owner's old entry may be removed; an owner themselves can't be changed here.
+    if (owner && (method === "PUT" || !row)) throw new Error("Owners come from the ADMIN_EMAILS secret and can't be changed here.");
+    if (!row) return json({ error: "No such person." }, 404);
     if (method === "DELETE") {
       await run(env, "DELETE FROM users WHERE email = ?", email);
       return json(await listUsers(env));

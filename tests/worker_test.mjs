@@ -13,7 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import worker from "../src/worker.js";
 import { resetSchemaMemo } from "../src/db.js";
-import { sign } from "../src/auth.js";
+import { sign, verify } from "../src/auth.js";
 import { buildContext, drinksPlan, enrichExpense, guestCounts, mergeSettings, statusAfterPayment } from "../src/calc.js";
 import { buildExports, toCsv } from "../src/sync.js";
 import { sqlValue } from "../src/importer.js";
@@ -24,6 +24,7 @@ import { htmlToText, sanitizeHtml, themeFrom } from "../src/email_html.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, "fixtures", "sample_wedding.xlsx");
+const ROOT = path.join(HERE, "..");
 
 /* ------------------------------------------------------------------ tiny test runner */
 const tests = [];
@@ -1391,14 +1392,48 @@ test("connecting Drive refuses a grant without the Drive scope", async () => {
     },
     () => call(env, `/api/auth/callback?code=c&state=${encodeURIComponent(state)}`, { cookie: `${cookie}; wedding_oauth=d1` })
   );
-  assert.match(r.headers.get("location"), /settings\.html\?error=/);
+  assert.match(r.headers.get("location"), /settings\.html\?error=[^#]+#drive$/, "the error comes back to the Drive card");
   const status = await (await adminClient(env))("/api/admin/drive/status");
   assert.equal(status.data.connected, false);
 });
 
+// Bug guard: a Gmail connection error landed in the Drive card (no hash on the redirect).
+test("a failed Gmail connection reports back to the Gmail card", async () => {
+  const env = makeEnv();
+  const cookie = await sessionCookie(env);
+  const state = await sign(env, { kind: "oauth", purpose: "gmail", nonce: "g1" }, 600);
+  const r = await call(env, `/api/auth/callback?error=access_denied&state=${encodeURIComponent(state)}`, { cookie: `${cookie}; wedding_oauth=g1` });
+  assert.match(r.headers.get("location"), /^\/admin\/settings\.html\?error=Google%20said%3A%20access_denied#gmail$/);
+});
+
+// Bug guard: two requests on a fresh database each made a signing key and the later
+// write won, so tokens signed with the losing key stopped verifying.
+test("the first signing key is created once even when requests race for it", async () => {
+  const env = makeEnv();
+  await call(env, "/api/auth/me"); // migrations
+  const tokens = await Promise.all([1, 2, 3].map((n) => sign(env, { kind: "test", n }, 60)));
+  const fresh = { ...env }; // a new isolate: no cached key
+  for (const t of tokens) assert.ok(await verify(fresh, t), "every token verifies with the stored key");
+});
+
+// Bug guard: login.html's ?next= check was weaker than the server's, so "/\\evil.example"
+// sent a signed-in visitor to another site.
+test("login.html only follows a ?next= path on this site", () => {
+  const html = fs.readFileSync(path.join(ROOT, "public/admin/login.html"), "utf8");
+  const rule = new RegExp(html.match(/const next = \/(.+)\/\.test\(raw\)/)[1]);
+  for (const bad of ["//evil.example", "/\\evil.example", "/\t/evil.example", "https://evil.example", "/x?y=//z"]) assert.ok(!rule.test(bad), bad);
+  for (const ok of ["/submit", "/admin/index.html", "/submit/form.html#x"]) assert.ok(rule.test(ok), ok);
+});
+
+// Bug guard: /dayof was added to public/ but not to the reserved paths, so a Zola page
+// with that slug would have replaced the coordinator's view.
+test("every top-level folder and file in public/ is reserved from the copied website", () => {
+  for (const name of fs.readdirSync(path.join(ROOT, "public"))) assert.ok(RESERVED.has(name), `${name} is not in RESERVED`);
+});
+
 /* --------------------------------------------------------------- website copy -- */
 
-import { cleanPage, contrastingColor, fontFacesFor, parseHtml, serialize } from "../src/site.js";
+import { cleanPage, contrastingColor, fontFacesFor, parseHtml, RESERVED, serialize } from "../src/site.js";
 
 const SLUG = "testcouple2030";
 // A made-up page shaped like Zola's server-rendered wedding site.
@@ -2098,6 +2133,21 @@ test("upgrading copies a household's out-of-town and international tags onto eac
 });
 
 /* ------------------------------------------------------------------------ users -- */
+
+// Bug guard: an entry for someone later made an owner was hidden and couldn't be
+// removed, so taking them off ADMIN_EMAILS didn't lock them out.
+test("users: an owner's old entry is listed and can be removed", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  await api("/api/admin/users", { method: "POST", body: { email: "jo@example.com", role: "admin" } });
+  env.ADMIN_EMAILS = "admin@example.com, jo@example.com";
+  const listed = (await api("/api/admin/users")).data.users;
+  assert.deepEqual(listed.map((u) => [u.email, u.also_owner]), [["jo@example.com", true]]);
+  assert.equal((await api("/api/admin/users/jo%40example.com", { method: "PUT", body: { role: "user" } })).status, 400, "an owner can't be edited here");
+  assert.equal((await api("/api/admin/users/jo%40example.com", { method: "DELETE" })).status, 200, "but the old entry can go");
+  env.ADMIN_EMAILS = "admin@example.com";
+  assert.equal((await call(env, "/api/auth/me", { cookie: await sessionCookie(env, "jo@example.com") })).status, 401, "off ADMIN_EMAILS, they're out");
+});
 
 test("users: a user sees only their pages, an admin sees everything, and removing someone signs them out", async () => {
   const env = makeEnv();

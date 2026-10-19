@@ -1,7 +1,7 @@
 /**
  * The run of show: the day's schedule, step by step, with who each step involves.
  *
- * Control panel, under /api/admin/runofshow/* (admins only):
+ * Control panel, under /api/admin/runofshow/* (admins, and users with the Run of show page):
  *   GET    runofshow                  steps (with their links resolved to names), guest
  *                                     groups, and the pick lists for linking
  *   POST   runofshow/items            { day, start_time, duration_min, title, location,

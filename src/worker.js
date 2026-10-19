@@ -18,10 +18,11 @@ import { handleDayOf } from "./runofshow.js";
  * form at /submit/, the control panel at /admin/.
  *
  *   /api/auth/login      start Google sign-in for the control panel
- *   /api/auth/callback   Google's redirect target (sign-in and Drive connection)
+ *   /api/auth/callback   Google's redirect target (sign-in, and connecting Drive or Gmail)
  *   /api/auth/me         who's signed in (401 if nobody)
  *   /api/auth/logout
- *   /api/admin/*         control panel (src/admin_api.js), admins only
+ *   /api/admin/*         control panel (src/admin_api.js): admins, or users with the
+ *                        page a route belongs to (ROUTE_PAGES)
  *   /api/public/*        RSVP and the unlisted expense form (src/public_api.js)
  *   /api/dayof/*         the coordinator's run of show for /dayof/ (src/runofshow.js):
  *                        the day-of link's key, or a sign-in with Run of show

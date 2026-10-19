@@ -1,6 +1,6 @@
 /**
- * The seating chart, mounted under /api/admin/seating/* (admins only, like the rest of
- * src/admin_api.js).
+ * The seating chart, mounted under /api/admin/seating/* (admins, and users with the
+ * Seating page).
  *
  *   GET    seating                  rooms, templates, everything placed, who sits where,
  *                                   and the people who can be seated

@@ -135,7 +135,7 @@ function renderGuests() {
   document.getElementById("basis").replaceChildren(
     h("div", { class: "text" }, "Per-guest costs use ",
       h("b", {}, confirmed ? `${c.confirmed} confirmed RSVPs` : `${c.weighted} weighted invites`), "."),
-    h("a", { href: "/admin/settings.html#guest-count" }, "Change in Settings →"),
+    me.role === "admin" ? h("a", { href: "/admin/settings.html#guest-count" }, "Change in Settings →") : null,
   );
 }
 
@@ -323,7 +323,7 @@ document.getElementById("collapseAll").addEventListener("click", () => {
   renderPivot();
 });
 
-await initPage("index.html");
+const me = await initPage("index.html");
 data = await api("/api/admin/summary");
 render();
 </script>

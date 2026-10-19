@@ -1,5 +1,5 @@
 /**
- * Vendors, mounted under /api/admin/vendors/* (admins only, like src/admin_api.js).
+ * Vendors, mounted under /api/admin/vendors/* (admins, and users with the Vendors page).
  *
  *   GET    vendors          every vendor with its contacts, flags and what's spent with it
  *   POST   vendors          { name, category, day_of, key_vendor, primary_*, secondary_*, ... }
