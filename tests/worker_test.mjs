@@ -2132,6 +2132,33 @@ test("seating: a typed table shows in reports until the guest has a seat; the bo
   assert.ok(!board.some((r) => r.Name === "Avery Test"), "off the reception, off the board");
 });
 
+test("seating: turns and shape sizes keep two decimals; locked items can't move until unlocked; several move in one query", async () => {
+  const { env, api, roomId } = await seatingSetup();
+  const shape = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "shape", x: 10, y: 10 } })).data.ids[0];
+  const table = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", x: 20, y: 10 } })).data.ids[0];
+  const item = async (id) => (await api("/api/admin/seating")).data.items.find((i) => i.id === id);
+  await api(`/api/admin/seating/items/${shape}`, { method: "PUT", body: { rotation: 22.456, width_ft: 12.755, length_ft: 0.25, label: "Dance floor" } });
+  await api(`/api/admin/seating/items/${table}`, { method: "PUT", body: { rotation: -7.5 } });
+  assert.deepEqual([(await item(shape)).rotation, (await item(shape)).width_ft, (await item(shape)).length_ft], [22.46, 12.76, 0.25]);
+  assert.equal((await item(table)).rotation, 352.5);
+
+  await api("/api/admin/seating/items/lock", { method: "POST", body: { ids: [shape], locked: true } });
+  assert.equal((await api(`/api/admin/seating/items/${shape}`, { method: "PUT", body: { x: 30 } })).status, 400, "locked: no moving");
+  assert.equal((await api(`/api/admin/seating/items/${shape}`, { method: "PUT", body: { rotation: 45 } })).status, 400, "or turning");
+  assert.equal((await api(`/api/admin/seating/items/${shape}`, { method: "PUT", body: { label: "Floor", color: "blue" } })).status, 200, "its text and color can still change");
+  assert.equal((await api("/api/admin/seating/items/arrange", { method: "POST", body: { moves: [{ id: shape, x: 1, y: 1 }] } })).status, 400);
+  assert.equal((await api(`/api/admin/seating/items/${shape}`, { method: "PUT", body: { locked: false, x: 30 } })).status, 200, "unlock and move in one save");
+
+  const queries = [];
+  const prepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => { queries.push(sql); return prepare(sql); };
+  const moved = await api("/api/admin/seating/items/arrange", { method: "POST", body: { moves: [{ id: shape, x: 5.25, y: 6 }, { id: table, x: 15.5, y: 6 }] } });
+  assert.equal(moved.status, 200, JSON.stringify(moved.data));
+  assert.equal(queries.filter((q) => /^UPDATE seating_items SET x/.test(q)).length, 1, "one UPDATE for the lot");
+  env.DB.prepare = prepare;
+  assert.deepEqual([[(await item(shape)).x, (await item(shape)).y], [(await item(table)).x, (await item(table)).y]], [[5.25, 6], [15.5, 6]]);
+});
+
 test("seating: a person has one seat; seating them again moves them, and taking a seat bumps whoever had it", async () => {
   const { env, api, id, roomId } = await seatingSetup();
   const tableId = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 6 } })).data.ids[0];
@@ -2507,6 +2534,7 @@ test("upgrading copies a household's out-of-town and international tags onto eac
     INSERT INTO settings VALUES ('_schema_version', '11');
     CREATE TABLE households (id INTEGER PRIMARY KEY, out_of_town INTEGER NOT NULL DEFAULT 0, international INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE guests (id INTEGER PRIMARY KEY, household_id INTEGER);
+    CREATE TABLE seating_items (id INTEGER PRIMARY KEY);
     INSERT INTO households VALUES (1, 1, 1), (2, 0, 0);
     INSERT INTO guests VALUES (1, 1), (2, 1), (3, 2);
   `);

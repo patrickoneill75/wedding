@@ -11,12 +11,17 @@
  *   POST   seating/items            { room_id, kind: "table" | "seat" | "note" | "shape", template_id?,
  *                                     count? (chairs in a row), ...fields }
  *   PUT    seating/items/:id / DELETE seating/items/:id
+ *   POST   seating/items/lock       { ids, locked } lock or unlock several at once
+ *   POST   seating/items/arrange    { moves: [{ id, x, y }] } several at once (the align
+ *                                   and distribute tools, dragging a selection), one query
  *   POST   seating/assign           { item_id, seat_letter, guest_id, plus_one } puts that
  *                                   person in that seat (moving them from any other);
  *                                   guest_id null empties the seat
  *
  * A shape is a rectangle or oval of any size (a dance floor, the bar, a stage) with optional
- * text centered in it; nobody sits at one.
+ * text centered in it; nobody sits at one. Sizes and turns keep two decimals (12.75 ft,
+ * 22.50°). Anything can be locked: a locked item can't be moved, turned or resized until
+ * it's unlocked.
  *
  * Sizes and positions are in feet. A table's seats are lettered A, B, C ... clockwise
  * from the top (public/admin/seating.html draws them); a single chair has one seat, A. Only reception rooms take seat
@@ -91,13 +96,17 @@ function cleanItem(input, kind) {
   if (has(input, "label")) patch.label = text(input.label, kind === "note" || kind === "shape" ? 200 : 20);
   if (has(input, "x")) patch.x = number(input.x, "Position", -50, 550);
   if (has(input, "y")) patch.y = number(input.y, "Position", -50, 550);
-  if (has(input, "rotation")) patch.rotation = ((Math.round(number(input.rotation, "Rotation", -360, 360)) % 360) + 360) % 360;
+  if (has(input, "rotation")) {
+    const turn = number(input.rotation, "Rotation", -360, 360);
+    patch.rotation = Math.round((((turn % 360) + 360) % 360) * 100) / 100 % 360;
+  }
+  if (has(input, "locked")) patch.locked = input.locked === true || input.locked === 1 || input.locked === "1" || input.locked === "on" ? 1 : 0;
   if (kind === "table") cleanTableShape(input, patch);
   if ((kind === "note" || kind === "shape") && has(input, "font_size")) patch.font_size = number(input.font_size, "Text size", 0.5, 10);
   if (kind === "shape") {
     if (has(input, "shape")) patch.shape = oneOf(input.shape, SHAPES, "Shape");
-    if (has(input, "width_ft")) patch.width_ft = number(input.width_ft, "Width", 0.5, 500);
-    if (has(input, "length_ft")) patch.length_ft = number(input.length_ft, "Length", 0.5, 500);
+    if (has(input, "width_ft")) patch.width_ft = number(input.width_ft, "Width", 0.1, 500);
+    if (has(input, "length_ft")) patch.length_ft = number(input.length_ft, "Length", 0.1, 500);
     if (has(input, "color")) patch.color = oneOf(input.color, SHAPE_COLORS, "Color");
   }
   return patch;
@@ -281,6 +290,10 @@ async function updateItem(env, id, input) {
   if (!item) return false;
   const room = { id: item.room_id, kind: item.room_kind };
   const patch = cleanItem(input, item.kind);
+  // Locked in place: no moving, turning or resizing until it's unlocked (this save may
+  // unlock it and move it at once).
+  const placing = ["x", "y", "rotation", "width_ft", "length_ft", "shape"].some((k) => has(patch, k) && patch[k] !== item[k]);
+  if (item.locked && patch.locked !== 0 && placing) throw new Error("This is locked in place. Unlock it first.");
   if (item.kind === "table" && (patch.shape || item.shape) === "round") {
     patch.length_ft = has(patch, "width_ft") ? patch.width_ft : item.width_ft;
   }
@@ -303,6 +316,23 @@ async function updateItem(env, id, input) {
     );
   }
   return true;
+}
+
+/**
+ * Move several items in one UPDATE (with literal values, so a long list stays one
+ * query and under D1's bound-parameter limit). Locked items are refused.
+ */
+async function arrange(env, moves) {
+  if (!Array.isArray(moves) || !moves.length) throw new Error("Nothing to move.");
+  if (moves.length > 300) throw new Error("That's more than 300 at once.");
+  const clean = moves.map((m) => ({ id: Number(m?.id), x: number(m?.x, "Position", -50, 550), y: number(m?.y, "Position", -50, 550) }));
+  if (clean.some((m) => !Number.isInteger(m.id))) throw new Error("Pick what to move.");
+  const ids = [...new Set(clean.map((m) => m.id))];
+  const found = await all(env, `SELECT id, locked FROM seating_items WHERE id IN (${ids.join(",")})`);
+  if (found.length !== ids.length) throw new Error("Something to move is gone. Reload the page.");
+  if (found.some((f) => f.locked)) throw new Error("Some of these are locked in place. Unlock them first.");
+  const when = (key) => clean.map((m) => `WHEN ${m.id} THEN ${sqlValue(m[key])}`).join(" ");
+  await run(env, `UPDATE seating_items SET x = CASE id ${when("x")} END, y = CASE id ${when("y")} END WHERE id IN (${ids.join(",")})`);
 }
 
 async function assign(env, input) {
@@ -413,6 +443,19 @@ export async function handleSeating(parts, method, request, env, body) {
       await run(env, "DELETE FROM seating_templates WHERE id = ?", id);
       return json(await overview(env));
     }
+  }
+
+  if (section === "items" && rawId === "lock" && method === "POST") {
+    const input = await body(request);
+    const ids = (Array.isArray(input.ids) ? input.ids : []).map(Number).filter(Number.isInteger);
+    if (!ids.length) throw new Error("Pick what to lock.");
+    await run(env, `UPDATE seating_items SET locked = ? WHERE id IN (${ids.join(",")})`, input.locked ? 1 : 0);
+    return json(await overview(env));
+  }
+
+  if (section === "items" && rawId === "arrange" && method === "POST") {
+    await arrange(env, (await body(request)).moves);
+    return json(await overview(env));
   }
 
   if (section === "items") {

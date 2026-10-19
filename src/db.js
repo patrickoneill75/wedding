@@ -418,6 +418,10 @@ const MIGRATIONS = [
   [
     `ALTER TABLE comm_sends ADD COLUMN claimed_at TEXT`,
   ],
+  // 18: anything on the seating chart can be locked in place, so it can't be dragged.
+  [
+    `ALTER TABLE seating_items ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
