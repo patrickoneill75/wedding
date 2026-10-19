@@ -5,11 +5,13 @@
  *
  *   GET    comms                     emails with their send counts, Gmail status, the
  *                                    audience choices, fill-ins, calendar events, RSVP page
- *   POST   comms/messages            { subject, body, format, design, audience, attach_ics } -> a
- *                                    draft. format "html" is the rich-text editor's (cleaned
+ *   POST   comms/messages            { title, subject, body, format, design, audience, attach_ics } -> a
+ *                                    draft. title names it on the Communications page only:
+ *                                    it never goes into an email. format "html" is the rich-text editor's (cleaned
  *                                    by src/email_html.js), "text" the older plain text;
  *                                    design "wedding" or "plain"
- *   PUT    comms/messages/:id        change a draft, scheduled or automatic email
+ *   PUT    comms/messages/:id        change a draft, scheduled or automatic email (the
+ *                                    title alone can change on any email)
  *   DELETE comms/messages/:id
  *   POST   comms/audience            { audience } -> who would get it, and who has no email
  *   POST   comms/messages/:id/test   { to?, as? } send it now to one address (default: you),
@@ -425,6 +427,7 @@ export async function processComms(env) {
 
 function cleanMessage(input) {
   const patch = Object.create(null);
+  if (has(input, "title")) patch.title = String(input.title ?? "").replace(/[\r\n]+/g, " ").trim().slice(0, 120);
   if (has(input, "subject")) patch.subject = String(input.subject ?? "").replace(/[\r\n]+/g, " ").trim().slice(0, 300);
   if (has(input, "format")) {
     if (!["html", "text"].includes(input.format)) throw new Error("Format must be html or text.");
@@ -514,7 +517,8 @@ export async function handleComms(parts, method, request, env, body, user) {
     const patch = cleanMessage(await body(request));
     const result = await run(
       env,
-      "INSERT INTO comm_messages (subject, body, format, design, audience, attach_ics, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO comm_messages (title, subject, body, format, design, audience, attach_ics, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      patch.title ?? "",
       patch.subject ?? "",
       patch.body ?? "",
       patch.format ?? "text",
@@ -528,9 +532,11 @@ export async function handleComms(parts, method, request, env, body, user) {
 
   if (section === "messages" && id && !action) {
     if (method === "PUT") {
-      if (!EDITABLE.includes(message.status)) throw new Error("This email has been sent; duplicate it to send a new version.");
       const input = await body(request);
       const patch = cleanMessage({ ...input, current_format: message.format });
+      // The title is only a name on this page, so it can change after the email has gone.
+      const titleOnly = Object.keys(patch).every((k) => k === "title");
+      if (!EDITABLE.includes(message.status) && !titleOnly) throw new Error("This email has been sent; duplicate it to send a new version.");
       // Switching format without a new body converts the one on file.
       if (patch.format && patch.format !== message.format && !has(patch, "body")) {
         patch.body = patch.format === "html" ? textToContent(message.body) : htmlToText(message.body);
@@ -587,7 +593,10 @@ export async function handleComms(parts, method, request, env, body, user) {
       const settings = await loadSettings(env);
       const { sample, label, inAudience: matches } = await testSample(env, message, input.as);
       const email = await compose(env, originOf(env, request), settings, { ...message, subject: `[Test] ${message.subject}` }, sample.household, sample.guests, { to: [to], cc: [] }, await emailTheme(env, settings));
-      await sendGmail(env, await openGmail(env), email);
+      const session = await openGmail(env);
+      await sendGmail(env, session, email);
+      // It went, so an old Gmail error no longer holds (the banner would keep showing it).
+      if (session.last_error) await setSetting(env, "_gmail", { ...session.stored, last_error: null, last_error_at: null });
       return json({ ok: true, to, sample: label, in_audience: matches, calendar: calendarNote(message, settings, email.events) });
     }
     if (action === "send") {
