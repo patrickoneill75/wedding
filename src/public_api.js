@@ -90,7 +90,7 @@ async function householdForRsvp(env, householdId, settings) {
   const guests = await all(
     env,
     `SELECT id, first_name, last_name, email, rsvp, dietary, plus_one_allowed, plus_one_name, plus_one_rsvp, plus_one_dietary,
-            invite_ceremony, invite_reception, invite_rehearsal, rehearsal_rsvp
+            invite_ceremony, invite_reception, invite_rehearsal, rehearsal_rsvp, plus_one_rehearsal_rsvp
        FROM guests WHERE household_id = ? ORDER BY sort_order, id`,
     householdId
   );
@@ -117,7 +117,8 @@ async function householdForRsvp(env, householdId, settings) {
       plus_one_allowed: Boolean(g.plus_one_allowed),
       // Only a guest who was given a plus-one sees anything about one.
       ...(g.plus_one_allowed
-        ? { plus_one_name: g.plus_one_name || "", plus_one_rsvp: g.plus_one_rsvp, plus_one_dietary: g.plus_one_dietary || "" }
+        ? { plus_one_name: g.plus_one_name || "", plus_one_rsvp: g.plus_one_rsvp, plus_one_dietary: g.plus_one_dietary || "",
+            ...(g.invite_rehearsal ? { plus_one_rehearsal_rsvp: g.plus_one_rehearsal_rsvp } : {}) }
         : {}),
     })),
   };
@@ -236,16 +237,22 @@ async function rsvpSubmit(env, input) {
       const plusOne = answer.rsvp === "yes" && answer.plus_one_rsvp === "yes" ? "yes" : "no";
       const plusOneName = plusOne === "yes" ? clip(answer.plus_one_name, 200) : null;
       if (plusOne === "yes" && !plusOneName) return json({ error: "Tell us your guest's name." }, 400);
+      // A plus-one comes to the rehearsal dinner only with a host who is coming to it.
+      const plusOneDinner = guest.invite_rehearsal ? [plusOne === "yes" && rehearsal[0] === "yes" ? answer.plus_one_rehearsal_rsvp : "no"] : [];
+      if (plusOneDinner.length && !["yes", "no"].includes(plusOneDinner[0])) {
+        return json({ error: "Let us know whether your guest is joining you at the rehearsal dinner." }, 400);
+      }
       await run(
         env,
         `UPDATE guests SET rsvp = ?, dietary = ?, plus_one_rsvp = ?, plus_one_name = COALESCE(?, plus_one_name),
-                plus_one_dietary = ?${rehearsalSet}, updated_at = datetime('now') WHERE id = ?`,
+                plus_one_dietary = ?${rehearsalSet}${plusOneDinner.length ? ", plus_one_rehearsal_rsvp = ?" : ""}, updated_at = datetime('now') WHERE id = ?`,
         answer.rsvp,
         clip(answer.dietary),
         plusOne,
         plusOneName,
         plusOne === "yes" ? clip(answer.plus_one_dietary) : null,
         ...rehearsal,
+        ...plusOneDinner,
         guest.id
       );
     } else {

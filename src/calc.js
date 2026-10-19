@@ -138,6 +138,7 @@ export const DEFAULT_SETTINGS = {
     rehearsal_invite: "you're also invited to the rehearsal dinner.",
     rehearsal_accept: "Will be there",
     rehearsal_decline: "Can't make it",
+    plus_one_rehearsal: "Will your guest join you at the rehearsal dinner?",
     email_label: "Email for updates",
     guest_email_label: "Their own email (optional)",
     note_label: "A note for us (optional)",

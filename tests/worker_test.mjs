@@ -2167,6 +2167,30 @@ test("RSVP: a guest invited to the rehearsal dinner answers for it on their own,
   assert.equal((await api(`/api/admin/guests/${alexRow.id}`, { method: "PUT", body: { rehearsal_rsvp: "maybe" } })).status, 400);
 });
 
+// Bug guard: a plus-one used to count as coming to the rehearsal dinner whenever the
+// host was, with no way for the host to say the plus-one wasn't.
+test("RSVP: a host coming to the rehearsal dinner says whether their plus-one comes too", async () => {
+  const { env, api, households } = await rsvpSetup();
+  const jordanRow = households.find((h) => h.code === "H-002").guests[0];
+  await api(`/api/admin/guests/${jordanRow.id}`, { method: "PUT", body: { invite_rehearsal: true } });
+  const look = async () => (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Jordan", last: "Sample" } })).data.matches[0];
+  const jordan = await look();
+  assert.equal(jordan.guests[0].plus_one_rehearsal_rsvp, "pending");
+  const submit = (answer) => call(env, "/api/public/rsvp/submit", { method: "POST", body: { token: jordan.token, email: "jordan@example.com",
+    guests: [{ id: jordan.guests[0].id, rsvp: "yes", rehearsal_rsvp: "yes", plus_one_rsvp: "yes", plus_one_name: "Casey Guest", ...answer }] } });
+  assert.equal((await submit({})).status, 400, "the plus-one's dinner answer is required");
+  assert.equal((await submit({ plus_one_rehearsal_rsvp: "no" })).status, 200);
+  const dinner = async () => Object.fromEntries((await runReport(api, { id: "rehearsal-dinner" })).map((r) => [r.Name, r["Rehearsal dinner RSVP"]]));
+  assert.deepEqual(await dinner(), { "Jordan Sample": "Coming", "Casey Guest": "Not coming" });
+  await submit({ plus_one_rehearsal_rsvp: "yes" });
+  assert.deepEqual(await dinner(), { "Jordan Sample": "Coming", "Casey Guest": "Coming" });
+  // The host skipping the dinner takes the plus-one off it, whatever the form sent.
+  await submit({ rehearsal_rsvp: "no", plus_one_rehearsal_rsvp: "yes" });
+  assert.deepEqual(await dinner(), { "Jordan Sample": "Not coming", "Casey Guest": "Not coming" });
+  await api("/api/admin/households/reset-rsvp", { method: "POST", body: { ids: [jordanRow.household_id] } });
+  assert.equal((await look()).guests[0].plus_one_rehearsal_rsvp, "pending");
+});
+
 test("emails: one per household to its email with guests copied, filled in, from Kaitlyn & Patrick, and never twice", async () => {
   const { env, api } = await commsSetup();
   await api("/api/admin/comms/calendar", { method: "PUT", body: { events: [{ title: "Wedding", date: "2027-06-12", start: "16:00", for: "everyone" }] } });

@@ -401,6 +401,11 @@ const MIGRATIONS = [
   [
     `ALTER TABLE guests ADD COLUMN rehearsal_rsvp TEXT NOT NULL DEFAULT 'pending'`,
   ],
+  // 15: a guest coming to the rehearsal dinner with a plus-one says whether the plus-one
+  // comes to the dinner too.
+  [
+    `ALTER TABLE guests ADD COLUMN plus_one_rehearsal_rsvp TEXT NOT NULL DEFAULT 'pending'`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

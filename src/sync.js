@@ -64,6 +64,7 @@ export async function buildExports(env) {
       reception: yesNo(g.invite_reception),
       rehearsal_dinner: yesNo(g.invite_rehearsal),
       rehearsal_rsvp: g.invite_rehearsal ? g.rehearsal_rsvp : "",
+      plus_one_rehearsal_rsvp: g.invite_rehearsal && g.plus_one_allowed ? g.plus_one_rehearsal_rsvp : "",
       rsvp: g.rsvp,
       dietary: g.dietary,
       plus_one_allowed: yesNo(g.plus_one_allowed),
