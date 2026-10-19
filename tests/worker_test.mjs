@@ -3055,7 +3055,7 @@ test("things to do: hidden from guests until published, previewed by an admin, t
   env.DB.db.prepare("INSERT INTO site_pages (path, title, html, source_url, content_hash, fetched_at, changed_at) VALUES ('/', 'Home', ?, '', '', '', '')")
     .run('<html><head><style data-wm="fonts">@font-face{font-family:Made Up}</style></head><body style="background-color:#faf6ef"><p style="color:#333344">Hi</p>'
       + '<ul><li><a href="/travel" data-wm-nav="menu">Travel</a></li><li><a href="https://www.zola.com/wedding/x/registry" data-wm-nav="menu" target="_blank">Registry</a></li></ul>'
-      + '<nav id="wm-menu" aria-label="Site" hidden><a href="/travel">Travel</a></nav></body></html>');
+      + '<div class="wm-rsvp-bar"><nav id="wm-menu" aria-label="Site" hidden><a href="/travel">Travel</a></nav></div></body></html>');
   const guest = await call(env, "/things-to-do");
   assert.equal(guest.status, 404, "hidden from guests");
   assert.ok(!String(guest.data).includes("Commissary"));
@@ -3075,8 +3075,10 @@ test("things to do: hidden from guests until published, previewed by an admin, t
   assert.ok(!live.data.includes("<b>Preview.</b>"));
   assert.equal(live.headers.get("cache-control"), "public, max-age=300");
   const home = (await call(env, "/")).data;
-  assert.ok(home.includes('<li><a href="https://www.zola.com/wedding/x/registry" data-wm-nav="menu" target="_blank">Registry</a></li><li><a href="/things-to-do" data-wm-nav="menu">Things to Do</a></li>'),
-    "a copy of the last menu link, in its own list item");
+  // The site's own menu row gets it in the browser (PAGE_SCRIPT copies the last menu item
+  // there, wrapper and all, so it's spaced like the rest).
+  assert.ok(home.includes('<div class="wm-rsvp-bar" data-wm-guide="/things-to-do" data-wm-guide-label="Things to Do">'), "the bar tells the page script");
+  assert.ok(!home.includes('<a href="/things-to-do" data-wm-nav'), "the server doesn't guess at the menu's markup");
   assert.ok(home.includes('<a href="/travel">Travel</a><a href="/things-to-do">Things to Do</a></nav>'), "and in the phone menu");
   assert.equal((await api("/api/admin/settings", { method: "PUT", body: { things_to_do_published: false } })).status, 200);
   assert.equal((await call(env, "/things-to-do")).status, 404, "hidden again");

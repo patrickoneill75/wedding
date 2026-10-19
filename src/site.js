@@ -215,6 +215,21 @@ var units=[];box.querySelectorAll("span").forEach(function(s){if(s.children.leng
 units.slice(0,4).forEach(function(u,i){u.children[0].textContent=v[i]+" "+L[i][0]+(v[i]===1?"":"s");u.children[1].textContent=v[i]+" "+L[i][1]})})}
 if(document.querySelector("[data-wm-target]")){tick();setInterval(tick,1000)}
 var bar=document.querySelector(".wm-rsvp-bar"),btn=document.querySelector(".wm-menu-btn"),menu=document.getElementById("wm-menu");
+var guide=null,guideFrom=null;
+function addGuide(){var href=bar.getAttribute("data-wm-guide");if(!href)return;
+var links=[].slice.call(document.querySelectorAll('a[data-wm-nav="menu"]'));
+var others=links.filter(function(a){return a.getAttribute("href")!==location.pathname}),from=others[others.length-1]||links[links.length-1];if(!from)return;
+var item=from;while(item.parentElement&&item.parentElement!==document.body&&item.parentElement.children.length===1)item=item.parentElement;
+var copy=item.cloneNode(true),a=copy.tagName==="A"?copy:copy.querySelector("a");
+a.setAttribute("href",href);["target","rel","aria-current"].forEach(function(n){a.removeAttribute(n)});
+var texts=[],w=document.createTreeWalker(a,NodeFilter.SHOW_TEXT),t;while((t=w.nextNode()))if(t.data.trim())texts.push(t);
+if(!texts.length)return;texts[0].data=bar.getAttribute("data-wm-guide-label");texts.slice(1).forEach(function(x){x.data=""});
+var end=links[links.length-1];while(end.parentElement&&end.parentElement!==document.body&&end.parentElement.children.length===1)end=end.parentElement;
+end.parentNode.insertBefore(copy,end.nextSibling);guide=a;guideFrom=links.length>1?links:null}
+function guideGap(){if(!guide||!guideFrom)return;guide.style.marginLeft="";
+var n=guideFrom.length,p=guideFrom[n-2].getBoundingClientRect(),l=guideFrom[n-1].getBoundingClientRect(),g=guide.getBoundingClientRect();
+if(!l.width||!g.width||Math.round(p.top)!==Math.round(l.top)||Math.round(g.top)!==Math.round(l.top))return;
+var want=l.left-p.right,have=g.left-l.right;if(want>have+1)guide.style.marginLeft=(want-have)+"px"}
 function navShown(){var sel=document.querySelector('a[data-wm-nav="menu"]')?'a[data-wm-nav="menu"]':"a[data-wm-nav]";return [].some.call(document.querySelectorAll(sel),function(a){var r=a.getBoundingClientRect();return r.width>0&&r.height>0})}
 var pill=document.querySelector(".wm-rsvp");
 function shown(a){var r=a.getBoundingClientRect();return r.width>0&&r.height>0}
@@ -230,7 +245,7 @@ if(!box)return null;var row=Math.round(links[0].getBoundingClientRect().top/10);
 var right=Math.max.apply(null,[].filter.call(box.querySelectorAll("a"),shown).filter(function(a){return Math.round(a.getBoundingClientRect().top/10)===row}).map(function(a){return a.getBoundingClientRect().right}));
 return {box:box,link:links[0],right:right}}
 function toBar(){pill.classList.remove("wm-in-nav");pill.style.top=pill.style.left=pill.style.right="";bar.insertBefore(pill,menu);bar.style.display=""}
-function layout(){var phone=!navShown();bar.classList.toggle("wm-phone",phone);if(!phone)close();
+function layout(){guideGap();var phone=!navShown();bar.classList.toggle("wm-phone",phone);if(!phone)close();
 if(!pill){bar.style.display=phone?"":"none";return}
 toBar();if(phone)return;var row=menuRow();if(!row)return;
 var w=pill.getBoundingClientRect().width,br=row.box.getBoundingClientRect();
@@ -241,7 +256,7 @@ function close(){menu.hidden=true;btn.setAttribute("aria-expanded","false")}
 btn.addEventListener("click",function(){var open=menu.hidden;menu.hidden=!open;btn.setAttribute("aria-expanded",String(open))});
 document.addEventListener("keydown",function(e){if(e.key==="Escape")close()});
 document.querySelectorAll("svg path").forEach(function(p){if(/^M21\\.882 4a1\\.618/.test(p.getAttribute("d")||"")){var box=p.closest("svg").parentElement;if(box)box.style.display="none"}});
-layout();addEventListener("resize",layout)})();`;
+addGuide();layout();addEventListener("resize",layout)})();`;
 
 /**
  * Clean one Zola page. Returns { html, title, hashSource, warnings }; hashSource is the
@@ -687,34 +702,18 @@ export function siteFooter({ coupleNames = "", contactEmail = "" }) {
 }
 
 /**
- * The site's menu with our Things to Do page in it: after the last link in the site's
- * own menu row (a copy of that link, so it looks the same), and in our phone menu. When
- * the Zola site has a Things to Do page of its own, its links point here instead.
+ * The site's menu with our Things to Do page in it. Our phone menu gets the link here;
+ * the site's own menu row gets it in the browser (PAGE_SCRIPT, from the bar's
+ * data-wm-guide), where the real markup and its spacing can be seen. When the Zola site
+ * has a Things to Do page of its own, its links point here instead.
  */
 export function addGuideLink(html) {
   const { path, label } = THINGS_TO_DO;
   const zolas = /href="https:\/\/www\.zola\.com\/wedding\/[^"/]+\/things-to-do"/g;
   if (zolas.test(html)) return html.replace(zolas, `href="${path}"`);
-  let out = html;
-  const links = [...out.matchAll(/<a\b[^>]*\bdata-wm-nav="menu"[^>]*>[\s\S]*?<\/a>/g)];
-  const last = links[links.length - 1];
-  if (last) {
-    let start = last.index;
-    let end = start + last[0].length;
-    // A link alone in a list item: copy the whole item.
-    const before = /<li\b[^>]*>\s*$/.exec(out.slice(Math.max(0, start - 300), start));
-    const after = /^\s*<\/li>/.exec(out.slice(end));
-    if (before && after) {
-      start -= before[0].length;
-      end += after[0].length;
-    }
-    const copy = out.slice(start, end)
-      .replace(/(<a\b[^>]*?)\shref="[^"]*"/, `$1 href="${path}"`)
-      .replace(/\s(?:target|rel|aria-current)="[^"]*"/g, "")
-      .replace(/>([^<>]*\S[^<>]*)</, `>${label}<`);
-    out = out.slice(0, end) + copy + out.slice(end);
-  }
-  return out.replace(/(<nav id="wm-menu"[^>]*>[\s\S]*?)(<\/nav>)/, `$1<a href="${path}">${label}</a>$2`);
+  return html
+    .replace('<div class="wm-rsvp-bar">', `<div class="wm-rsvp-bar" data-wm-guide="${path}" data-wm-guide-label="${label}">`)
+    .replace(/(<nav id="wm-menu"[^>]*>[\s\S]*?)(<\/nav>)/, `$1<a href="${path}">${label}</a>$2`);
 }
 
 /** The stored copy of a page, or null. Only plain page paths are looked up. */
