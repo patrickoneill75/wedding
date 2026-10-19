@@ -587,7 +587,10 @@ export async function handleComms(parts, method, request, env, body, user) {
       const settings = await loadSettings(env);
       const { sample, label, inAudience: matches } = await testSample(env, message, input.as);
       const email = await compose(env, originOf(env, request), settings, { ...message, subject: `[Test] ${message.subject}` }, sample.household, sample.guests, { to: [to], cc: [] }, await emailTheme(env, settings));
-      await sendGmail(env, await openGmail(env), email);
+      const session = await openGmail(env);
+      await sendGmail(env, session, email);
+      // It went, so an old Gmail error no longer holds (the banner would keep showing it).
+      if (session.last_error) await setSetting(env, "_gmail", { ...session.stored, last_error: null, last_error_at: null });
       return json({ ok: true, to, sample: label, in_audience: matches, calendar: calendarNote(message, settings, email.events) });
     }
     if (action === "send") {

@@ -103,7 +103,8 @@ function render() {
   document.getElementById("gmailBanner").replaceChildren(g.connected
     ? h("div", { class: `banner${g.last_error ? " warn" : ""}` },
         `Emails go out from ${data.email_from_name} <${g.email}>.`,
-        g.last_error ? h("div", { style: "margin-top:4px" }, `Problem: ${g.last_error}`) : null)
+        g.last_error ? h("div", { style: "margin-top:4px" }, `Problem${g.last_error_at ? ` (${fmtDate(g.last_error_at)})` : ""}: ${g.last_error}`,
+          h("div", { class: "muted", style: "margin-top:4px" }, "This clears the next time an email goes out. Fixed it? Send yourself a test email.")) : null)
     : h("div", { class: "banner warn" }, "Gmail isn't connected, so nothing can be sent yet. ",
         me.role === "admin" ? h("a", { href: "/admin/settings.html#gmail" }, "Connect it in Settings.") : "Ask Patrick or Kaitlyn to connect it in Settings."));
   document.getElementById("tabs").replaceChildren(...TABS.map(([key, label]) =>

@@ -2966,6 +2966,19 @@ test("emails: when Gmail stops working nothing is lost; the emails wait and go o
   assert.equal((await api("/api/admin/comms")).data.gmail.last_error, null, "and the problem clears once it sends");
 });
 
+// Bug guard: a test email that went through left an old Gmail error on the banner, so a
+// fixed problem (the Gmail API turned on) still looked broken.
+test("emails: a test email that goes through clears an old Gmail error", async () => {
+  const { env, api } = await commsSetup();
+  const { getSetting, setSetting } = await import("../src/db.js");
+  await setSetting(env, "_gmail", { ...(await getSetting(env, "_gmail")), last_error: "Gmail refused to send (403).", last_error_at: new Date().toISOString() });
+  const id = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Hello", body: "Hi" } })).data.id;
+  await withGmail(() => api(`/api/admin/comms/messages/${id}/test`, { method: "POST", body: {} }), { status: () => 403 });
+  assert.match((await api("/api/admin/comms")).data.gmail.last_error, /refused/, "a test that fails keeps it");
+  await withGmail(() => api(`/api/admin/comms/messages/${id}/test`, { method: "POST", body: {} }));
+  assert.equal((await api("/api/admin/comms")).data.gmail.last_error, null);
+});
+
 // Bug guard: a cron run that overlapped "Send now" picked the same queued rows and sent
 // them twice; a run that died partway left its rows queued to be sent again.
 test("emails: two overlapping runs never send the same email twice; a run stuck mid-send is marked failed, not resent", async () => {
