@@ -12,7 +12,7 @@
   .rooms button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
   .rooms .kind { font-size: 11px; opacity: .8; }
   .layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
-  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
   .toolbar select { width: auto; }
   .canvas { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); max-height: 76vh; }
@@ -30,7 +30,8 @@
   .canvas .chair.taken { fill: var(--accent); stroke: var(--accent); }
   .canvas .chair.stale { fill: var(--warn); stroke: var(--warn); }
   .canvas .letter { fill: var(--text-secondary); font-size: .6px; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
-  .canvas .taken + .letter, .canvas .stale + .letter { fill: #fff; font-weight: 650; }
+  .canvas .taken + .letter { fill: #fff; font-weight: 650; }
+  .canvas .stale + .letter { fill: #3a2600; font-weight: 650; }
   .canvas .seatable .chair { cursor: pointer; }
   .canvas .note { fill: var(--text-secondary); font-style: italic; text-anchor: middle; dominant-baseline: central; }
   .canvas .sel .note { fill: var(--accent); }
@@ -125,6 +126,7 @@ async function load() {
 }
 
 /** Send a change; the reply is the whole seating chart again. */
+let savedFlash = "";
 async function send(path, method, body) {
   const reply = await api(`/api/admin/seating/${path}`, { method, body });
   accept(reply);
@@ -511,6 +513,11 @@ function panel(r) {
       r.kind === "reception" ? h("p", { class: "desc" }, "Click a chair to seat someone in it. Blue chairs are taken. Orange ones hold someone who has since declined or lost their invitation.") : null);
   }
   const msg = h("p", { class: "msg" });
+  // A save redraws this panel: the new one shows the "Saved." the old one would have.
+  if (savedFlash) {
+    setMsg(msg, savedFlash, "ok");
+    savedFlash = "";
+  }
   const save = async (form) => {
     const values = formValues(form);
     // Fewer seats unseats whoever sat in the ones that go: ask first.
@@ -520,9 +527,10 @@ function panel(r) {
       if (lost && !confirm(`${lost === 1 ? "1 person sits" : `${lost} people sit`} in the seats this removes. Unseat them?`)) return;
     }
     try {
+      savedFlash = "Saved.";
       await send(`items/${item.id}`, "PUT", values);
-      setMsg(msg, "Saved.", "ok");
     } catch (error) {
+      savedFlash = "";
       setMsg(msg, error.message, "err");
     }
   };

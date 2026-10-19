@@ -140,7 +140,9 @@ export function combobox(input, { options, onPick, create = null, showAll = fals
     } else if (e.key === "Enter" && !list.hidden && active >= 0) {
       e.preventDefault();
       pick(active);
-    } else if (e.key === "Escape") {
+    } else if (e.key === "Escape" && !list.hidden) {
+      // Closes the list only, not the dialog it sits in (which would lose the edits).
+      e.preventDefault();
       close();
     }
   });

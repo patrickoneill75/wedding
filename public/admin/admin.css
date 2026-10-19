@@ -17,6 +17,7 @@
     --accent: #3987e5; --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
     --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
     --stage-1: #184f95; --stage-2: #256abf; --stage-3: #3987e5; --stage-4: #6da7ec; --stage-5: #b7d3f6;
+    --bad: #f07a7a;
   }
 }
 * { box-sizing: border-box; }
@@ -36,7 +37,7 @@ h2 { font-size: 15px; font-weight: 650; margin: 0 0 4px; }
 .sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 18px; }
 .desc { color: var(--text-secondary); font-size: 12.5px; margin: 0 0 14px; }
 .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
-.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 16px; }
 .grid2 > .card { margin-bottom: 0; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .spacer { flex: 1; }
