@@ -192,7 +192,7 @@ function matches(hh) {
   const rsvp = document.getElementById("rsvp").value;
   const inviteType = document.getElementById("inviteType").value;
   if (q) {
-    const hay = [hh.display_name, hh.greeting, hh.city, hh.state, hh.notes, hh.email, ...hh.guests.flatMap((g) => [g.first_name, g.last_name, g.plus_one_name, g.notes])]
+    const hay = [hh.display_name, hh.greeting, hh.city, hh.state, hh.notes, hh.email, ...hh.guests.flatMap((g) => [g.first_name, g.last_name, g.plus_one_name, g.notes, g.email])]
       .join(" ").toLowerCase();
     if (!hay.includes(q)) return false;
   }

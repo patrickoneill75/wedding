@@ -1584,6 +1584,47 @@ test("cron: a run that sends email skips the Drive sync; the next quiet run sync
   assert.ok(second.some((u) => u.includes("drive")), "the next run syncs Drive");
 });
 
+// Coverage the audit found missing: receipts never overwrite each other; a day-of link
+// turned off stops working; deleting a household takes its guests' seats and groups.
+test("receipts upload as new files every time, a turned-off day-of link stops working, and a deleted household leaves nothing behind", async () => {
+  const { env, api, id, roomId } = await seatingSetup();
+  const { setSetting } = await import("../src/db.js");
+  await setSetting(env, "_google_drive", { refresh_token: "rt", access_token: "at", expires_at: Date.now() + 3600e3, email: "a@example.com" });
+  await setSetting(env, "_drive_folder", { id: "folder1", name: "Wedding" });
+  const expense = (await api("/api/admin/expenses", { method: "POST", body: { item: "Cake", vendor: "Bakery", unit_cost: 300 } })).data.expense.id;
+  const created = [];
+  const upload = () => {
+    const form = new FormData();
+    form.append("file", new File(["receipt"], "receipt.pdf", { type: "application/pdf" }));
+    return api(`/api/admin/expenses/${expense}/attachments`, { method: "POST", form });
+  };
+  await withFetch((url, init) => {
+    if (url.startsWith("https://www.googleapis.com/drive/v3/files?")) return okJson({ files: [{ id: "receipts", name: "Receipts" }] });
+    if (url.includes("uploadType=multipart")) {
+      created.push(url);
+      return okJson({ id: `r${created.length}`, name: "x", webViewLink: "https://drive.example/x" });
+    }
+    throw new Error(`unexpected fetch ${init.method || "GET"} ${url}`);
+  }, async () => {
+    assert.equal((await upload()).status, 201);
+    assert.equal((await upload()).status, 201);
+  });
+  assert.equal(created.length, 2, "two receipts, two files: never an update of the first");
+
+  const key = new URL((await api("/api/admin/runofshow/link", { method: "POST" })).data.url).hash.slice(3);
+  await api("/api/admin/runofshow/link", { method: "DELETE" });
+  assert.equal((await call(env, "/api/dayof", { headers: { "x-dayof-key": key } })).status, 401);
+
+  const table = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 4 } })).data.ids[0];
+  await api("/api/admin/seating/assign", { method: "POST", body: { item_id: table, seat_letter: "A", guest_id: id.Avery } });
+  await api("/api/admin/runofshow/groups", { method: "POST", body: { name: "Photos", members: [`${id.Avery}:0`] } });
+  const household = env.DB.db.prepare("SELECT household_id FROM guests WHERE id = ?").get(id.Avery).household_id;
+  assert.equal((await api(`/api/admin/households/${household}`, { method: "DELETE" })).status, 200);
+  for (const table of ["guests", "seat_assignments", "guest_group_members"]) {
+    assert.equal(env.DB.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, `${table} is empty`);
+  }
+});
+
 test("guests.csv carries addresses and RSVP answers for each guest", async () => {
   const env = makeEnv();
   const api = await adminClient(env);
