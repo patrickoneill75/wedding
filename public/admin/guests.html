@@ -10,9 +10,12 @@
 <style>
   .guest { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 2px 0; }
   .tag { font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; }
-  button.invite { font-size: 11px; line-height: 1.5; padding: 0 6px; border-radius: 6px; color: var(--text-secondary); background: var(--surface-1); }
-  button.invite.on { color: var(--accent); border-color: var(--accent); }
-  button.invite.off { color: var(--text-muted); text-decoration: line-through; }
+  .step { font-size: 11.5px; font-weight: 600; padding: 1px 9px; border-radius: 999px; border: 1px solid var(--border);
+          background: var(--wash); color: var(--text-secondary); white-space: nowrap; }
+  .step.std, .step.invite { color: var(--accent); border-color: rgba(42, 120, 214, .35); background: rgba(42, 120, 214, .08); }
+  .step.yes, .step.gift { color: var(--good); border-color: rgba(12, 163, 12, .3); background: rgba(12, 163, 12, .1); }
+  .step.thanks { color: #fff; border-color: var(--good); background: var(--good); }
+  .step.no { color: var(--bad); border-color: rgba(208, 59, 59, .3); background: rgba(208, 59, 59, .08); }
   .bulk .sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
   td.c { text-align: center; }
   .bulk { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; }
@@ -95,7 +98,20 @@ const me = await initPage("guests.html");
 document.getElementById("reportBtn").hidden = !canSee(me, "reports");
 let data;
 const selected = new Set();
-const RSVP_LABEL = { pending: "Awaiting", yes: "Coming", no: "Not coming" };
+/**
+ * Where a guest is in the funnel: the furthest step reached, in order save-the-date,
+ * invite, RSVP (yes or no), gift received, thank-you sent. The mailing and gift steps are
+ * the household's; the RSVP is the guest's own.
+ */
+function funnelStep(hh, g) {
+  if (hh.thank_you_sent) return { key: "thanks", label: "Thank-you sent" };
+  if (hh.gift_received) return { key: "gift", label: "Gift received" };
+  if (g.rsvp === "yes") return { key: "yes", label: "RSVP yes" };
+  if (g.rsvp === "no") return { key: "no", label: "RSVP no" };
+  if (hh.invite_sent) return { key: "invite", label: "Invite sent" };
+  if (hh.save_the_date_sent) return { key: "std", label: "Save-the-date sent" };
+  return { key: "none", label: "Not started" };
+}
 
 async function load() {
   data = await api("/api/admin/guests");
@@ -197,25 +213,10 @@ function render() {
       h("td", {}, h("button", { class: "link", onclick: () => openHousehold(hh) }, hh.display_name || "(no name)"),
         h("div", { class: "muted", style: "font-size:12px" }, [hh.code, [hh.city, hh.state].filter(Boolean).join(", ")].filter(Boolean).join(" · ")),
         hh.rsvp_at ? h("div", { class: "muted", style: "font-size:12px" }, `RSVP'd ${fmtDate(hh.rsvp_at)}`) : null),
-      h("td", {}, hh.guests.map((g) => h("div", { class: "guest" },
-        h("span", {}, `${g.first_name} ${g.last_name}`),
-        h("span", { class: `pill ${g.rsvp}` }, RSVP_LABEL[g.rsvp]),
-        g.side ? h("span", { class: "tag" }, g.side) : h("span", { class: "tag", style: "color:var(--bad)" }, "no side"),
-        h("span", { class: "tag" }, g.priority),
-        g.wedding_party ? h("span", { class: "tag" }, "wedding party") : null,
-        g.immediate_family ? h("span", { class: "tag" }, "immediate family") : g.extended_family ? h("span", { class: "tag" }, "extended family") : null,
-        ...["ceremony", "reception"].map((event) => {
-          const on = Boolean(g[`invite_${event}`]);
-          return h("button", { class: `invite ${on ? "on" : "off"}`, title: `${on ? "Invited to" : "Not invited to"} the ${event}. Click to change.`,
-            onclick: () => toggleInvite(g, `invite_${event}`) }, event === "ceremony" ? "Ceremony" : "Reception");
-        }),
-        g.invite_rehearsal ? h("span", { class: "tag" }, "rehearsal dinner") : null,
-        g.out_of_town ? h("span", { class: "tag" }, "out of town") : null,
-        g.international ? h("span", { class: "tag" }, "international") : null,
-        g.seat ? h("span", { class: "tag" }, `table ${g.seat.table}, seat ${g.seat.seat}`) : g.table_name ? h("span", { class: "tag" }, `table ${g.table_name}`) : null,
-        g.plus_one_allowed ? h("span", { class: `pill ${g.plus_one_rsvp}` }, `+1${g.plus_one_name ? ` ${g.plus_one_name}` : ""}: ${RSVP_LABEL[g.plus_one_rsvp]}`) : null,
-        g.plus_one_seat ? h("span", { class: "tag" }, `+1 at table ${g.plus_one_seat.table}, seat ${g.plus_one_seat.seat}`) : null,
-      ))),
+      h("td", {}, hh.guests.map((g) => {
+        const step = funnelStep(hh, g);
+        return h("div", { class: "guest" }, h("span", {}, `${g.first_name} ${g.last_name}`), h("span", { class: `step ${step.key}` }, step.label));
+      })),
       box("save_the_date_sent"),
       box("invite_sent"),
       h("td", {}, hh.gift ? hh.gift : h("span", { class: "muted" }, "—"), hh.gift_received ? h("div", { class: "muted", style: "font-size:12px" }, "received") : null),
@@ -232,14 +233,6 @@ function updateBulk() {
   document.getElementById("bulkCount").textContent = `${selected.size} selected`;
 }
 
-async function toggleInvite(g, fieldName) {
-  try {
-    await api(`/api/admin/guests/${g.id}`, { method: "PUT", body: { [fieldName]: !g[fieldName] } });
-    await load();
-  } catch (error) {
-    alert(error.message);
-  }
-}
 
 for (const id of ["search", "rsvp", "inviteType"]) document.getElementById(id).addEventListener("input", render);
 renderMore();
