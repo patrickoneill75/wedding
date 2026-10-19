@@ -141,7 +141,7 @@ function audiencePicker(audience, onChange) {
         refresh();
       } }), label)))));
   refresh();
-  return h("div", {}, h("p", { class: "desc", style: "margin:0 0 8px" }, "Nothing ticked means every household. Ticks in RSVP, Side or Priority match any of them; every other tick must also be true. One email goes to each household, copied to anyone in it who gave their own email."), box, count, who);
+  return h("div", {}, h("p", { class: "desc", style: "margin:0 0 8px" }, "Nothing ticked means every household. Ticks in RSVP, Rehearsal dinner RSVP, Side or Priority match any of them; every other tick must also be true. One email goes to each household, copied to anyone in it who gave their own email."), box, count, who);
 }
 
 function editEmail(message) {
@@ -335,6 +335,12 @@ const WORDING = [
   ["reply_help", "Above the RSVP choices"],
   ["accept_label", "The yes choice"],
   ["decline_label", "The no choice"],
+  ["invited_both", "Under each name: invited to both"],
+  ["invited_ceremony", "Under each name: ceremony only"],
+  ["invited_reception", "Under each name: reception only"],
+  ["rehearsal_invite", "Rehearsal dinner question (follows the guest's first name and a comma)"],
+  ["rehearsal_accept", "Rehearsal dinner: the yes choice"],
+  ["rehearsal_decline", "Rehearsal dinner: the no choice"],
   ["email_label", "The household email (required)"],
   ["guest_email_label", "Each guest's own email (optional)"],
   ["note_label", "The note box"],

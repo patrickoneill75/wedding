@@ -40,7 +40,7 @@ export const SOURCES = {
       ["household", "Household", T], ["household_code", "Household code", T], ["greeting", "Greeting", T],
       ["side", "Side", T], ["priority", "Priority", T],
       ["invited_to", "Invited to", T], ["ceremony", "Ceremony", B], ["reception", "Reception", B],
-      ["rehearsal", "Rehearsal dinner", B], ["out_of_town", "Out of town", B], ["international", "International", B],
+      ["rehearsal", "Rehearsal dinner", B], ["rehearsal_rsvp", "Rehearsal dinner RSVP", T], ["out_of_town", "Out of town", B], ["international", "International", B],
       ["rsvp", "RSVP", T], ["dietary", "Dietary needs", T],
       ["table", "Table", T], ["seat", "Seat", T], ["table_seat", "Table and seat", T],
       ["wedding_party", "Wedding party", B], ["immediate_family", "Immediate family", B], ["extended_family", "Extended family", B],
@@ -57,7 +57,7 @@ export const SOURCES = {
       ["zip", "ZIP", T], ["country", "Country", T], ["has_address", "Has an address", B],
       ["out_of_town", "Out of town", B], ["international", "International", B],
       ["email", "Email", T], ["phone", "Phone", T],
-      ["people", "People invited", N], ["rehearsal", "Invited to the rehearsal dinner", N], ["coming", "Coming", N], ["awaiting", "Awaiting reply", N], ["declined", "Not coming", N], ["expected", "Coming or awaiting", N],
+      ["people", "People invited", N], ["rehearsal", "Invited to the rehearsal dinner", N], ["rehearsal_coming", "Coming to the rehearsal dinner", N], ["coming", "Coming", N], ["awaiting", "Awaiting reply", N], ["declined", "Not coming", N], ["expected", "Coming or awaiting", N],
       ["awaiting_names", "Who hasn't replied", T], ["names", "Everyone in it", T],
       ["save_the_date_sent", "Save-the-date sent", B], ["invite_sent", "Invite sent", B],
       ["gift", "Gift", T], ["gift_received", "Gift received", B], ["thank_you_sent", "Thank-you sent", B],
@@ -134,10 +134,10 @@ export const BUILTINS = [
     definition: def("households", ["household", "names", "email", "phone"], [["has_address", "is", "no"]], ["household"]) },
   { id: "thank-yous", group: "RSVPs and mail", name: "Thank-you notes to write", description: "Gift received, no thank-you sent yet, with the address.",
     definition: def("households", ["household", "greeting", "gift", "address1", "address2", "city", "state", "zip"], [["gift_received", "is", "yes"], ["thank_you_sent", "is", "no"]], ["household"]) },
-  { id: "rehearsal-dinner", group: "Rehearsal dinner and travel", name: "Rehearsal dinner guests", description: "Everyone invited to the rehearsal dinner, plus-ones included, with RSVP and dietary needs.",
-    definition: def("people", ["name", "household", "side", "rsvp", "dietary"], [["rehearsal", "is", "yes"]], ["last_name", "first_name"]) },
-  { id: "rehearsal-meals", group: "Rehearsal dinner and travel", name: "Rehearsal dinner meal counts", description: "Rehearsal dinner guests who haven't declined, counted by dietary need.",
-    definition: def("people", [], [["rehearsal", "is", "yes"], notDeclined], [], "dietary") },
+  { id: "rehearsal-dinner", group: "Rehearsal dinner and travel", name: "Rehearsal dinner guests", description: "Everyone invited to the rehearsal dinner, plus-ones included, with their rehearsal dinner RSVP, wedding RSVP and dietary needs.",
+    definition: def("people", ["name", "household", "side", "rehearsal_rsvp", "rsvp", "dietary"], [["rehearsal", "is", "yes"]], ["last_name", "first_name"]) },
+  { id: "rehearsal-meals", group: "Rehearsal dinner and travel", name: "Rehearsal dinner meal counts", description: "Rehearsal dinner guests who haven't declined the dinner, counted by dietary need.",
+    definition: def("people", [], [["rehearsal", "is", "yes"], ["rehearsal_rsvp", "is_not", "Not coming"]], [], "dietary") },
   { id: "out-of-town", group: "Rehearsal dinner and travel", name: "Out-of-town guests", description: "Everyone tagged out of town, for the hotel block and transportation.",
     definition: def("people", ["name", "household", "rsvp", "city", "state", "country", "phone", "email"], [["out_of_town", "is", "yes"]], ["household", "last_name"]) },
   { id: "welcome-bags", group: "Rehearsal dinner and travel", name: "Welcome bags", description: "One row per household with someone out of town, and someone coming or yet to reply.",
@@ -182,6 +182,7 @@ async function householdRows(env) {
       out_of_town: mine.some((p) => p.out_of_town),
       international: mine.some((p) => p.international),
       rehearsal: mine.filter((p) => p.rehearsal).length,
+      rehearsal_coming: mine.filter((p) => p.rehearsal_rsvp_code === "yes").length,
       email: h.email || "",
       phone: h.phone || "",
       people: mine.length,
@@ -310,9 +311,10 @@ export async function runDefinition(env, definition) {
 
 async function headcount(env) {
   const people = await loadPeople(env);
-  const rowFor = (label, list) => {
-    const n = (code) => list.filter((p) => p.rsvp_code === code).length;
-    return [label, list.length, n("yes"), n("pending"), n("no"), list.filter((p) => p.plus_one && p.rsvp_code === "yes").length, list.filter((p) => p.rsvp_code === "yes" && p.dietary).length];
+  // The rehearsal dinner row counts the rehearsal dinner RSVP; the others count the wedding's.
+  const rowFor = (label, list, answer = "rsvp_code") => {
+    const n = (code) => list.filter((p) => p[answer] === code).length;
+    return [label, list.length, n("yes"), n("pending"), n("no"), list.filter((p) => p.plus_one && p[answer] === "yes").length, list.filter((p) => p[answer] === "yes" && p.dietary).length];
   };
   return {
     columns: ["Event", "Invited", "Coming", "Awaiting reply", "Not coming", "Plus-ones coming", "Coming with a dietary need"].map((label, i) => ({ key: `c${i}`, label })),
@@ -322,7 +324,7 @@ async function headcount(env) {
       rowFor("Ceremony only", people.filter((p) => p.ceremony && !p.reception)),
       rowFor("Reception only", people.filter((p) => p.reception && !p.ceremony)),
       rowFor("Both", people.filter((p) => p.ceremony && p.reception)),
-      rowFor("Rehearsal dinner", people.filter((p) => p.rehearsal)),
+      rowFor("Rehearsal dinner", people.filter((p) => p.rehearsal), "rehearsal_rsvp_code"),
       rowFor("Out of town", people.filter((p) => p.out_of_town)),
       rowFor("International", people.filter((p) => p.international)),
     ],

@@ -122,6 +122,7 @@ async function load() {
     item(c.pending, "awaiting reply"), item(c.households, "households"), item(c.plus_ones_allowed, "plus-ones offered"),
     item(c.invites.ceremony, "invited to the ceremony"), item(c.invites.reception, "invited to the reception"),
     item(data.households.flatMap((hh) => hh.guests).filter((g) => g.invite_rehearsal).length, "invited to the rehearsal dinner"),
+    item(data.households.flatMap((hh) => hh.guests).filter((g) => g.invite_rehearsal && g.rehearsal_rsvp === "yes").length, "coming to the rehearsal dinner"),
     item(data.households.flatMap((hh) => hh.guests).filter((g) => g.out_of_town).length, "out of town"),
     item(data.households.flatMap((hh) => hh.guests).filter((g) => g.international).length, "international"),
   );
@@ -134,11 +135,15 @@ async function load() {
  * household shows when one of its guests matches the guest tags and the household
  * matches the household ones.
  */
-const ANY_OF = new Set(["side", "priority"]);
+const ANY_OF = new Set(["side", "priority", "rehearsal_rsvp"]);
 const MORE = [
   ["Side", "side", [["Bride", (g) => g.side === "Bride"], ["Groom", (g) => g.side === "Groom"], ["No side yet", (g) => !g.side]]],
   ["Priority", "priority", [["High", (g) => g.priority === "High"], ["Medium", (g) => g.priority === "Medium"], ["Low", (g) => g.priority === "Low"]]],
   ["Invited to", "invites", [["Ceremony", (g) => g.invite_ceremony], ["Reception", (g) => g.invite_reception], ["Rehearsal dinner", (g) => g.invite_rehearsal]]],
+  ["Rehearsal dinner RSVP", "rehearsal_rsvp", [
+    ["Coming", (g) => g.invite_rehearsal && g.rehearsal_rsvp === "yes"],
+    ["Awaiting reply", (g) => g.invite_rehearsal && g.rehearsal_rsvp === "pending"],
+    ["Not coming", (g) => g.invite_rehearsal && g.rehearsal_rsvp === "no"]]],
   ["Family and party", "family", [["Wedding party", (g) => g.wedding_party], ["Immediate family", (g) => g.immediate_family], ["Extended family", (g) => g.extended_family]]],
   ["Travel", "travel", [["Out of town", (g) => g.out_of_town], ["International", (g) => g.international]]],
   ["Plus-ones", "plusone", [["Has a plus-one", (g) => g.plus_one_allowed]]],
@@ -161,7 +166,7 @@ function renderMore() {
         render();
       } }), label)));
   box.replaceChildren(...MORE.map(group), group(HOUSEHOLD_MORE),
-    h("div", { class: "foot" }, "Ticked boxes in Side or Priority match any of them; every other ticked box must also be true.",
+    h("div", { class: "foot" }, "Ticked boxes in Side, Priority or Rehearsal dinner RSVP match any of them; every other ticked box must also be true.",
       h("span", { class: "spacer" }),
       h("button", { class: "small", onclick: () => { ticked.clear(); renderMore(); updateMoreButton(); render(); } }, "Clear filters")));
 }
@@ -278,6 +283,8 @@ function guestCard(g, onRemove) {
     field("Plus-one RSVP", "plus_one_rsvp", { options: [["pending", "Awaiting"], ["yes", "Coming"], ["no", "Not coming"]], value: g.plus_one_rsvp || "pending" }),
     field("Plus-one dietary needs", "plus_one_dietary", { value: g.plus_one_dietary || "" }),
   );
+  const rehearsalField = field("Rehearsal dinner RSVP", "rehearsal_rsvp", { options: [["pending", "Awaiting"], ["yes", "Coming"], ["no", "Not coming"]], value: g.rehearsal_rsvp || "pending" });
+  rehearsalField.hidden = !g.invite_rehearsal;
   const plusOneBox = check("Allow a plus-one", "plus_one_allowed", g.plus_one_allowed, (ev) => { plusOneFields.hidden = !ev.target.checked; });
   plusOneFields.hidden = !g.plus_one_allowed;
   card.append(
@@ -290,7 +297,7 @@ function guestCard(g, onRemove) {
     h("div", { class: "flags" },
       check("Invited to the ceremony", "invite_ceremony", g.invite_ceremony),
       check("Invited to the reception", "invite_reception", g.invite_reception ?? 1),
-      check("Invited to the rehearsal dinner", "invite_rehearsal", g.invite_rehearsal),
+      check("Invited to the rehearsal dinner", "invite_rehearsal", g.invite_rehearsal, (ev) => { rehearsalField.hidden = !ev.target.checked; }),
       check("Out of town", "out_of_town", g.out_of_town),
       check("International", "international", g.international),
     ),
@@ -303,6 +310,7 @@ function guestCard(g, onRemove) {
     plusOneFields,
     h("div", { class: "fields" },
       field("RSVP", "rsvp", { options: [["pending", "Awaiting"], ["yes", "Coming"], ["no", "Not coming"]], value: g.rsvp || "pending" }),
+      rehearsalField,
       field("Dietary needs", "dietary", { value: g.dietary || "" }),
       field("Their own email (optional)", "email", { type: "email", value: g.email || "" }),
       g.seat
@@ -385,7 +393,7 @@ async function openHousehold(hh) {
           out_of_town: hh?.guests?.[0]?.out_of_town, international: hh?.guests?.[0]?.international }) }, "+ Add a guest")),
       h("div", { class: "row", style: "margin-top:16px" },
         h("button", { class: "primary", onclick: save }, hh ? "Save" : "Add household"),
-        hh && (hh.rsvp_at || hh.guests.some((g) => g.rsvp !== "pending" || (g.plus_one_allowed && g.plus_one_rsvp !== "pending")))
+        hh && (hh.rsvp_at || hh.guests.some((g) => g.rsvp !== "pending" || (g.invite_rehearsal && g.rehearsal_rsvp !== "pending") || (g.plus_one_allowed && g.plus_one_rsvp !== "pending")))
           ? h("button", { onclick: async () => {
               if (!confirm(`Reset ${hh.display_name}'s RSVP? Everyone goes back to "awaiting reply", and what they filled in (plus-one names, dietary needs, message) is cleared so they can answer again.`)) return;
               await api("/api/admin/households/reset-rsvp", { method: "POST", body: { ids: [hh.id] } });

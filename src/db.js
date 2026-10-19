@@ -396,6 +396,11 @@ const MIGRATIONS = [
      )`,
     `CREATE INDEX IF NOT EXISTS comm_sends_status ON comm_sends(status)`,
   ],
+  // 14: each guest invited to the rehearsal dinner answers for it on the RSVP page, apart
+  // from the wedding itself: pending, yes or no.
+  [
+    `ALTER TABLE guests ADD COLUMN rehearsal_rsvp TEXT NOT NULL DEFAULT 'pending'`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
