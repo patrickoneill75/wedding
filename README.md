@@ -104,6 +104,7 @@ src/users.js       who can sign in besides the owners, and their pages
 src/comms.js       guest emails: audiences, fill-ins, sending in batches, schedules
 src/gmail.js       the Gmail connection and the email itself (MIME)
 src/calendar.js    the calendar invite (.ics)
+src/email_html.js  guest emails as HTML: the editor's cleaned tags, the plain-text twin, the designs
 src/sync.js        CSV exports and the Drive sync (cron every 5 minutes)
 src/site.js        the Zola website copy: fetch, clean, store, serve
 scripts/zola_refresh.mjs  runs src/site.js on GitHub and sends the pages to the site

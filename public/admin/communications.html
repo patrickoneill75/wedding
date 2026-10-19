@@ -85,11 +85,18 @@ function accept(reply) {
   render();
 }
 
-const when = (iso) => (iso ? new Date(iso).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "");
+// Times show in the wedding's time zone (what the schedule box means), whatever the
+// zone of the computer looking at them.
+const when = (iso) => (iso ? new Date(iso).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  timeZone: data.time_zone, timeZoneName: "short" }) : "");
+/** The ticks with their group's name ("Rehearsal dinner RSVP: Coming"), so look-alikes differ. */
 const audienceText = (audience) => {
   const ticks = audience?.ticks || [];
-  return ticks.length ? ticks.map((t) => t.split(":")[1]).join(", ") : "Every household";
+  const title = Object.fromEntries((data.audience || []).map((g) => [g.key, g.title]));
+  return ticks.length ? ticks.map((t) => { const [key, label] = t.split(":"); return `${title[key] || key}: ${label}`; }).join(", ") : "Every household";
 };
+// "Saved." for the view that render() draws next (the old message line is gone by then).
+let flash = "";
 
 function render() {
   const g = data.gmail;
@@ -144,7 +151,7 @@ function audiencePicker(audience, onChange) {
       const { households } = await api("/api/admin/comms/audience", { method: "POST", body: { audience: { ticks: [...ticked] } } });
       const missing = households.filter((x) => !x.to).length;
       count.replaceChildren(h("b", {}, String(households.length - missing)), ` household${households.length - missing === 1 ? "" : "s"} will get this`,
-        missing ? h("span", { style: "color:var(--bad)" }, ` · ${missing} in the audience have no email`) : null, " · ", toggleWho);
+        missing ? h("span", { style: "color:var(--bad)" }, ` · ${missing} in the audience have no email`) : "", " · ", toggleWho);
       who.replaceChildren(...households.map((x) => h("div", {}, h("span", {}, x.name), h("span", { class: "muted" }, x.to ? [x.to, ...x.cc].join(", ") : "no email"))));
     }, 200);
   };
@@ -202,10 +209,15 @@ function richEditor(html, { disabled = false, placeholder = "" } = {}) {
     const href = prompt("Link address: https://… or a fill-in like {rsvp_link}", current?.getAttribute("href") || "https://");
     if (!href || href === "https://") return;
     if (!/^(https?:\/\/|mailto:)\S+$|^\{[a-z_]+\}$/i.test(href.trim())) return alert("Links start with https://, http:// or mailto:, or are a fill-in like {rsvp_link}.");
-    const label = sel.toString() || current?.textContent || (button ? prompt("Button text", "RSVP now") : href.trim());
+    // An existing link is changed where it is, keeping all of its words.
+    if (current) {
+      current.setAttribute("href", href.trim());
+      current.classList.toggle("button", button);
+      return;
+    }
+    const label = sel.toString() || (button ? prompt("Button text", "RSVP now") : href.trim());
     if (!label) return;
-    if (current) current.remove();
-    run("insertHTML", `<a href="${escapeText(href.trim())}"${button ? ' class="button"' : ""}>${escapeText(label)}</a>${button ? "" : ""}`);
+    run("insertHTML", `<a href="${escapeText(href.trim())}"${button ? ' class="button"' : ""}>${escapeText(label)}</a>`);
   };
   const tool = (label, title, fn) => h("button", { type: "button", title, onmousedown: (ev) => ev.preventDefault(), onclick: fn }, label);
   const toolbar = h("div", { class: "toolbar" },
@@ -327,11 +339,13 @@ function editEmail(message) {
     };
     const insert = (key) => editor.insert(`{${key}}`);
 
+    // The schedule box is in the wedding's time zone (the server reads it that way), so
+    // it's filled in in that zone too, not the browser's.
     const local = (iso) => {
-      // The schedule box shows the wedding's local time; the browser's zone is close enough to prefill.
       const d = iso ? new Date(iso) : new Date(Date.now() + 86400000);
-      const p = (n) => String(n).padStart(2, "0");
-      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+      const part = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: data.time_zone, year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(d).map((x) => [x.type, x.value]));
+      return `${part.year}-${part.month}-${part.day}T${part.hour}:${part.minute}`;
     };
     const sendAt = h("input", { type: "datetime-local", value: local(m.status === "scheduled" ? m.send_at : null) });
 
@@ -429,6 +443,10 @@ const ZONES = [["America/Indiana/Indianapolis", "Indiana (Eastern)"], ["America/
 function calendarView() {
   const events = data.calendar_events.map((e) => ({ ...e }));
   const msg = h("p", { class: "msg" });
+  if (flash) {
+    setMsg(msg, flash, "ok");
+    flash = "";
+  }
   const list = h("div", {});
   const zone = h("select", {}, (ZONES.some(([z]) => z === data.time_zone) ? ZONES : [[data.time_zone, data.time_zone], ...ZONES])
     .map(([z, label]) => h("option", { value: z, selected: z === data.time_zone }, label)));
@@ -468,8 +486,9 @@ function calendarView() {
       h("a", { class: "btn", href: "/api/admin/comms/calendar.ics", download: "wedding.ics" }, "Download to check"),
       h("button", { class: "primary", onclick: async () => {
         try {
-          accept(await api("/api/admin/comms/calendar", { method: "PUT", body: { events, time_zone: zone.value } }));
-          setMsg(msg, "Saved.", "ok");
+          const reply = await api("/api/admin/comms/calendar", { method: "PUT", body: { events, time_zone: zone.value } });
+          flash = "Saved.";
+          accept(reply);
         } catch (error) {
           setMsg(msg, error.message, "err");
         }
@@ -507,13 +526,18 @@ const WORDING = [
 function rsvpView() {
   const r = data.rsvp;
   const msg = h("p", { class: "msg" });
+  if (flash) {
+    setMsg(msg, flash, "ok");
+    flash = "";
+  }
   const form = h("form", { class: "wording", onsubmit: async (ev) => {
     ev.preventDefault();
     const v = formValues(form);
     const page = Object.fromEntries(WORDING.map(([key]) => [key, v[`page_${key}`]]));
     try {
-      accept(await api("/api/admin/comms/rsvp-page", { method: "PUT", body: { rsvp_open: v.rsvp_open, rsvp_deadline: v.rsvp_deadline, rsvp_intro: v.rsvp_intro, email_from_name: v.email_from_name, page } }));
-      setMsg(msg, "Saved. The RSVP page shows it now.", "ok");
+      const reply = await api("/api/admin/comms/rsvp-page", { method: "PUT", body: { rsvp_open: v.rsvp_open, rsvp_deadline: v.rsvp_deadline, rsvp_intro: v.rsvp_intro, email_from_name: v.email_from_name, page } });
+      flash = "Saved. The RSVP page shows it now.";
+      accept(reply);
     } catch (error) {
       setMsg(msg, error.message, "err");
     }

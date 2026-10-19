@@ -413,6 +413,11 @@ const MIGRATIONS = [
     `ALTER TABLE comm_messages ADD COLUMN format TEXT NOT NULL DEFAULT 'text'`,
     `ALTER TABLE comm_messages ADD COLUMN design TEXT NOT NULL DEFAULT 'plain'`,
   ],
+  // 17: a send is claimed (status 'sending', claimed_at) before it goes, so two runs
+  // can never send the same row (src/comms.js sendQueued).
+  [
+    `ALTER TABLE comm_sends ADD COLUMN claimed_at TEXT`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

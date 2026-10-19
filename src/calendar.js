@@ -76,7 +76,8 @@ export function cleanEvents(input) {
       const time = /^([01]\d|2[0-3]):[0-5]\d$/;
       if (!time.test(event.start)) throw new Error(`"${event.title}" needs a start time.`);
       if (event.end && !time.test(event.end)) throw new Error(`"${event.title}" has an end time that isn't a time.`);
-      if (event.end && event.end <= event.start) throw new Error(`"${event.title}" ends before it starts.`);
+      // An end earlier than the start is the next day (a reception until 12:30 AM).
+      if (event.end && event.end === event.start) throw new Error(`"${event.title}" ends when it starts.`);
     }
     if (event.url && !/^https?:\/\//i.test(event.url)) throw new Error(`"${event.title}" has a link that doesn't start with http.`);
     return event;
@@ -135,8 +136,14 @@ export function buildIcs(events, { timeZone, host = "wedding.local", name = "Wed
       lines.push(`DTSTART;VALUE=DATE:${e.date.replace(/-/g, "")}`, `DTEND;VALUE=DATE:${next.toISOString().slice(0, 10).replace(/-/g, "")}`);
     } else {
       const start = zonedTime(e.date, e.start, timeZone);
-      // No end time: an hour, which is what most calendar apps assume.
-      const end = e.end ? zonedTime(e.date, e.end, timeZone) : new Date(start.getTime() + 3600000);
+      // No end time: an hour, which is what most calendar apps assume. An end before the
+      // start is past midnight, on the next day.
+      let end = new Date(start.getTime() + 3600000);
+      if (e.end) {
+        const day = new Date(`${e.date}T12:00:00Z`);
+        if (e.end < e.start) day.setUTCDate(day.getUTCDate() + 1);
+        end = zonedTime(day.toISOString().slice(0, 10), e.end, timeZone);
+      }
       lines.push(`DTSTART:${stamp(start)}`, `DTEND:${stamp(end)}`);
     }
     lines.push(`SUMMARY:${escape(e.title)}`);

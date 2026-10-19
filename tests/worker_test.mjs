@@ -18,8 +18,8 @@ import { buildContext, drinksPlan, enrichExpense, guestCounts, mergeSettings, st
 import { buildExports, toCsv } from "../src/sync.js";
 import { sqlValue } from "../src/importer.js";
 import { normalizeName, searchGuests } from "../src/public_api.js";
-import { buildIcs, zonedTime } from "../src/calendar.js";
-import { fillIn, processComms } from "../src/comms.js";
+import { buildIcs, cleanEvents, zonedTime } from "../src/calendar.js";
+import { fillIn, processComms, SEND_BATCH } from "../src/comms.js";
 import { htmlToText, sanitizeHtml, themeFrom } from "../src/email_html.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -2467,8 +2467,11 @@ test("email editor HTML keeps formatting and links but loses scripts, styles and
     <a href="https://example.com/?a=1&amp;b=2" target="_blank">site</a><img src=x onerror=alert(1)><p>5 < 6 & 7</p><h1>Big</h1><em>open`;
   const clean = sanitizeHtml(dirty);
   assert.equal(clean, `<p>Hi <b>there</b></p>
-    <ul><li>One<li>Two</li></li></ul>bad <a href="{rsvp_link}" class="button">RSVP</a>
-    <a href="https://example.com/?a=1&amp;b=2">site</a><p>5 &lt; 6 &amp; 7</p><h2>Big</h2><em>open</em>`);
+    <ul><li>One<li>Two</li></li></ul><p>bad <a href="{rsvp_link}" class="button">RSVP</a>
+    <a href="https://example.com/?a=1&amp;b=2">site</a></p><p>5 &lt; 6 &amp; 7</p><h2>Big</h2><p><em>open</em></p>`);
+  // Bug guard: the editor leaves the first line outside any paragraph, and the wedding
+  // design then showed it unstyled.
+  assert.equal(sanitizeHtml("Hi {greeting},<p>Body</p>"), "<p>Hi {greeting},</p><p>Body</p>");
   assert.equal(sanitizeHtml("<p>Plan:</p><p><ul><li>A</li></ul><p><b>B</b></p></p>"), "<p>Plan:</p><ul><li>A</li></ul><p><b>B</b></p>",
     "a list the editor nested in a paragraph comes out after it");
   assert.equal(htmlToText("<h2>Plans</h2><p>Hi {greeting},</p><ul><li>Ceremony</li><li>Dinner</li></ul><ol><li>Park</li><li>Walk in</li></ol><p><a href=\"https://x.com/r\" class=\"button\">RSVP</a> &amp; more</p>"),
@@ -2566,9 +2569,11 @@ test("emails: a big send goes out in batches, and the cron sends the rest", asyn
   const { env, api } = await commsSetup({ households: 25 });
   const id = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Hello", body: "Hi {greeting}" } })).data.id;
   const now = await withGmail(() => api(`/api/admin/comms/messages/${id}/send`, { method: "POST", body: {} }));
-  assert.equal(now.sent.length, 20, "the first batch goes at once");
+  assert.equal(now.sent.length, SEND_BATCH, "the first batch goes at once");
   const later = await withGmail(() => processComms(env));
-  assert.equal(later.sent.length, 5, "the cron sends the rest");
+  assert.equal(later.sent.length, SEND_BATCH, "the cron sends the next batch");
+  const last = await withGmail(() => processComms(env));
+  assert.equal(last.sent.length, 25 - 2 * SEND_BATCH, "and the rest");
   const again = await withGmail(() => processComms(env));
   assert.equal(again.sent.length, 0, "and nobody gets it twice");
   assert.equal((await api("/api/admin/comms")).data.messages[0].status, "sent");
@@ -2609,6 +2614,58 @@ test("emails: when Gmail stops working nothing is lost; the emails wait and go o
   const back = await withGmail(() => processComms(env));
   assert.equal(back.sent.length, 3);
   assert.equal((await api("/api/admin/comms")).data.gmail.last_error, null, "and the problem clears once it sends");
+});
+
+// Bug guard: a cron run that overlapped "Send now" picked the same queued rows and sent
+// them twice; a run that died partway left its rows queued to be sent again.
+test("emails: two overlapping runs never send the same email twice; a run stuck mid-send is marked failed, not resent", async () => {
+  const { env, api } = await commsSetup({ households: 6 });
+  const id = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Hello", body: "Hi" } })).data.id;
+  await api(`/api/admin/comms/messages/${id}/schedule`, { method: "POST", body: { send_at: "2099-01-01T09:00" } });
+  env.DB.db.prepare("UPDATE comm_messages SET send_at = '2000-01-01T00:00:00Z'").run();
+  const { sent } = await withGmail(() => Promise.all([processComms(env), processComms(env)]));
+  const to = sent.map((m) => m.match(/^To: (.+)$/m)[1]).sort();
+  assert.deepEqual(to, [...new Set(to)], "nobody got it twice");
+  assert.equal(to.length, 6);
+
+  const id2 = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Again", body: "Hi" } })).data.id;
+  await withGmail(() => api(`/api/admin/comms/messages/${id2}/send`, { method: "POST", body: {} }), { status: () => 500 });
+  env.DB.db.prepare("UPDATE comm_sends SET status = 'sending', claimed_at = '2000-01-01T00:00:00Z' WHERE message_id = ?").run(id2);
+  const after = await withGmail(() => processComms(env));
+  assert.equal(after.sent.length, 0, "rows stuck in sending aren't sent again");
+  const rows = env.DB.db.prepare("SELECT status, error FROM comm_sends WHERE message_id = ? AND status != 'skipped'").all(id2);
+  assert.ok(rows.every((r) => r.status === "failed" && /may or may not have gone out/.test(r.error)));
+  assert.equal(env.DB.db.prepare("SELECT status FROM comm_messages WHERE id = ?").get(id2).status, "sent", "and the email is done");
+});
+
+// Bug guards: "Send now" on an automatic email turned its automation off; an email whose
+// audience had nobody to send to stayed "Sending" forever; a scheduled email could be
+// emptied and still go out; a Gmail error hit during a batch was erased by that batch.
+test("emails: Send now keeps automation on, empty sends finish, set emails can't be emptied, a new Gmail error stays", async () => {
+  const { env, api } = await commsSetup();
+  const auto = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Thanks", body: "Hi" } })).data.id;
+  await api(`/api/admin/comms/messages/${auto}/automate`, { method: "POST", body: { on: true } });
+  await withGmail(() => api(`/api/admin/comms/messages/${auto}/send`, { method: "POST", body: {} }));
+  assert.equal(env.DB.db.prepare("SELECT status FROM comm_messages WHERE id = ?").get(auto).status, "automated");
+  assert.equal((await api(`/api/admin/comms/messages/${auto}`, { method: "PUT", body: { body: "<p><br></p>", format: "html" } })).status, 400, "can't empty an automatic email");
+
+  const nobody = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "No email", body: "Hi", audience: { ticks: ["side:Bride"] } } })).data.id;
+  env.DB.db.prepare("UPDATE households SET email = NULL").run();
+  await withGmail(() => api(`/api/admin/comms/messages/${nobody}/send`, { method: "POST", body: {} }));
+  assert.equal(env.DB.db.prepare("SELECT status FROM comm_messages WHERE id = ?").get(nobody).status, "sent", "nothing to send: done, not stuck");
+
+  env.DB.db.prepare("UPDATE households SET email = 'h' || id || '@example.com'").run();
+  env.DB.db.prepare("UPDATE settings SET value = json_set(value, '$.last_error', 'old problem') WHERE key = '_gmail'").run();
+  const third = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Third", body: "Hi" } })).data.id;
+  await withGmail(() => api(`/api/admin/comms/messages/${third}/send`, { method: "POST", body: {} }), { status: (n) => (n === 0 ? 200 : 429) });
+  assert.match((await api("/api/admin/comms")).data.gmail.last_error, /sending limit/, "the limit hit in this batch is still shown");
+});
+
+test("calendar: an event that ends after midnight ends on the next day", () => {
+  const events = cleanEvents([{ title: "Reception", date: "2027-06-12", start: "18:00", end: "00:30", for: "everyone" }]);
+  const ics = buildIcs(events, { timeZone: "America/Indiana/Indianapolis" });
+  assert.match(ics, /DTSTART:20270612T220000Z\r\nDTEND:20270613T043000Z/);
+  assert.throws(() => cleanEvents([{ title: "x", date: "2027-06-12", start: "18:00", end: "18:00" }]), /ends when it starts/);
 });
 
 test("emails: a Communications user can write and send, but only an admin connects Gmail", async () => {

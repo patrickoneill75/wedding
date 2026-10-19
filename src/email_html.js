@@ -12,7 +12,7 @@
 
 const escapeHtml = (text) => String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+const ENTITIES = Object.assign(Object.create(null), { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " });
 export const decodeEntities = (text) => String(text).replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, code) => {
   if (code[0] === "#") {
     const n = code[1].toLowerCase() === "x" ? parseInt(code.slice(2), 16) : Number(code.slice(1));
@@ -51,10 +51,21 @@ export function sanitizeHtml(html) {
   let dropping = null;
   let depth = 0;
   let last = 0;
-  const text = (chunk) => chunk.replace(/<|>/g, (c) => (c === "<" ? "&lt;" : "&gt;")).replace(/&(?!(#x[0-9a-f]+|#\d+|[a-z]+);)/gi, "&amp;");
+  const escaped = (chunk) => chunk.replace(/<|>/g, (c) => (c === "<" ? "&lt;" : "&gt;")).replace(/&(?!(#x[0-9a-f]+|#\d+|[a-z]+);)/gi, "&amp;");
+  // Words outside any block (the editor leaves the first line bare) go in a paragraph,
+  // so the wedding design styles them like the rest.
+  const wrap = () => {
+    if (open.length) return;
+    out.push("<p>");
+    open.push("p");
+  };
+  const text = (chunk) => {
+    if (chunk.trim()) wrap();
+    out.push(escaped(chunk));
+  };
   const source = String(html || "");
   for (const m of source.matchAll(TAG)) {
-    if (!dropping) out.push(text(source.slice(last, m.index)));
+    if (!dropping) text(source.slice(last, m.index));
     last = m.index + m[0].length;
     if (!m[2]) continue; // a comment
     const closing = m[1] === "/";
@@ -85,6 +96,7 @@ export function sanitizeHtml(html) {
       const at = open.lastIndexOf("p");
       if (at >= 0 && open.slice(at + 1).every((t) => INLINE.has(t))) while (open.length > at) out.push(`</${open.pop()}>`);
     }
+    if (INLINE.has(name) || name === "br") wrap();
     if (EMPTY.has(name)) {
       out.push(`<${name}>`);
       continue;
@@ -101,7 +113,7 @@ export function sanitizeHtml(html) {
     }
     open.push(name);
   }
-  if (!dropping) out.push(text(source.slice(last)));
+  if (!dropping) text(source.slice(last));
   while (open.length) out.push(`</${open.pop()}>`);
   return out.join("").replace(/<p><\/p>/g, "").trim();
 }

@@ -71,7 +71,7 @@ export async function openGmail(env) {
     }),
   });
   if (!response.ok) {
-    const message = `Gmail stopped accepting the connection (${response.status}). Reconnect Gmail in Communications.`;
+    const message = `Gmail stopped accepting the connection (${response.status}). Reconnect Gmail in Settings.`;
     await setSetting(env, "_gmail", { ...stored, last_error: message, last_error_at: new Date().toISOString() });
     throw new GmailConnectionError(message);
   }
