@@ -128,15 +128,16 @@ function statusLine(m) {
 
 function emailsView() {
   const rows = data.messages.map((m) => h("tr", { class: "clickable", onclick: () => editEmail(m) },
+    h("td", {}, m.title ? h("b", {}, m.title) : h("span", { class: "muted" }, "(untitled)")),
     h("td", {}, m.subject || h("span", { class: "muted" }, "(no subject)")),
     h("td", { class: "muted" }, audienceText(m.audience)),
     h("td", {}, h("span", { class: `status ${m.status}` }, STATUS_TEXT[m.status] || m.status)),
     h("td", { class: "muted" }, statusLine(m))));
-  if (!rows.length) rows.push(h("tr", {}, h("td", { colspan: 4, class: "muted" }, "No emails yet. Write the first one: the details email after someone RSVPs is a good start.")));
+  if (!rows.length) rows.push(h("tr", {}, h("td", { colspan: 5, class: "muted" }, "No emails yet. Write the first one: the details email after someone RSVPs is a good start.")));
   return h("div", {},
     h("div", { class: "row", style: "margin-bottom:10px" }, h("span", { class: "spacer" }), h("button", { onclick: emailDesign }, "Email design")),
     h("div", { class: "table-wrap" }, h("table", {},
-      h("thead", {}, h("tr", {}, ["Subject", "Who gets it", "Status", ""].map((t) => h("th", {}, t)))),
+      h("thead", {}, h("tr", {}, ["Title", "Subject", "Who gets it", "Status", ""].map((t) => h("th", {}, t)))),
       h("tbody", {}, rows))));
 }
 
@@ -305,11 +306,12 @@ function emailDesign() {
 }
 
 function editEmail(message) {
-  const m = message || { subject: "", body: "", format: "html", design: "wedding", audience: { ticks: [] }, attach_ics: false, status: "draft", counts: {} };
+  const m = message || { title: "", subject: "", body: "", format: "html", design: "wedding", audience: { ticks: [] }, attach_ics: false, status: "draft", counts: {} };
   const locked = m.status === "sending" || m.status === "sent";
   let audience = { ticks: [...(m.audience?.ticks || [])] };
-  openDialog(message ? (m.subject || "Email") : "New email", (close) => {
+  openDialog(message ? (m.title || m.subject || "Email") : "New email", (close) => {
     const msg = h("p", { class: "msg" });
+    const title = h("input", { value: m.title || "", maxlength: 120, placeholder: "Thank-you after an RSVP" });
     const subject = h("input", { value: m.subject, placeholder: "Your RSVP and the details", disabled: locked });
     const editor = richEditor(m.format === "html" ? m.body : textToContent(m.body), { disabled: locked, placeholder: "Hi {greeting},\n\nThank you for your RSVP! …" });
     const attach = h("input", { type: "checkbox", checked: m.attach_ics, disabled: locked });
@@ -320,7 +322,7 @@ function editEmail(message) {
       h("option", { value: "" }, "as the first household in the audience"),
       data.test_guests.map((t) => h("option", { value: t.key }, `as a guest who ${t.label}`)));
     let id = message?.id || null;
-    const values = () => ({ subject: subject.value, body: editor.html(), format: "html", design: design.value, audience, attach_ics: attach.checked });
+    const values = () => ({ title: title.value, subject: subject.value, body: editor.html(), format: "html", design: design.value, audience, attach_ics: attach.checked });
     const save = async () => {
       if (locked) return;
       if (id) accept(await api(`/api/admin/comms/messages/${id}`, { method: "PUT", body: values() }));
@@ -403,7 +405,9 @@ function editEmail(message) {
 
     return h("div", {},
       locked ? h("p", { class: "banner" }, "This email has been sent, so it can't be changed. Duplicate it to send a new version.") : null,
-      h("label", { class: "field" }, "Subject", subject),
+      h("label", { class: "field" }, "Title", title,
+        h("span", { class: "muted", style: "font-size:12px" }, "A name for this email on this page. Only people who sign in here see it; it never goes in the email.")),
+      h("label", { class: "field", style: "margin-top:12px" }, "Subject", subject),
       h("div", { class: "field", style: "margin-top:12px" }, "Email", editor.el),
       locked ? null : h("div", { class: "fillins" }, h("span", { class: "muted", style: "font-size:12px; align-self:center" }, "Insert:"),
         data.fill_ins.map((f) => h("button", { type: "button", title: f.help, onmousedown: (ev) => ev.preventDefault(), onclick: () => insert(f.key) }, `{${f.key}}`))),
@@ -414,7 +418,9 @@ function editEmail(message) {
       h("h3", { class: "part" }, "Who gets it"),
       locked ? h("p", {}, audienceText(m.audience)) : audiencePicker(audience, (next) => { audience = next; }),
       h("div", { class: "row", style: "margin-top:14px" },
-        locked ? null : h("button", { onclick: () => act(save, "Saved.") }, "Save"),
+        locked
+          ? h("button", { onclick: () => act(async () => accept(await api(`/api/admin/comms/messages/${id}`, { method: "PUT", body: { title: title.value } })), "Saved.") }, "Save title")
+          : h("button", { onclick: () => act(save, "Saved.") }, "Save"),
         h("button", { onclick: () => act(async () => {
           if (!locked) await save();
           const r = await api(`/api/admin/comms/messages/${id}/test`, { method: "POST", body: { as: testAs.value } });
@@ -422,7 +428,8 @@ function editEmail(message) {
         }) }, "Send a test to me"),
         testAs,
         h("button", { onclick: () => act(async () => {
-          const reply = await api("/api/admin/comms/messages", { method: "POST", body: { ...values(), subject: `${subject.value} (copy)` } });
+          // "(copy)" goes on the title, which guests never see, not on the subject.
+          const reply = await api("/api/admin/comms/messages", { method: "POST", body: { ...values(), title: `${title.value || subject.value} (copy)` } });
           accept(reply);
           close(true);
           editEmail(reply.messages.find((x) => x.id === reply.id));

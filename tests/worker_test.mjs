@@ -2966,6 +2966,23 @@ test("emails: when Gmail stops working nothing is lost; the emails wait and go o
   assert.equal((await api("/api/admin/comms")).data.gmail.last_error, null, "and the problem clears once it sends");
 });
 
+test("emails: a title names an email for admins only; it never goes to guests, and it can change after sending", async () => {
+  const { env, api } = await commsSetup();
+  const created = await api("/api/admin/comms/messages", { method: "POST", body: { title: "Secret admin label", subject: "Hello", body: "<p>Hi {greeting}</p>", format: "html" } });
+  const id = created.data.id;
+  assert.equal(created.data.messages.find((m) => m.id === id).title, "Secret admin label");
+  const test = await withGmail(() => api(`/api/admin/comms/messages/${id}/test`, { method: "POST", body: {} }));
+  const all = await withGmail(() => api(`/api/admin/comms/messages/${id}/send`, { method: "POST", body: {} }));
+  const mail = [...test.sent, ...all.sent];
+  assert.ok(mail.length > 1);
+  for (const mime of mail) assert.ok(![mime, ...decodeParts(mime)].some((part) => part.includes("Secret admin label")), "the title isn't in any email");
+  assert.ok(!JSON.stringify((await call(env, "/api/public/info")).data).includes("Secret admin label"), "or on the RSVP page");
+  assert.equal((await api(`/api/admin/comms/messages/${id}`, { method: "PUT", body: { title: "Renamed" } })).status, 200, "a sent email's title can change");
+  assert.equal((await api(`/api/admin/comms/messages/${id}`, { method: "PUT", body: { title: "Again", subject: "New" } })).status, 400, "but nothing else");
+  const after = (await api("/api/admin/comms")).data.messages.find((m) => m.id === id);
+  assert.deepEqual([after.title, after.subject], ["Renamed", "Hello"]);
+});
+
 // Bug guard: a test email that went through left an old Gmail error on the banner, so a
 // fixed problem (the Gmail API turned on) still looked broken.
 test("emails: a test email that goes through clears an old Gmail error", async () => {

@@ -56,7 +56,8 @@
     never re-queued.
     Rich-text bodies are cleaned on save by `sanitizeHtml` (`src/email_html.js`), a short
     allowlist of tags; fill-ins are escaped into HTML. Calendar invites attach as
-    `application/ics` and go only to guests who haven't declined (`eventsFor`).
+    `application/ics` and go only to guests who haven't declined (`eventsFor`). An email's `title` is a name for
+    admins on the Communications page; it never goes into an email (a test checks).
 
 ## Tests
 

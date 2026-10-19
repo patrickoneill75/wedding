@@ -426,6 +426,10 @@ const MIGRATIONS = [
   [
     `ALTER TABLE seating_items ADD COLUMN group_id INTEGER`,
   ],
+  // 20: an email's title, a name for it on the Communications page. Guests never see it.
+  [
+    `ALTER TABLE comm_messages ADD COLUMN title TEXT NOT NULL DEFAULT ''`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
