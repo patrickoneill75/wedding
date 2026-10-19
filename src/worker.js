@@ -7,13 +7,15 @@ import { saveGmailTokens } from "./gmail.js";
 import { processComms } from "./comms.js";
 import { scheduledSync } from "./sync.js";
 import { ingestSite, recordSiteError, serveFont, servePage } from "./site.js";
+import { serveGuide } from "./guide.js";
 import { loadSettings } from "./store.js";
 import { handleDayOf } from "./runofshow.js";
 
 /**
  * Worker entry point. Every request comes here first (run_worker_first in
  * wrangler.jsonc): /api/* is handled below, "/" and the copied Zola pages ("/travel",
- * ...) come from D1 (src/site.js), /_site/fonts/* proxies the theme's fonts, and
+ * ...) come from D1 (src/site.js), /things-to-do is our guide to Indy (src/guide.js,
+ * hidden until Settings publishes it), /_site/fonts/* proxies the theme's fonts, and
  * everything else is a static file from public/ -- the RSVP page at /rsvp/, the expense
  * form at /submit/, the control panel at /admin/.
  *
@@ -129,6 +131,10 @@ export default {
     if (url.pathname.startsWith("/_site/fonts/")) return serveFont(url.pathname);
     const method = request.method.toUpperCase();
     const pageLike = url.pathname === "/index.html" || !url.pathname.includes(".", url.pathname.lastIndexOf("/"));
+    if ((method === "GET" || method === "HEAD") && env.DB && /^\/things-to-do\/?$/.test(url.pathname)) {
+      await ensureSchema(env);
+      return serveGuide(env, request);
+    }
     if ((method === "GET" || method === "HEAD") && env.DB && pageLike) {
       try {
         await ensureSchema(env);

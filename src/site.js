@@ -43,7 +43,9 @@ const MAX_PAGES = 15;
 // Paths the copy can never take over.
 // Our own paths: every top-level entry in public/ plus the Worker's. A copied Zola page
 // can never take one of these (a test checks public/ against this list).
-export const RESERVED = new Set(["admin", "api", "rsvp", "submit", "dayof", "call", "_site", "_headers", "favicon.svg"]);
+export const RESERVED = new Set(["admin", "api", "rsvp", "submit", "dayof", "call", "things-to-do", "_site", "_headers", "favicon.svg"]);
+// Our Things to Do page (src/guide.js), added to the site's menu once it's published.
+export const THINGS_TO_DO = { path: "/things-to-do", label: "Things to Do" };
 const BROWSER_HEADERS = {
   "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
   accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -183,7 +185,7 @@ export function localPathFor(key, slug) {
 }
 
 /** The theme's most-used font, for our menu. */
-function themeFont(html) {
+export function themeFont(html) {
   const tally = new Map();
   for (const m of html.matchAll(/font-family:\s*(?:&#x27;|')([^&']+)(?:&#x27;|')/gi)) tally.set(m[1], (tally.get(m[1]) || 0) + 1);
   return [...tally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
@@ -684,6 +686,37 @@ export function siteFooter({ coupleNames = "", contactEmail = "" }) {
     + `</style>${coupleNames ? `<p>${escapeHtml(coupleNames)}</p>` : ""}${links.length ? `<nav aria-label="Footer">${links.join("")}</nav>` : ""}</footer>`;
 }
 
+/**
+ * The site's menu with our Things to Do page in it: after the last link in the site's
+ * own menu row (a copy of that link, so it looks the same), and in our phone menu. When
+ * the Zola site has a Things to Do page of its own, its links point here instead.
+ */
+export function addGuideLink(html) {
+  const { path, label } = THINGS_TO_DO;
+  const zolas = /href="https:\/\/www\.zola\.com\/wedding\/[^"/]+\/things-to-do"/g;
+  if (zolas.test(html)) return html.replace(zolas, `href="${path}"`);
+  let out = html;
+  const links = [...out.matchAll(/<a\b[^>]*\bdata-wm-nav="menu"[^>]*>[\s\S]*?<\/a>/g)];
+  const last = links[links.length - 1];
+  if (last) {
+    let start = last.index;
+    let end = start + last[0].length;
+    // A link alone in a list item: copy the whole item.
+    const before = /<li\b[^>]*>\s*$/.exec(out.slice(Math.max(0, start - 300), start));
+    const after = /^\s*<\/li>/.exec(out.slice(end));
+    if (before && after) {
+      start -= before[0].length;
+      end += after[0].length;
+    }
+    const copy = out.slice(start, end)
+      .replace(/(<a\b[^>]*?)\shref="[^"]*"/, `$1 href="${path}"`)
+      .replace(/\s(?:target|rel|aria-current)="[^"]*"/g, "")
+      .replace(/>([^<>]*\S[^<>]*)</, `>${label}<`);
+    out = out.slice(0, end) + copy + out.slice(end);
+  }
+  return out.replace(/(<nav id="wm-menu"[^>]*>[\s\S]*?)(<\/nav>)/, `$1<a href="${path}">${label}</a>$2`);
+}
+
 /** The stored copy of a page, or null. Only plain page paths are looked up. */
 export async function servePage(env, pathname) {
   let path = pathname.replace(/\/index\.html$/, "/");
@@ -698,6 +731,7 @@ export async function servePage(env, pathname) {
   let stored = page.html;
   // No RSVP button while RSVPs are closed; its color follows Settings without a refresh.
   if (!s.rsvp_open) stored = stored.replace(/<a class="wm-rsvp"[^>]*>RSVP<\/a>/, "");
+  if (s.things_to_do_published) stored = addGuideLink(stored);
   const color = /^#[0-9a-f]{6}$/i.test(s.rsvp_button_color) ? s.rsvp_button_color : RSVP_COLOR;
   const head = stored.indexOf("</head>");
   const style = `<style data-wm="rsvp-color">.wm-rsvp{background:${color}}.wm-rsvp:focus-visible{outline-color:${color}}</style>`;

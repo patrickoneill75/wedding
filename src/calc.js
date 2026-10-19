@@ -93,6 +93,8 @@ export const DEFAULT_SETTINGS = {
   venue: "",
   rsvp_deadline: "",
   rsvp_open: true,
+  // The Things to Do page (src/guide.js) stays hidden until this is on.
+  things_to_do_published: false,
   rsvp_intro: "",
   tax_rate: 0.07,
   guest_basis: "weighted",

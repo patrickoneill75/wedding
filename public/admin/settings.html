@@ -92,6 +92,17 @@
     <div id="siteStatus" class="desc" style="margin-top:12px"></div>
   </form>
 
+  <div class="card" id="guideCard">
+    <div class="row"><h2 style="margin:0">Things to Do page</h2><span id="guideState"></span></div>
+    <p class="desc">Your guide to Indy, at <code>/things-to-do</code> on the website. While it's hidden, guests can't open it
+      and only admins see it, with a preview banner. Publishing adds it to the website's menu.</p>
+    <div class="row">
+      <a class="btn" href="/things-to-do" target="_blank" rel="noopener">Preview ↗</a>
+      <button type="button" id="guideToggle"></button>
+    </div>
+    <p class="msg" id="guideMsg"></p>
+  </div>
+
   <div class="card">
     <h2>Expense form link</h2>
     <p class="desc">Add expenses, payments and receipts from your phone. It uses the same Google sign-in as the control panel,
@@ -505,6 +516,28 @@ if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoVi
 showLink();
 renderDrive();
 renderSite();
+
+/* ------------------------------------------------------------ things to do -- */
+function renderGuide() {
+  const on = Boolean(state.settings.things_to_do_published);
+  document.getElementById("guideState").replaceChildren(h("span", { class: `pill ${on ? "paid" : ""}` }, on ? "Published" : "Hidden"));
+  const button = document.getElementById("guideToggle");
+  button.className = on ? "" : "primary";
+  button.textContent = on ? "Hide from guests" : "Publish";
+}
+document.getElementById("guideToggle").addEventListener("click", async () => {
+  const on = !state.settings.things_to_do_published;
+  if (on && !confirm("Publish the Things to Do page? Guests will see it in the website's menu.")) return;
+  const msg = document.getElementById("guideMsg");
+  try {
+    state = { ...state, ...(await api("/api/admin/settings", { method: "PUT", body: { things_to_do_published: on } })) };
+    renderGuide();
+    setMsg(msg, on ? "Published. It's in the website's menu now (pages refresh within 5 minutes)." : "Hidden. Guests can't open it now.", "ok");
+  } catch (error) {
+    setMsg(msg, error.message, "err");
+  }
+});
+renderGuide();
 const params = new URLSearchParams(location.search);
 // A failed Google connection comes back with ?error= and the card's hash (#drive or #gmail).
 if (params.get("error") && location.hash !== "#gmail") setMsg(driveMsg, params.get("error"), "err");

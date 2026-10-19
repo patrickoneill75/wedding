@@ -58,6 +58,10 @@ A Cloudflare Worker with two sides:
     a video call after the wedding: their names are filled in, they hit submit, and they
     get a "post-wedding call" tag (a guest filter and an email audience) and a button to
     the registry (its link is in Settings).
+  - **Things to Do** (`/things-to-do`): our guide to Indy on the public website, in the
+    site's look, every place a link to Google Maps. It stays hidden (guests get a 404)
+    until Settings publishes it; until then admins see a preview. Publishing adds it to
+    the site's menu.
   - **Settings**: wedding details, 7% tax, budget, priority weights, the drinks
     calculator, the expense-form link, Google Drive, the spreadsheet import, and Users:
     the owners in `ADMIN_EMAILS` plus anyone you add, each an admin (everything) or a
@@ -111,6 +115,7 @@ src/calendar.js    the calendar invite (.ics)
 src/email_html.js  guest emails as HTML: the editor's cleaned tags, the plain-text twin, the designs
 src/sync.js        CSV exports and the Drive sync (cron every 5 minutes)
 src/site.js        the Zola website copy: fetch, clean, store, serve
+src/guide.js       the Things to Do page (/things-to-do) and its copy
 scripts/zola_refresh.mjs  runs src/site.js on GitHub and sends the pages to the site
 src/importer.js    one-time import of Wedding_Data.xlsx
 src/xlsx.js        a minimal .xlsx reader (no dependencies)
