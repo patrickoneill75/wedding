@@ -3032,6 +3032,50 @@ test("post-wedding call: {call_link} is a personal \"click here\" link; the page
   assert.ok(RESERVED.has("call"), "the website copy never takes over /call");
 });
 
+test("things to do: hidden from guests until published, previewed by an admin, then added to the site's menu", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  await api("/api/admin/settings", { method: "PUT", body: { couple_names: "Kaitlyn & Patrick", wedding_date: "2027-05-15" } });
+  env.DB.db.prepare("INSERT INTO site_pages (path, title, html, source_url, content_hash, fetched_at, changed_at) VALUES ('/', 'Home', ?, '', '', '', '')")
+    .run('<html><head><style data-wm="fonts">@font-face{font-family:Made Up}</style></head><body style="background-color:#faf6ef"><p style="color:#333344">Hi</p>'
+      + '<ul><li><a href="/travel" data-wm-nav="menu">Travel</a></li><li><a href="https://www.zola.com/wedding/x/registry" data-wm-nav="menu" target="_blank">Registry</a></li></ul>'
+      + '<nav id="wm-menu" aria-label="Site" hidden><a href="/travel">Travel</a></nav></body></html>');
+  const guest = await call(env, "/things-to-do");
+  assert.equal(guest.status, 404, "hidden from guests");
+  assert.ok(!String(guest.data).includes("Commissary"));
+  const preview = await api("/things-to-do");
+  assert.equal(preview.status, 200);
+  assert.match(preview.data, /<b>Preview\.<\/b>/, "an admin sees a preview");
+  assert.equal(preview.headers.get("cache-control"), "private, no-store", "and the preview is never cached");
+  assert.equal((preview.data.match(/class="place"/g) || []).length, 97, "every place links to its map");
+  assert.match(preview.data, /May 15, 2027 · Indianapolis/);
+  assert.match(preview.data, /--bg:#faf6ef/, "it takes the website's look");
+  assert.match(preview.data, /@font-face\{font-family:Made Up\}/, "and its fonts");
+  assert.ok(!(await call(env, "/")).data.includes("/things-to-do"), "not in the menu while hidden");
+
+  assert.equal((await api("/api/admin/settings", { method: "PUT", body: { things_to_do_published: true } })).status, 200);
+  const live = await call(env, "/things-to-do/");
+  assert.equal(live.status, 200);
+  assert.ok(!live.data.includes("<b>Preview.</b>"));
+  assert.equal(live.headers.get("cache-control"), "public, max-age=300");
+  const home = (await call(env, "/")).data;
+  assert.ok(home.includes('<li><a href="https://www.zola.com/wedding/x/registry" data-wm-nav="menu" target="_blank">Registry</a></li><li><a href="/things-to-do" data-wm-nav="menu">Things to Do</a></li>'),
+    "a copy of the last menu link, in its own list item");
+  assert.ok(home.includes('<a href="/travel">Travel</a><a href="/things-to-do">Things to Do</a></nav>'), "and in the phone menu");
+  assert.equal((await api("/api/admin/settings", { method: "PUT", body: { things_to_do_published: false } })).status, 200);
+  assert.equal((await call(env, "/things-to-do")).status, 404, "hidden again");
+});
+
+test("things to do: every name links to a place, the copy is escaped, and Zola's own Things to Do link points here", async () => {
+  const { SECTIONS, PLACES, guideLine } = await import("../src/guide.js");
+  const { addGuideLink } = await import("../src/site.js");
+  const lines = SECTIONS.flatMap((s) => [...(s.intro || []), ...s.groups.flatMap((g) => [g.intro || "", ...g.items])]);
+  for (const line of lines) for (const m of line.matchAll(/\]\(([^)]+)\)/g)) assert.ok(Object.hasOwn(PLACES, m[1]), `no map link for ${m[1]}`);
+  assert.equal(guideLine('Try <b> & [Bodhi](bodhi)'), `Try &#60;b&#62; &#38; <a class="place" href="${PLACES.bodhi.replace(/&/g, "&#38;")}" target="_blank" rel="noopener">Bodhi</a>`);
+  const page = '<a href="https://www.zola.com/wedding/x/things-to-do" data-wm-nav="menu">Things To Do</a><nav id="wm-menu" hidden><a href="https://www.zola.com/wedding/x/things-to-do">Things To Do</a></nav>';
+  assert.equal(addGuideLink(page), page.replace(/https:\/\/www\.zola\.com\/wedding\/x\/things-to-do/g, "/things-to-do"), "no second link");
+});
+
 // Bug guard: a test email that went through left an old Gmail error on the banner, so a
 // fixed problem (the Gmail API turned on) still looked broken.
 test("emails: a test email that goes through clears an old Gmail error", async () => {

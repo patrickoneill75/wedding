@@ -186,6 +186,7 @@ function cleanSettings(input) {
     }
   }
   if (has(input, "rsvp_open")) patch.rsvp_open = Boolean(bool(input.rsvp_open));
+  if (has(input, "things_to_do_published")) patch.things_to_do_published = Boolean(bool(input.things_to_do_published));
   if (has(input, "tax_rate")) {
     patch.tax_rate = asNumber(input.tax_rate, "Tax rate");
     if (patch.tax_rate > 1) throw new Error("Tax rate is a fraction (7% is 0.07).");
