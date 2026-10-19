@@ -13,7 +13,8 @@
    has shipped.
 4. **Workers Free limits**: 50 D1 queries and 50 subrequests per request. Bulk writes use
    multi-row INSERTs with escaped literals (`sqlValue` in `src/importer.js`), not one
-   statement per row.
+   statement per row. D1 also allows only 100 bound parameters a statement: put lists of
+   integer ids into the SQL as literals, not one `?` each.
 5. Look up keys from request bodies with own-property checks or `Object.create(null)`.
    A plain `{}` inherits `constructor`, `toString` and friends.
 6. Drive uploads **upsert by name** (find, then update), so syncs update files instead of
@@ -23,7 +24,8 @@
 8. Guests never see budget data. `GET /api/public/info`, the RSVP name search and the
    lookup return only what the RSVP page needs; tests check for leaks. The search
    returns names and signed picks only (2+ letters, 8 results), and a household opens
-   from a pick, never from a raw guest id. While RSVPs are closed, the RSVP routes answer only a
+   from a pick, never from a raw guest id. The lookup shows email addresses masked
+   (`maskEmail`), and a blank email on submit keeps the one on file. While RSVPs are closed, the RSVP routes answer only a
    signed-in admin, as a preview: submit runs every check but saves nothing and sends no email. The coordinator's day-of view (`/api/dayof`,
    a key in the link instead of a sign-in) gets steps, names, tables and vendor contacts
    only: no budgets, addresses or RSVP details, also checked by a test.
@@ -49,6 +51,9 @@
     an RSVP can never send the same email twice. Sends go in batches of `SEND_BATCH` with
     one Gmail token read per batch and batched status updates, to stay under the D1
     query limit; the cron leaves the Drive sync to the next run when it sent email.
+    A run claims its rows first (queued -> sending in one UPDATE ... RETURNING), so two
+    overlapping runs never send the same row; a row stuck in sending is marked failed,
+    never re-queued.
     Rich-text bodies are cleaned on save by `sanitizeHtml` (`src/email_html.js`), a short
     allowlist of tags; fill-ins are escaped into HTML. Calendar invites attach as
     `application/ics` and go only to guests who haven't declined (`eventsFor`).
