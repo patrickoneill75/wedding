@@ -78,7 +78,8 @@ export async function loadPeople(env) {
       notes: g.notes || "",
       guest_email: g.guest_email || "",
       ...rehearsalAnswer(g.invite_rehearsal, g.rehearsal_rsvp),
-      ...at(seat.guest),
+      // No seat on the chart yet: the table typed on the Guests page, if any.
+      ...(seat.guest || !String(g.table_name || "").trim() ? at(seat.guest) : { table: String(g.table_name).trim(), seat: "", table_seat: String(g.table_name).trim() }),
     });
     if (g.plus_one_allowed) {
       const typed = String(g.plus_one_name || "").trim();

@@ -1,5 +1,5 @@
 /**
- * Reports, mounted under /api/admin/reports/* (admins only).
+ * Reports, mounted under /api/admin/reports/* (admins, and users with the Reports page).
  *
  *   GET    reports                 the built-in reports, saved custom reports, and the
  *                                  sources and fields a custom report can use
@@ -109,7 +109,7 @@ export const BUILTINS = [
   { id: "table-cards", group: "Seating", name: "Table cards", description: "One row per reception guest for escort or place cards: name, table, seat and meal.",
     definition: def("people", ["first_name", "last_name", "name", "table", "seat", "dietary"], [["reception", "is", "yes"], notDeclined], ["last_name", "first_name"]) },
   { id: "seating-board", group: "Seating", name: "Seating chart board", description: "Who sits at each table, table by table, for the seating chart display.",
-    definition: def("people", ["table", "seat", "name"], [["table", "not_empty"], notDeclined], ["table", "seat"]) },
+    definition: def("people", ["table", "seat", "name"], [["reception", "is", "yes"], ["table", "not_empty"], notDeclined], ["table", "seat"]) },
   { id: "unseated", group: "Seating", name: "Reception guests without a seat", description: "Coming or awaiting reply, invited to the reception, with no seat yet.",
     definition: def("people", ["name", "household", "rsvp", "side"], [["reception", "is", "yes"], notDeclined, ["table", "empty"]], ["last_name"]) },
   { id: "ceremony-only", group: "Guest lists", name: "Ceremony-only guests", description: "Invited to the ceremony and not the reception.",

@@ -1965,6 +1965,48 @@ test("seating: tables come from templates, get the next table number, and number
   assert.equal((await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "note", label: " " } })).status, 400);
 });
 
+// Bug guards: every reception room numbered its tables from 1, so escort cards said
+// "table 1" twice; a ceremony row of chairs with a label couldn't be saved again; a
+// reception chair's number could be cleared with someone in it; a room made a
+// reception room could seat two people at the same "table 1 A".
+test("seating: numbers are unique across reception rooms, ceremony chairs may share labels, seated chairs keep numbers", async () => {
+  const { env, api, id, roomId } = await seatingSetup();
+  const patio = (await api("/api/admin/seating/rooms", { method: "POST", body: { name: "Patio", kind: "reception", width_ft: 40, length_ft: 30 } })).data.id;
+  const hallTable = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 4 } })).data;
+  const patioTable = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: patio, kind: "table", seats: 4 } })).data;
+  const label = (d) => d.items.find((i) => i.id === d.ids[0]).label;
+  assert.deepEqual([label(hallTable), label(patioTable)], ["1", "2"], "the Patio's first table is 2");
+  assert.equal((await api(`/api/admin/seating/items/${patioTable.ids[0]}`, { method: "PUT", body: { label: "1" } })).status, 400);
+
+  const chapel = (await api("/api/admin/seating/rooms", { method: "POST", body: { name: "Chapel", kind: "ceremony", width_ft: 40, length_ft: 60 } })).data.id;
+  const row = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: chapel, kind: "seat", count: 3, label: "Row A" } })).data.ids;
+  assert.equal((await api(`/api/admin/seating/items/${row[1]}`, { method: "PUT", body: { label: "Row A", x: 5 } })).status, 200, "ceremony chairs may share a label");
+
+  const chair = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "seat" } })).data.ids[0];
+  await api("/api/admin/seating/assign", { method: "POST", body: { item_id: chair, seat_letter: "A", guest_id: id.Avery } });
+  assert.equal((await api(`/api/admin/seating/items/${chair}`, { method: "PUT", body: { label: "" } })).status, 400, "a reception chair keeps a number");
+
+  // The chapel becomes a reception room: its "Row A" chairs share a number.
+  await api(`/api/admin/seating/rooms/${chapel}`, { method: "PUT", body: { kind: "reception" } });
+  const seat = await api("/api/admin/seating/assign", { method: "POST", body: { item_id: row[0], seat_letter: "A", guest_id: id.Blake } });
+  assert.equal(seat.status, 400);
+  assert.match(seat.data.error, /share the number Row A/);
+});
+
+// Bug guards: a table typed on the Guests page reached guests.csv but no report; the
+// seating board still printed a guest taken off the reception.
+test("seating: a typed table shows in reports until the guest has a seat; the board leaves out non-reception guests", async () => {
+  const { api, id, roomId } = await seatingSetup();
+  await api(`/api/admin/guests/${id.Blake}`, { method: "PUT", body: { table_name: "7" } });
+  const table = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 4 } })).data.ids[0];
+  await api("/api/admin/seating/assign", { method: "POST", body: { item_id: table, seat_letter: "A", guest_id: id.Avery } });
+  const cards = await runReport(api, { id: "table-cards" });
+  assert.equal(cards.find((r) => r.Name === "Blake Test").Table, "7");
+  await api(`/api/admin/guests/${id.Avery}`, { method: "PUT", body: { invite_reception: false } });
+  const board = await runReport(api, { id: "seating-board" });
+  assert.ok(!board.some((r) => r.Name === "Avery Test"), "off the reception, off the board");
+});
+
 test("seating: a person has one seat; seating them again moves them, and taking a seat bumps whoever had it", async () => {
   const { env, api, id, roomId } = await seatingSetup();
   const tableId = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 6 } })).data.ids[0];

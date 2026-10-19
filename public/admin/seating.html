@@ -15,7 +15,7 @@
   @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
   .toolbar select { width: auto; }
-  .canvas { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); max-height: 76vh; touch-action: none; }
+  .canvas { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); max-height: 76vh; }
   .canvas svg { display: block; user-select: none; -webkit-user-select: none; }
   .canvas .floor { fill: var(--surface-1); stroke: var(--text-secondary); stroke-width: .12; }
   .canvas .g1 { stroke: var(--grid); stroke-width: .03; }
@@ -59,6 +59,8 @@
     .topbar, .toolbar, .panel, #templatesCard, #whoCard, .rooms, #addRoom { display: none !important; }
     .layout { display: block; }
     .canvas { max-height: none; overflow: visible; border: 0; }
+    /* The whole room on the page, whatever the zoom on screen. */
+    .canvas svg { width: 100% !important; min-width: 0 !important; }
   }
 </style>
 </head>
@@ -154,8 +156,11 @@ function seatSpots(item) {
       spots.push({ x: r * Math.cos(a), y: r * Math.sin(a) });
     }
   } else {
-    const w = item.width_ft;
-    const l = item.length_ft;
+    // Chairs go on the long sides: for a table longer top to bottom than across, lay
+    // them out as if it were turned, then turn them back (below).
+    const tall = item.length_ft > item.width_ft;
+    const w = tall ? item.length_ft : item.width_ft;
+    const l = tall ? item.width_ft : item.length_ft;
     const off = CHAIR_GAP + CHAIR_R;
     const along = (count, y, reverse) => {
       const row = Array.from({ length: count }, (_, i) => ({ x: -w / 2 + (w * (i + 0.5)) / count, y }));
@@ -169,6 +174,7 @@ function seatSpots(item) {
       const top = Math.ceil(n / 2);
       spots.push(...along(top, -(l / 2 + off)), ...along(n - top, l / 2 + off, true));
     }
+    if (tall) for (const p of spots) [p.x, p.y] = [-p.y, p.x];
   }
   const t = ((item.rotation || 0) * Math.PI) / 180;
   return spots.map((p, i) => ({
@@ -241,7 +247,15 @@ function drawRoom(r) {
   const pad = 3;
   const W = r.width_ft;
   const L = r.length_ft;
-  const svg = s("svg", { viewBox: `${-pad} ${-pad} ${W + pad * 2} ${L + pad * 2}`, style: `width:${Math.round(zoom * 100)}%; min-width:${Math.round(zoom * 100)}%` });
+  // The drawing covers anything that ended up outside the room (a long row of chairs, a
+  // room made smaller), so it can still be seen and dragged back in.
+  const items = itemsOf(r.id);
+  const reach = (i) => Math.max(2, (Number(i.width_ft) || 0) / 2, (Number(i.length_ft) || 0) / 2) + 2;
+  const minX = Math.min(0, ...items.map((i) => i.x - reach(i)));
+  const minY = Math.min(0, ...items.map((i) => i.y - reach(i)));
+  const maxX = Math.max(W, ...items.map((i) => i.x + reach(i)));
+  const maxY = Math.max(L, ...items.map((i) => i.y + reach(i)));
+  const svg = s("svg", { viewBox: `${minX - pad} ${minY - pad} ${maxX - minX + pad * 2} ${maxY - minY + pad * 2}`, style: `width:${Math.round(zoom * 100)}%; min-width:${Math.round(zoom * 100)}%` });
   svg.append(s("rect", { class: "floor", x: 0, y: 0, width: W, height: L }));
   const lines = [];
   const fine = W <= 120 && L <= 120;
@@ -252,7 +266,6 @@ function drawRoom(r) {
   for (let y = step; y <= L; y += step) lines.push(s("text", { class: "ruler", x: -0.6, y, "text-anchor": "end", "dominant-baseline": "central" }, `${y}′`));
   svg.append(s("g", {}, lines));
   // Shapes go underneath, so a dance floor never hides the tables placed on it.
-  const items = itemsOf(r.id);
   for (const item of [...items.filter((i) => i.kind === "shape"), ...items.filter((i) => i.kind !== "shape")]) svg.append(drawItem(item, r));
   wireDragging(svg, r);
   return svg;
@@ -261,6 +274,8 @@ function drawRoom(r) {
 /** Drag to move; a press that doesn't move selects (and, on a reception chair, seats someone). */
 function wireDragging(svg, r) {
   let drag = null;
+  // A touch on a table or chair drags it; a touch on the floor scrolls the room.
+  svg.addEventListener("touchstart", (ev) => { if (ev.target.closest(".item")) ev.preventDefault(); }, { passive: false });
   const toRoom = (ev) => {
     const pt = svg.createSVGPoint();
     pt.x = ev.clientX;
@@ -497,8 +512,15 @@ function panel(r) {
   }
   const msg = h("p", { class: "msg" });
   const save = async (form) => {
+    const values = formValues(form);
+    // Fewer seats unseats whoever sat in the ones that go: ask first.
+    if (item.kind === "table" && values.seats !== undefined) {
+      const keep = new Set(seatSpots({ ...item, seats: Number(values.seats) || 0 }).map((p) => p.letter));
+      const lost = data.assignments.filter((a) => a.item_id === item.id && !keep.has(a.seat_letter)).length;
+      if (lost && !confirm(`${lost === 1 ? "1 person sits" : `${lost} people sit`} in the seats this removes. Unseat them?`)) return;
+    }
     try {
-      await send(`items/${item.id}`, "PUT", formValues(form));
+      await send(`items/${item.id}`, "PUT", values);
       setMsg(msg, "Saved.", "ok");
     } catch (error) {
       setMsg(msg, error.message, "err");
