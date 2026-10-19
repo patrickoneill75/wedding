@@ -1583,7 +1583,7 @@ test("every top-level folder and file in public/ is reserved from the copied web
 
 /* --------------------------------------------------------------- website copy -- */
 
-import { cleanPage, contrastingColor, fontFacesFor, parseHtml, RESERVED, serialize } from "../src/site.js";
+import { cleanPage, fontFacesFor, PAGE_SCRIPT, parseHtml, RESERVED, serialize } from "../src/site.js";
 
 const SLUG = "testcouple2030";
 // A made-up page shaped like Zola's server-rendered wedding site.
@@ -1641,6 +1641,22 @@ test("the copy's links point at its own pages, our RSVP page, and Zola for anyth
   assert.ok(menu.startsWith('<a href="/" aria-current="page">Home</a>'), menu);
 });
 
+// Bug guards: the phone menu left out Registry (it stays on Zola), so phone guests
+// couldn't reach it; menu labels were written back unescaped; the phone menu button
+// never showed while the site title linked home; and the desktop pill sat on Registry.
+test("the phone menu includes Registry, labels stay text, and the page script measures only the menu row", () => {
+  const page = zolaPage().replace(">Travel</a>", ">Travel &amp;lt;b&amp;gt;</a>");
+  const html = cleanPage(page, { slug: SLUG, pages: new Set(["travel"]), currentPath: "/" }).html;
+  const menu = /<nav id="wm-menu"[^>]*>(.*?)<\/nav>/.exec(html)[1];
+  assert.ok(menu.includes(`<a href="https://www.zola.com/wedding/${SLUG}/registry" target="_blank" rel="noopener">Registry</a>`), menu);
+  assert.ok(!menu.includes("RSVP"), "the pill already covers RSVP");
+  assert.ok(menu.includes("Travel &amp;lt;b&amp;gt;") || menu.includes("Travel &lt;b&gt;"), menu);
+  assert.ok(!/<b>/.test(menu), "escaped text never becomes a tag");
+  assert.ok(html.includes(`<a href="https://www.zola.com/wedding/${SLUG}/registry" data-wm-nav="menu">Registry</a>`), "Registry counts as part of the menu row");
+  assert.ok(PAGE_SCRIPT.includes(`'a[data-wm-nav="menu"]'`), "the phone check looks at the menu links when there are any");
+  assert.ok(/box\.querySelectorAll\("a"\)/.test(PAGE_SCRIPT), "the pill clears every link in the row");
+});
+
 test('"View" buttons become links: the place\'s website by name, else its address on a map', () => {
   const html = cleanPage(zolaPage(), { slug: SLUG, pages: new Set(), currentPath: "/" }).html;
   assert.ok(/<a class="css-btn" href="https:\/\/grandtest\.example\/rooms" target="_blank"[^>]*>View<\/a>/.test(html));
@@ -1663,8 +1679,7 @@ test("a page whose footer can't be found is still copied, with a warning", () =>
   assert.ok(out.warnings.some((w) => /"Zola" still appears 1 time/.test(w)));
 });
 
-test("the RSVP pill's automatic color sits opposite the theme's color", () => {
-  assert.equal(contrastingColor("#89645c"), "hsl(191 35% 30%)");
+test("a pill color set in Settings wins", () => {
   const html = cleanPage(zolaPage(), { slug: SLUG, pages: new Set(), rsvpColor: "#123456", currentPath: "/" }).html;
   assert.ok(html.includes("background:#123456"), "a color set in Settings wins");
 });
@@ -1763,6 +1778,10 @@ test("the GitHub Action's routes need the shared secret", async () => {
   assert.equal((await ingest(env, { pages: [] }, "nope")).status, 401);
   // Not set up at all: say so rather than accept anything.
   assert.equal((await call(makeEnv(), "/api/site/config", { headers: { authorization: "Bearer " } })).status, 503);
+  // Bug guard: a copy the Worker refused never showed in Settings.
+  assert.equal((await ingest(env, { pages: [{ path: "/admin", html: "x" }] })).status, 400);
+  const status = (await (await adminClient(env))("/api/admin/site/status")).data.status;
+  assert.match(status.error, /GitHub's copy was refused/);
 });
 
 test("a site built on GitHub is stored and served, and resending it isn't a change", async () => {

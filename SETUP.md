@@ -98,7 +98,8 @@ reports whether each secret is set, never its value.
 3. **Settings → Google Drive → Log in with Google to connect Drive**, then **Pick a folder**
    (or create one). The first sync runs right away. After that it runs every five
    minutes whenever something changed, and **Sync now** forces one.
-4. **Settings → Wedding details**: names, date, venue and RSVP deadline for the public page.
+4. **Settings → Wedding details**: names, date and venue. The RSVP deadline, whether RSVPs
+   are open, and the RSVP page's wording are in **Communications → RSVP page**.
 5. **The expense form** is `https://www.patrickandkaitlyn.com/submit`: save it on both of your
    phones. It asks for the same Google sign-in as the control panel the first time, and
    picks whichever of you is signed in.
@@ -164,6 +165,9 @@ npm test                # the test suite (Node 22.5+)
   **Refresh website from Zola** run in the Actions tab for the details. A 401 there means
   `ZOLA_INGEST_SECRET` differs between GitHub and the Worker: re-run **Set Cloudflare
   secrets**.
+- **Settings says the daily copy hasn't run in over two days**: GitHub turns off a public
+  repo's scheduled workflows after 60 days with no commits (per GitHub's docs). Open
+  **Actions → Refresh website from Zola** and click **Enable workflow** if it's offered.
 - **`redirect_uri_mismatch` from Google**: the redirect URI in step 3 must match
   `YOUR_URL/api/auth/callback` exactly, including `https://` and with no trailing slash.
 - **Secrets set but `config-check` says false**: check that the **Set Cloudflare secrets**

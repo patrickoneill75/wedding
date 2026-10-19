@@ -201,27 +201,6 @@ export function themeColors(html) {
   return { text, background };
 }
 
-const hexToHsl = (hex) => {
-  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
-  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2;
-  if (max === min) return [0, 0, l];
-  const d = max - min;
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-  const h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
-  return [h * 60, s, l];
-};
-
-/**
- * The RSVP pill's color: the theme's text hue turned to the opposite side of the color
- * wheel, deep enough for white text. A warm mauve theme gets a deep teal pill.
- */
-export function contrastingColor(themeText) {
-  const [h, s] = hexToHsl(themeText);
-  const hue = Math.round((h + 180) % 360);
-  const sat = Math.round(Math.min(Math.max(s, 0.35), 0.55) * 100);
-  return `hsl(${hue} ${sat}% 30%)`;
-}
-
 // Countdown ticking, our phone menu, the RSVP pill's place, and hiding Zola's dead menu
 // icon. Added as each page is served (see servePage), so a fix here reaches pages
 // copied before it. The pill sits just after the last menu link, 40px clear of it, when
@@ -234,7 +213,7 @@ var units=[];box.querySelectorAll("span").forEach(function(s){if(s.children.leng
 units.slice(0,4).forEach(function(u,i){u.children[0].textContent=v[i]+" "+L[i][0]+(v[i]===1?"":"s");u.children[1].textContent=v[i]+" "+L[i][1]})})}
 if(document.querySelector("[data-wm-target]")){tick();setInterval(tick,1000)}
 var bar=document.querySelector(".wm-rsvp-bar"),btn=document.querySelector(".wm-menu-btn"),menu=document.getElementById("wm-menu");
-function navShown(){return [].some.call(document.querySelectorAll("a[data-wm-nav]"),function(a){var r=a.getBoundingClientRect();return r.width>0&&r.height>0})}
+function navShown(){var sel=document.querySelector('a[data-wm-nav="menu"]')?'a[data-wm-nav="menu"]':"a[data-wm-nav]";return [].some.call(document.querySelectorAll(sel),function(a){var r=a.getBoundingClientRect();return r.width>0&&r.height>0})}
 var pill=document.querySelector(".wm-rsvp");
 function shown(a){var r=a.getBoundingClientRect();return r.width>0&&r.height>0}
 function menuRow(){var all=[].filter.call(document.querySelectorAll("a[data-wm-nav]"),shown);
@@ -245,8 +224,9 @@ if(marked.length&&keys.length>1)return null;
 var links=keys.map(function(k){return rows[k]}).sort(function(x,y){return y.length-x.length})[0];if(links.length<2)return null;
 var box=links[0].parentElement;while(box&&!links.every(function(a){return box.contains(a)}))box=box.parentElement;
 while(box&&box.parentElement&&box.parentElement!==document.body&&box.getBoundingClientRect().width<document.documentElement.clientWidth*0.8)box=box.parentElement;
-var right=Math.max.apply(null,links.map(function(a){return a.getBoundingClientRect().right}));
-return box?{box:box,link:links[0],right:right}:null}
+if(!box)return null;var row=Math.round(links[0].getBoundingClientRect().top/10);
+var right=Math.max.apply(null,[].filter.call(box.querySelectorAll("a"),shown).filter(function(a){return Math.round(a.getBoundingClientRect().top/10)===row}).map(function(a){return a.getBoundingClientRect().right}));
+return {box:box,link:links[0],right:right}}
 function toBar(){pill.classList.remove("wm-in-nav");pill.style.top=pill.style.left=pill.style.right="";bar.insertBefore(pill,menu);bar.style.display=""}
 function layout(){var phone=!navShown();bar.classList.toggle("wm-phone",phone);if(!phone)close();
 if(!pill){bar.style.display=phone?"":"none";return}
@@ -297,9 +277,12 @@ export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpCol
   }
 
   // 4. Links: the site's own pages point at our copies; anything else relative goes to Zola.
+  // Links to the site's own pages on Zola (Registry included), for our phone menu.
+  const siteLinks = new Set();
   for (const n of elements(body, (n) => n.tag === "a" && attr(n, "href"))) {
     const href = attr(n, "href");
     const key = zolaPageKey(href, slug);
+    if (key !== null && key !== "rsvp") siteLinks.add(n);
     if (key !== null) {
       setAttr(n, "href", key === "" || key === "rsvp" || pages.has(key) ? localPathFor(key, slug) : `${ZOLA_ORIGIN}/wedding/${slug}/${key}`);
       removeAttr(n, "target");
@@ -322,8 +305,10 @@ export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpCol
   for (const n of elements(body, (n) => n.tag === "a")) {
     const href = attr(n, "href") || "";
     const label = decode(textOf(n)).replace(/\s+/g, " ").trim();
-    if (!label || !(href === "/" || /^\/[a-z0-9-]+$/.test(href))) continue;
+    const local = href === "/" || /^\/[a-z0-9-]+$/.test(href);
     const listed = inList(n);
+    // Menu links that stay on Zola (the Registry) belong in our menu too.
+    if (!label || !(local || (listed && siteLinks.has(n)))) continue;
     // "menu" marks the links in the site's menu row, where the RSVP pill goes.
     setAttr(n, "data-wm-nav", listed ? "menu" : "");
     const seen = nav.find((x) => x.href === href);
@@ -392,7 +377,9 @@ export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpCol
     el("button", { type: "button", class: "wm-menu-btn", "aria-expanded": "false", "aria-controls": "wm-menu" }, [menuIcon, "Menu"]),
     el("a", { class: "wm-rsvp", href: "/rsvp/" }, ["RSVP"]),
     el("nav", { id: "wm-menu", "aria-label": "Site", hidden: null }, nav.map((item) =>
-      el("a", { href: item.href, ...(item.href === currentPath ? { "aria-current": "page" } : {}) }, [item.label]))),
+      // The label is text (decoded from the page), so it's escaped back here.
+      el("a", { href: item.href, ...(item.href === currentPath ? { "aria-current": "page" } : {}), ...(/^https?:/.test(item.href) ? { target: "_blank", rel: "noopener" } : {}) },
+        [item.label.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")]))),
   ]), true);
 
   if (html) setAttr(html, "lang", attr(html, "lang") || "en");

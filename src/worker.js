@@ -6,7 +6,7 @@ import { saveDriveTokens } from "./google.js";
 import { saveGmailTokens } from "./gmail.js";
 import { processComms } from "./comms.js";
 import { scheduledSync } from "./sync.js";
-import { ingestSite, serveFont, servePage } from "./site.js";
+import { ingestSite, recordSiteError, serveFont, servePage } from "./site.js";
 import { loadSettings } from "./store.js";
 import { handleDayOf } from "./runofshow.js";
 
@@ -76,6 +76,8 @@ async function handleSiteApi(route, request, env) {
     try {
       return json({ ok: true, status: await ingestSite(env, payload) });
     } catch (error) {
+      // Settings shows it: otherwise a refused copy looks like nothing happened.
+      await recordSiteError(env, `GitHub's copy was refused: ${error.message}`, { source: "github" }).catch(() => {});
       return json({ error: error.message }, 400);
     }
   }

@@ -408,7 +408,11 @@ async function renderSite() {
     return;
   }
   const failedLast = status.error && (!status.changed_at || status.error_at >= status.checked_at);
+  // GitHub turns off a public repo's scheduled runs after 60 days with no activity
+  // (GitHub's docs say so; not checked here), so a copy days old is worth a look.
+  const stale = status.checked_at && Date.now() - new Date(status.checked_at).getTime() > 2 * 86400000;
   box.replaceChildren(
+    stale ? h("p", { class: "msg err", style: "margin:0 0 6px" }, "The daily copy hasn't run in over two days. On GitHub, open Actions, then Refresh website from Zola; if it says the workflow is disabled, click Enable workflow.") : "",
     h("p", { style: "margin:0 0 6px" }, `Last checked ${when(status.checked_at)}${status.source === "github" ? " by GitHub" : ""} · last changed ${when(status.changed_at)}`),
     via_github ? "" : h("p", { class: "muted", style: "margin:0 0 6px" }, "The button fetches from Cloudflare until PANEL_GITHUB_TOKEN is set up (SETUP.md), and Zola blocks that. The daily GitHub copy still runs."),
     failedLast ? h("p", { class: "msg err", style: "margin:0 0 6px" }, `The last check failed: ${status.error} The previous copy is still up.`) : "",
@@ -455,7 +459,7 @@ siteForm.addEventListener("submit", async (ev) => {
   const v = formValues(siteForm);
   try {
     state = { ...state, ...(await api("/api/admin/settings", { method: "PUT", body: { zola_url: v.zola_url, rsvp_button_color: v.rsvp_button_color } })) };
-    // The button color and address are baked into the copy, so re-copy now.
+    // The address is baked into the copy, so re-copy now (the color applies as pages are served).
     await refreshSite();
   } catch (error) {
     setMsg(siteMsg, error.message, "err");
