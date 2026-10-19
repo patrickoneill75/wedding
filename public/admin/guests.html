@@ -20,6 +20,12 @@
   .guest-card .flags { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
   .summary { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); margin-bottom: 14px; }
   .summary b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .more { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px 18px; padding: 14px 16px;
+          border: 1px solid var(--border); border-radius: 12px; background: var(--surface-1); margin-bottom: 12px; }
+  .more h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 0 0 6px; }
+  .more .group { display: flex; flex-direction: column; gap: 5px; }
+  .more .foot { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; font-size: 12.5px; color: var(--text-secondary); }
+  #moreBtn.on { border-color: var(--accent); color: var(--accent); }
 </style>
 </head>
 <body>
@@ -34,8 +40,6 @@
 
   <div class="filters">
     <input type="search" id="search" placeholder="Search names, cities, notes…">
-    <select id="side"><option value="">Both sides</option><option>Bride</option><option>Groom</option></select>
-    <select id="priority"><option value="">Any priority</option><option>High</option><option>Medium</option><option>Low</option></select>
     <select id="inviteType">
       <option value="">Ceremony and reception</option>
       <option value="ceremony:1">Invited to the ceremony</option>
@@ -46,17 +50,9 @@
       <option value="rehearsal:0">Not invited to the rehearsal dinner</option>
     </select>
     <select id="rsvp"><option value="">Any RSVP</option><option value="pending">Awaiting reply</option><option value="yes">Coming</option><option value="no">Not coming</option></select>
-    <select id="track">
-      <option value="">All households</option>
-      <option value="std">Save-the-date not sent</option>
-      <option value="invite">Invite not sent</option>
-      <option value="thanks">Gift received, no thank-you yet</option>
-      <option value="plusone">Has a plus-one</option>
-      <option value="noaddress">Missing an address</option>
-      <option value="outoftown">Out of town</option>
-      <option value="international">International</option>
-    </select>
+    <button id="moreBtn" aria-expanded="false" aria-controls="more">More filters</button>
   </div>
+  <div class="more" id="more" hidden></div>
 
   <div class="bulk" id="bulk" hidden>
     <span id="bulkCount"></span>
@@ -71,8 +67,10 @@
     <button class="small" data-invite="invite_rehearsal" data-on="1">Rehearsal dinner on</button>
     <button class="small" data-invite="invite_rehearsal" data-on="0">Rehearsal dinner off</button>
     <span class="sep"></span>
-    <button class="small" data-field="out_of_town" data-value="1">Mark out of town</button>
-    <button class="small" data-field="international" data-value="1">Mark international</button>
+    <button class="small" data-invite="out_of_town" data-on="1">Out of town on</button>
+    <button class="small" data-invite="out_of_town" data-on="0">Out of town off</button>
+    <button class="small" data-invite="international" data-on="1">International on</button>
+    <button class="small" data-invite="international" data-on="0">International off</button>
     <span class="sep"></span>
     <button class="small danger" id="resetRsvp">Reset RSVP</button>
     <button class="small link" id="clearSel">Clear selection</button>
@@ -106,38 +104,79 @@ async function load() {
     item(c.pending, "awaiting reply"), item(c.households, "households"), item(c.plus_ones_allowed, "plus-ones offered"),
     item(c.invites.ceremony, "invited to the ceremony"), item(c.invites.reception, "invited to the reception"),
     item(data.households.flatMap((hh) => hh.guests).filter((g) => g.invite_rehearsal).length, "invited to the rehearsal dinner"),
-    item(data.households.filter((hh) => hh.out_of_town).length, "out-of-town households"),
-    item(data.households.filter((hh) => hh.international).length, "international households"),
+    item(data.households.flatMap((hh) => hh.guests).filter((g) => g.out_of_town).length, "out of town"),
+    item(data.households.flatMap((hh) => hh.guests).filter((g) => g.international).length, "international"),
   );
   render();
 }
 
+/*
+ * More filters: every tag as a checkbox. In a group of either/or choices (side,
+ * priority) a guest needs any one ticked; every other ticked box must hold too. A
+ * household shows when one of its guests matches the guest tags and the household
+ * matches the household ones.
+ */
+const ANY_OF = new Set(["side", "priority"]);
+const MORE = [
+  ["Side", "side", [["Bride", (g) => g.side === "Bride"], ["Groom", (g) => g.side === "Groom"], ["No side yet", (g) => !g.side]]],
+  ["Priority", "priority", [["High", (g) => g.priority === "High"], ["Medium", (g) => g.priority === "Medium"], ["Low", (g) => g.priority === "Low"]]],
+  ["Invited to", "invites", [["Ceremony", (g) => g.invite_ceremony], ["Reception", (g) => g.invite_reception], ["Rehearsal dinner", (g) => g.invite_rehearsal]]],
+  ["Family and party", "family", [["Wedding party", (g) => g.wedding_party], ["Immediate family", (g) => g.immediate_family], ["Extended family", (g) => g.extended_family]]],
+  ["Travel", "travel", [["Out of town", (g) => g.out_of_town], ["International", (g) => g.international]]],
+  ["Plus-ones", "plusone", [["Has a plus-one", (g) => g.plus_one_allowed]]],
+];
+const HOUSEHOLD_MORE = ["Household", "household", [
+  ["Save-the-date not sent", (hh) => !hh.save_the_date_sent],
+  ["Invite not sent", (hh) => !hh.invite_sent],
+  ["Gift received, no thank-you yet", (hh) => hh.gift_received && !hh.thank_you_sent],
+  ["Missing an address", (hh) => !hh.address1],
+]];
+const ticked = new Set();
+
+function renderMore() {
+  const box = document.getElementById("more");
+  const group = ([title, key, options]) => h("div", { class: "group" }, h("h3", {}, title),
+    options.map(([label]) => h("label", { class: "check" },
+      h("input", { type: "checkbox", checked: ticked.has(`${key}:${label}`), onchange: (ev) => {
+        ev.target.checked ? ticked.add(`${key}:${label}`) : ticked.delete(`${key}:${label}`);
+        updateMoreButton();
+        render();
+      } }), label)));
+  box.replaceChildren(...MORE.map(group), group(HOUSEHOLD_MORE),
+    h("div", { class: "foot" }, "Ticked boxes in Side or Priority match any of them; every other ticked box must also be true.",
+      h("span", { class: "spacer" }),
+      h("button", { class: "small", onclick: () => { ticked.clear(); renderMore(); updateMoreButton(); render(); } }, "Clear filters")));
+}
+function updateMoreButton() {
+  const button = document.getElementById("moreBtn");
+  button.textContent = ticked.size ? `More filters (${ticked.size})` : "More filters";
+  button.classList.toggle("on", ticked.size > 0);
+}
+function guestPasses(g) {
+  return MORE.every(([, key, options]) => {
+    const on = options.filter(([label]) => ticked.has(`${key}:${label}`));
+    if (!on.length) return true;
+    return ANY_OF.has(key) ? on.some(([, test]) => test(g)) : on.every(([, test]) => test(g));
+  });
+}
+
 function matches(hh) {
   const q = document.getElementById("search").value.trim().toLowerCase();
-  const side = document.getElementById("side").value;
-  const priority = document.getElementById("priority").value;
   const rsvp = document.getElementById("rsvp").value;
   const inviteType = document.getElementById("inviteType").value;
-  const track = document.getElementById("track").value;
   if (q) {
     const hay = [hh.display_name, hh.greeting, hh.city, hh.state, hh.notes, hh.email, ...hh.guests.flatMap((g) => [g.first_name, g.last_name, g.plus_one_name, g.notes])]
       .join(" ").toLowerCase();
     if (!hay.includes(q)) return false;
   }
-  if (side && !hh.guests.some((g) => g.side === side)) return false;
-  if (priority && !hh.guests.some((g) => g.priority === priority)) return false;
+  const guestTicks = [...ticked].some((t) => !t.startsWith("household:"));
+  if (guestTicks && !hh.guests.some(guestPasses)) return false;
+  if (!HOUSEHOLD_MORE[2].every(([label, test]) => !ticked.has(`household:${label}`) || test(hh))) return false;
   if (inviteType) {
     const [event, on] = inviteType.split(":");
     if (!hh.guests.some((g) => Boolean(g[`invite_${event}`]) === (on === "1"))) return false;
   }
   if (rsvp && !hh.guests.some((g) => g.rsvp === rsvp || (g.plus_one_allowed && g.plus_one_rsvp === rsvp))) return false;
-  if (track === "std" && hh.save_the_date_sent) return false;
-  if (track === "invite" && hh.invite_sent) return false;
-  if (track === "thanks" && !(hh.gift_received && !hh.thank_you_sent)) return false;
-  if (track === "plusone" && !hh.guests.some((g) => g.plus_one_allowed)) return false;
-  if (track === "noaddress" && hh.address1) return false;
-  if (track === "outoftown" && !hh.out_of_town) return false;
-  if (track === "international" && !hh.international) return false;
   return true;
 }
 
@@ -155,9 +194,6 @@ function render() {
       h("td", {}, h("input", { type: "checkbox", checked: selected.has(hh.id), onchange: (ev) => { ev.target.checked ? selected.add(hh.id) : selected.delete(hh.id); updateBulk(); } })),
       h("td", {}, h("button", { class: "link", onclick: () => openHousehold(hh) }, hh.display_name || "(no name)"),
         h("div", { class: "muted", style: "font-size:12px" }, [hh.code, [hh.city, hh.state].filter(Boolean).join(", ")].filter(Boolean).join(" · ")),
-        hh.out_of_town || hh.international ? h("div", { class: "guest" },
-          hh.out_of_town ? h("span", { class: "tag" }, "out of town") : null,
-          hh.international ? h("span", { class: "tag" }, "international") : null) : null,
         hh.rsvp_at ? h("div", { class: "muted", style: "font-size:12px" }, `RSVP'd ${fmtDate(hh.rsvp_at)}`) : null),
       h("td", {}, hh.guests.map((g) => h("div", { class: "guest" },
         h("span", {}, `${g.first_name} ${g.last_name}`),
@@ -172,6 +208,8 @@ function render() {
             onclick: () => toggleInvite(g, `invite_${event}`) }, event === "ceremony" ? "Ceremony" : "Reception");
         }),
         g.invite_rehearsal ? h("span", { class: "tag" }, "rehearsal dinner") : null,
+        g.out_of_town ? h("span", { class: "tag" }, "out of town") : null,
+        g.international ? h("span", { class: "tag" }, "international") : null,
         g.seat ? h("span", { class: "tag" }, `table ${g.seat.table}, seat ${g.seat.seat}`) : g.table_name ? h("span", { class: "tag" }, `table ${g.table_name}`) : null,
         g.plus_one_allowed ? h("span", { class: `pill ${g.plus_one_rsvp}` }, `+1${g.plus_one_name ? ` ${g.plus_one_name}` : ""}: ${RSVP_LABEL[g.plus_one_rsvp]}`) : null,
         g.plus_one_seat ? h("span", { class: "tag" }, `+1 at table ${g.plus_one_seat.table}, seat ${g.plus_one_seat.seat}`) : null,
@@ -201,7 +239,13 @@ async function toggleInvite(g, fieldName) {
   }
 }
 
-for (const id of ["search", "side", "priority", "rsvp", "inviteType", "track"]) document.getElementById(id).addEventListener("input", render);
+for (const id of ["search", "rsvp", "inviteType"]) document.getElementById(id).addEventListener("input", render);
+renderMore();
+document.getElementById("moreBtn").addEventListener("click", (ev) => {
+  const box = document.getElementById("more");
+  box.hidden = !box.hidden;
+  ev.currentTarget.setAttribute("aria-expanded", String(!box.hidden));
+});
 document.getElementById("selectAll").addEventListener("change", (ev) => {
   for (const hh of data.households.filter(matches)) ev.target.checked ? selected.add(hh.id) : selected.delete(hh.id);
   render();
@@ -252,6 +296,8 @@ function guestCard(g, onRemove) {
       check("Invited to the ceremony", "invite_ceremony", g.invite_ceremony),
       check("Invited to the reception", "invite_reception", g.invite_reception ?? 1),
       check("Invited to the rehearsal dinner", "invite_rehearsal", g.invite_rehearsal),
+      check("Out of town", "out_of_town", g.out_of_town),
+      check("International", "international", g.international),
     ),
     h("div", { class: "flags" },
       check("Wedding party", "wedding_party", g.wedding_party),
@@ -312,10 +358,6 @@ async function openHousehold(hh) {
         check("Gift received", "gift_received", hh?.gift_received),
         check("Thank-you sent", "thank_you_sent", hh?.thank_you_sent),
       ),
-      h("div", { class: "row", style: "gap:18px; margin-bottom:12px" },
-        check("Out of town", "out_of_town", hh?.out_of_town),
-        check("International", "international", hh?.international),
-      ),
       h("div", { class: "fields" },
         field("Gift", "gift", { value: hh?.gift || "" }),
         field("Household notes", "notes", { value: hh?.notes || "" }),
@@ -343,7 +385,8 @@ async function openHousehold(hh) {
 
     return h("div", {}, form,
       h("section", {}, h("h3", {}, "Guests in this household"), guestList,
-        h("button", { type: "button", class: "small", onclick: () => addGuest({ priority: "High", side: hh?.guests?.[0]?.side || "" }) }, "+ Add a guest")),
+        h("button", { type: "button", class: "small", onclick: () => addGuest({ priority: "High", side: hh?.guests?.[0]?.side || "",
+          out_of_town: hh?.guests?.[0]?.out_of_town, international: hh?.guests?.[0]?.international }) }, "+ Add a guest")),
       h("div", { class: "row", style: "margin-top:16px" },
         h("button", { class: "primary", onclick: save }, hh ? "Save" : "Add household"),
         hh && (hh.rsvp_at || hh.guests.some((g) => g.rsvp !== "pending" || (g.plus_one_allowed && g.plus_one_rsvp !== "pending")))

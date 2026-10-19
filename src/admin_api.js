@@ -18,7 +18,8 @@
  *   POST   households/bulk             set a tracking flag on many households at once
  *   POST   households/reset-rsvp       { ids } -- clear RSVPs back to "awaiting reply"
  *   POST   guests/bulk                 { household_ids, field: "invite_ceremony" | "invite_reception"
- *                                       | "invite_rehearsal", value: true | false }
+ *                                       | "invite_rehearsal" | "out_of_town" | "international",
+ *                                       value: true | false }
  *   GET    settings / PUT settings
  *   POST   basis                       { basis: "confirmed" | "weighted" }
  *   GET    form-link                   the expense form's address (PUBLIC_URL/submit)
@@ -97,10 +98,11 @@ const textOrNull = (v) => {
 /* ------------------------------------------------------------------- guests ---- */
 
 const HOUSEHOLD_TEXT = ["code", "display_name", "greeting", "address1", "address2", "city", "state", "zip", "country", "email", "phone", "gift", "rsvp_message", "notes"];
-const HOUSEHOLD_FLAGS = ["save_the_date_sent", "invite_sent", "gift_received", "thank_you_sent", "out_of_town", "international"];
+const HOUSEHOLD_FLAGS = ["save_the_date_sent", "invite_sent", "gift_received", "thank_you_sent"];
 const GUEST_TEXT = ["first_name", "last_name", "plus_one_name", "dietary", "plus_one_dietary", "table_name", "notes"];
-const GUEST_FLAGS = ["wedding_party", "immediate_family", "extended_family", "plus_one_allowed", "invite_ceremony", "invite_reception", "invite_rehearsal"];
-const INVITE_FLAGS = ["invite_ceremony", "invite_reception", "invite_rehearsal"];
+const GUEST_FLAGS = ["wedding_party", "immediate_family", "extended_family", "plus_one_allowed", "invite_ceremony", "invite_reception", "invite_rehearsal", "out_of_town", "international"];
+// The per-guest switches the Guests page can flip for whole households at once.
+const INVITE_FLAGS = ["invite_ceremony", "invite_reception", "invite_rehearsal", "out_of_town", "international"];
 
 function cleanHousehold(input) {
   const patch = Object.create(null);
