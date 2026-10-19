@@ -29,7 +29,8 @@ and prints the ID.)
 
 1. Go to <https://console.cloud.google.com/>, create a project (for example "Wedding planner")
    and select it.
-2. **APIs & Services → Library**: search for **Google Drive API** and enable it.
+2. **APIs & Services → Library**: search for **Google Drive API** and enable it. Do the
+   same for the **Gmail API**, which sends the guest emails from Communications.
 3. **APIs & Services → OAuth consent screen** (now called **Google Auth Platform**):
    - User type: **External**. Fill in the app name, your email as support and developer
      contact, and save.
@@ -45,6 +46,15 @@ and prints the ID.)
      - `YOUR_URL/api/auth/callback`
      - `http://localhost:8787/api/auth/callback` (only if you'll run it locally)
    - Create, then copy the **Client ID** and **Client secret**.
+
+### Gmail, for guest emails
+
+Once the site is running, an admin connects Gmail in **Settings → Gmail for guest
+emails**. Google asks permission to *send email on your behalf* (the `gmail.send` scope;
+the site can't read your mail). The emails come from that account under the name set in
+**Communications → RSVP page**, and replies land in its inbox. The same unverified-app
+screen as Drive appears; click through it. If emails stop, Settings shows why
+(usually "Reconnect Gmail") and nothing is lost: they wait and go out once it's fixed.
 
 ## 4. Add the secrets in GitHub and send them to Cloudflare
 

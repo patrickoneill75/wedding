@@ -36,10 +36,13 @@ import { STATUSES, STATUS_LABELS } from "./calc.js";
 import { addPayment, createExpense, loadContext, loadSettings, listExpenses, listVendors, updateExpense } from "./store.js";
 import { uploadReceipt } from "./google.js";
 import { intakeTurn, payerFor } from "./intake.js";
+import { householdIcs, queueAfterRsvp } from "./comms.js";
 
 export { payerFor };
 
 const RSVP_TOKEN_TTL = 60 * 60 * 2;
+const CALENDAR_TOKEN_TTL = 60 * 60 * 24 * 500;
+const EMAIL = /^[^\s@<>"]+@[^\s@<>"]+\.[a-z]{2,}$/i;
 const PICK_TOKEN_TTL = 60 * 30;
 const SEARCH_LIMIT = 8;
 const SEARCH_MIN_LETTERS = 2;
@@ -77,7 +80,7 @@ async function householdForRsvp(env, householdId) {
   if (!household) return null;
   const guests = await all(
     env,
-    `SELECT id, first_name, last_name, rsvp, dietary, plus_one_allowed, plus_one_name, plus_one_rsvp, plus_one_dietary
+    `SELECT id, first_name, last_name, email, rsvp, dietary, plus_one_allowed, plus_one_name, plus_one_rsvp, plus_one_dietary
        FROM guests WHERE household_id = ? ORDER BY sort_order, id`,
     householdId
   );
@@ -90,6 +93,7 @@ async function householdForRsvp(env, householdId) {
       id: g.id,
       first_name: g.first_name,
       last_name: g.last_name,
+      email: g.email || "",
       rsvp: g.rsvp,
       dietary: g.dietary || "",
       plus_one_allowed: Boolean(g.plus_one_allowed),
@@ -186,6 +190,9 @@ async function rsvpSubmit(env, input) {
   const token = await verify(env, input.token);
   if (!token || token.kind !== "rsvp") return json({ error: "This RSVP page expired. Look up your name again." }, 400);
   const householdId = token.h;
+  // One email for the household is required: it's where the details and reminders go.
+  const email = String(input.email ?? "").trim().slice(0, 200);
+  if (!EMAIL.test(email)) return json({ error: email ? "That email address doesn't look right." : "Add an email address so we can send you the details." }, 400);
   const members = await all(env, "SELECT id, plus_one_allowed FROM guests WHERE household_id = ?", householdId);
   const byId = new Map(members.map((m) => [m.id, m]));
   const answers = Array.isArray(input.guests) ? input.guests : [];
@@ -195,6 +202,10 @@ async function rsvpSubmit(env, input) {
     const guest = byId.get(Number(answer?.id));
     if (!guest) continue;
     if (!["yes", "no"].includes(answer.rsvp)) return json({ error: "Let us know whether each person is coming." }, 400);
+    // A guest's own email is optional; a blank one leaves what's on file.
+    const guestEmail = clip(answer.email, 200);
+    if (guestEmail && !EMAIL.test(guestEmail)) return json({ error: `The email for one of your guests doesn't look right.` }, 400);
+    if (guestEmail) await run(env, "UPDATE guests SET email = ? WHERE id = ?", guestEmail, guest.id);
     if (guest.plus_one_allowed) {
       const plusOne = answer.rsvp === "yes" && answer.plus_one_rsvp === "yes" ? "yes" : "no";
       const plusOneName = plusOne === "yes" ? clip(answer.plus_one_name, 200) : null;
@@ -219,13 +230,32 @@ async function rsvpSubmit(env, input) {
   if (!answered) return json({ error: "Let us know whether each person is coming." }, 400);
   await run(
     env,
-    "UPDATE households SET email = COALESCE(?, email), rsvp_message = ?, rsvp_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
-    clip(input.email, 200),
+    "UPDATE households SET email = ?, rsvp_message = ?, rsvp_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+    email,
     clip(input.message, 2000),
     householdId
   );
   await markDirty(env);
-  return json({ ok: true, household: await householdForRsvp(env, householdId) });
+  // Emails set to go out after an RSVP are queued; the cron sends them within minutes.
+  await queueAfterRsvp(env, householdId);
+  const settings = await loadSettings(env);
+  const hasEvents = Boolean(await householdIcs(env, settings, householdId));
+  return json({
+    ok: true,
+    household: await householdForRsvp(env, householdId),
+    calendar_url: hasEvents ? `/api/public/calendar?t=${encodeURIComponent(await sign(env, { kind: "cal", h: householdId }, CALENDAR_TOKEN_TTL))}` : null,
+  });
+}
+
+/** GET calendar?t=: the household's calendar invite (the token comes from the RSVP or an email). */
+async function calendarDownload(env, request) {
+  const token = await verify(env, new URL(request.url).searchParams.get("t"));
+  if (!token || token.kind !== "cal") return json({ error: "That calendar link isn't valid. RSVP again to get a new one." }, 400);
+  const ics = await householdIcs(env, await loadSettings(env), token.h);
+  if (!ics) return json({ error: "There's nothing on the calendar yet." }, 404);
+  return new Response(ics, {
+    headers: { "content-type": "text/calendar; charset=utf-8", "content-disposition": 'attachment; filename="wedding.ics"', "cache-control": "no-store" },
+  });
 }
 
 /* ------------------------------------------------------------- expense form ---- */
@@ -403,9 +433,11 @@ export async function handlePublicApi(route, request, env) {
         rsvp_deadline: s.rsvp_deadline,
         rsvp_open: Boolean(s.rsvp_open),
         rsvp_intro: s.rsvp_intro,
+        rsvp_page: s.rsvp_page,
         contact_email: s.contact_email,
       });
     }
+    if (route === "calendar" && method === "GET") return calendarDownload(env, request);
     if (route.startsWith("rsvp/")) {
       const s = await loadSettings(env);
       if (!s.rsvp_open) return json({ error: "RSVPs are closed. Please contact us directly." }, 403);

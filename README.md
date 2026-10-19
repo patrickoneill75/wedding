@@ -48,6 +48,11 @@ A Cloudflare Worker with two sides:
     chart board, ceremony-only / reception-only / both lists, the chase list, mailing
     labels, thank-yous, vendor contacts and more, plus custom reports you build and
     save. Each downloads as a CSV.
+  - **Communications**: emails to guests through your Gmail, one per household (copied to
+    any guest who gave their own email). Write them with fill-ins like {greeting}, pick
+    who gets them with the guest tags, then send now, schedule, or send automatically
+    after each RSVP. Also the calendar invite guests download after they RSVP (and
+    emails can attach), and the RSVP page's wording.
   - **Settings**: wedding details, 7% tax, budget, priority weights, the drinks
     calculator, the expense-form link, Google Drive, the spreadsheet import, and Users:
     the owners in `ADMIN_EMAILS` plus anyone you add, each an admin (everything) or a
@@ -95,6 +100,9 @@ src/people.js      one row per guest and plus-one, for reports and the run of sh
 src/reports.js     built-in and custom reports, CSV export
 src/runofshow.js   the run of show, guest groups, and the coordinator's day-of API
 src/users.js       who can sign in besides the owners, and their pages
+src/comms.js       guest emails: audiences, fill-ins, sending in batches, schedules
+src/gmail.js       the Gmail connection and the email itself (MIME)
+src/calendar.js    the calendar invite (.ics)
 src/sync.js        CSV exports and the Drive sync (cron every 5 minutes)
 src/site.js        the Zola website copy: fetch, clean, store, serve
 scripts/zola_refresh.mjs  runs src/site.js on GitHub and sends the pages to the site

@@ -304,6 +304,7 @@ function guestCard(g, onRemove) {
     h("div", { class: "fields" },
       field("RSVP", "rsvp", { options: [["pending", "Awaiting"], ["yes", "Coming"], ["no", "Not coming"]], value: g.rsvp || "pending" }),
       field("Dietary needs", "dietary", { value: g.dietary || "" }),
+      field("Their own email (optional)", "email", { type: "email", value: g.email || "" }),
       g.seat
         ? h("label", { class: "field" }, "Reception seat", h("a", { href: "/admin/seating.html" }, `Table ${g.seat.table}, seat ${g.seat.seat}`))
         : field("Table", "table_name", { value: g.table_name || "" }),

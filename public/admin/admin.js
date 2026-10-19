@@ -76,6 +76,7 @@ const PAGES = [
   ["guests.html", "Guests", "guests", true],
   ["seating.html", "Seating", "seating", true],
   ["runofshow.html", "Run of show", "runofshow", true],
+  ["communications.html", "Communications", "communications", true],
   ["reports.html", "Reports", "reports", false],
   ["settings.html", "Settings", "admin", true],
 ];

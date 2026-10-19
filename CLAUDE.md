@@ -43,6 +43,12 @@
     routes there. Page access is a convenience, not a wall: a page's API returns what
     that page shows.
 
+11. **Guest emails** (`src/comms.js`) go one per household, recorded in `comm_sends`
+    (unique per email and household), so a retry, the cron and an automatic send after
+    an RSVP can never send the same email twice. Sends go in batches of `SEND_BATCH` with
+    one Gmail token read per batch and batched status updates, to stay under the D1
+    query limit; the cron leaves the Drive sync to the next run when it sent email.
+
 ## Tests
 
 `npm test` (`node tests/worker_test.mjs`, Node 22.5+) drives the real Worker `fetch()`

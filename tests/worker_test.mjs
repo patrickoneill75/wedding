@@ -18,6 +18,8 @@ import { buildContext, drinksPlan, enrichExpense, guestCounts, mergeSettings, st
 import { buildExports, toCsv } from "../src/sync.js";
 import { sqlValue } from "../src/importer.js";
 import { normalizeName, searchGuests } from "../src/public_api.js";
+import { buildIcs, zonedTime } from "../src/calendar.js";
+import { fillIn, processComms } from "../src/comms.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, "fixtures", "sample_wedding.xlsx");
@@ -1104,7 +1106,7 @@ test("an RSVP token for one household can't change another household's guests", 
   const { env, households } = await rsvpSetup();
   const alex = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Alex", last: "Example" } })).data.matches[0];
   const riley = households.find((h) => h.code === "H-003").guests[0];
-  const r = await call(env, "/api/public/rsvp/submit", { method: "POST", body: { token: alex.token, guests: [{ id: riley.id, rsvp: "no" }] } });
+  const r = await call(env, "/api/public/rsvp/submit", { method: "POST", body: { token: alex.token, email: "alex@example.com", guests: [{ id: riley.id, rsvp: "no" }] } });
   assert.equal(r.status, 400);
   const api = await adminClient(env);
   const after = (await api("/api/admin/guests")).data.households.find((h) => h.code === "H-003").guests[0];
@@ -1116,7 +1118,7 @@ test("a plus-one RSVP counts toward confirmed guests", async () => {
   const jordan = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Jordan", last: "Sample" } })).data.matches[0];
   await call(env, "/api/public/rsvp/submit", {
     method: "POST",
-    body: { token: jordan.token, guests: [{ id: jordan.guests[0].id, rsvp: "yes", plus_one_rsvp: "yes", plus_one_name: "Casey Guest", dietary: "vegetarian" }] },
+    body: { token: jordan.token, email: "jordan@example.com", guests: [{ id: jordan.guests[0].id, rsvp: "yes", plus_one_rsvp: "yes", plus_one_name: "Casey Guest", dietary: "vegetarian" }] },
   });
   const counts = (await api("/api/admin/guests")).data.counts;
   assert.equal(counts.confirmed, 2);
@@ -1127,7 +1129,7 @@ test("resetting an RSVP puts the household back to awaiting reply so it can answ
   const jordan = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Jordan", last: "Sample" } })).data.matches[0];
   await call(env, "/api/public/rsvp/submit", {
     method: "POST",
-    body: { token: jordan.token, guests: [{ id: jordan.guests[0].id, rsvp: "yes", dietary: "vegan", plus_one_rsvp: "yes", plus_one_name: "Casey Guest" }], message: "See you there" },
+    body: { token: jordan.token, email: "jordan@example.com", guests: [{ id: jordan.guests[0].id, rsvp: "yes", dietary: "vegan", plus_one_rsvp: "yes", plus_one_name: "Casey Guest" }], message: "See you there" },
   });
   const before = (await api("/api/admin/guests")).data.households.find((h) => h.code === "H-002");
   assert.ok(before.rsvp_at);
@@ -2043,6 +2045,184 @@ test("users: Google sign-in lets in someone added on the Users page, and nobody 
   );
   assert.match((await signIn("Jo@Example.com")).headers.get("set-cookie") || "", /wedding_session=[^;]/, "Jo is on the list, whatever the case");
   assert.doesNotMatch((await signIn("stranger@example.com")).headers.get("set-cookie") || "", /wedding_session=[^;]/);
+});
+
+/* ---------------------------------------------------------------- communications -- */
+
+/** Households with emails, a connected Gmail (a token that won't need refreshing), and a stubbed Gmail API. */
+async function commsSetup({ households = 3 } = {}) {
+  const env = makeEnv({ PUBLIC_URL: "https://www.example-wedding.com" });
+  const api = await adminClient(env);
+  for (let i = 1; i <= households; i++) {
+    await api("/api/admin/households", { method: "POST", body: {
+      display_name: `Household ${i}`, greeting: `Friends ${i}`, email: `h${i}@example.com`,
+      guests: [{ first_name: `Guest${i}`, last_name: "Test", side: i % 2 ? "Bride" : "Groom", invite_ceremony: i === 1, email: i === 1 ? "own1@example.com" : null }],
+    } });
+  }
+  await api("/api/admin/households", { method: "POST", body: { display_name: "No Email", guests: [{ first_name: "Nemo", last_name: "Test", side: "Bride" }] } });
+  env.DB.db.prepare("INSERT INTO settings (key, value) VALUES ('_gmail', ?)").run(JSON.stringify({
+    refresh_token: "r", access_token: "a", expires_at: Date.now() + 3600000, email: "us@gmail.com",
+  }));
+  await api("/api/admin/settings", { method: "PUT", body: { couple_names: "Kaitlyn & Patrick", wedding_date: "2027-06-12" } });
+  return { env, api };
+}
+
+/** Run `fn` with Gmail stubbed; returns { result, sent: [decoded MIME] }. `fail(n)` makes the nth send fail. */
+async function withGmail(fn, { status = () => 200 } = {}) {
+  const sent = [];
+  const result = await withFetch(async (url, init) => {
+    if (url.includes("gmail.googleapis.com")) {
+      const raw = JSON.parse(init.body).raw.replace(/-/g, "+").replace(/_/g, "/");
+      const mime = Buffer.from(raw, "base64").toString("utf8");
+      const code = status(sent.length);
+      if (code === 200) sent.push(mime);
+      return new Response(JSON.stringify(code === 200 ? { id: `m${sent.length}` } : { error: "nope" }), { status: code });
+    }
+    if (url.includes("oauth2.googleapis.com/token")) return okJson({ access_token: "a2", expires_in: 3600 });
+    throw new Error(`unexpected fetch ${url}`);
+  }, fn);
+  return { result, sent };
+}
+const decodeParts = (mime) => [...mime.matchAll(/Content-Transfer-Encoding: base64\r\n\r\n([A-Za-z0-9+/=\r\n]+)/g)].map((m) => Buffer.from(m[1].replace(/\r\n/g, ""), "base64").toString("utf8"));
+
+test("calendar: times are written in UTC from the wedding's time zone, with text escaped and long lines folded", () => {
+  assert.equal(zonedTime("2027-06-12", "16:30", "America/Indiana/Indianapolis").toISOString(), "2027-06-12T20:30:00.000Z", "summer is UTC-4");
+  assert.equal(zonedTime("2027-01-09", "16:30", "America/Indiana/Indianapolis").toISOString(), "2027-01-09T21:30:00.000Z", "winter is UTC-5");
+  const ics = buildIcs([{ id: "ev-1", title: "Ceremony; then dinner, dancing", date: "2027-06-12", start: "16:30", end: "17:00", location: "St. Mary's, 1 Main St, Carmel, IN",
+    notes: `Line one\nLine two ${"x".repeat(120)}`, url: "https://example.com", reminder: "1d", for: "everyone" }], { timeZone: "America/Indiana/Indianapolis", host: "example.com" });
+  assert.match(ics, /DTSTART:20270612T203000Z\r\nDTEND:20270612T210000Z/);
+  assert.match(ics, /SUMMARY:Ceremony\\; then dinner\\, dancing/);
+  assert.match(ics, /TRIGGER:-P1D/);
+  assert.ok(ics.split("\r\n").every((line) => new TextEncoder().encode(line).length <= 75), "no line over 75 octets");
+  assert.equal(fillIn("Hi {greeting}, {nope}", { greeting: "Jo" }), "Hi Jo, {nope}", "an unknown fill-in is left as typed");
+});
+
+test("RSVP: the household email is required, guests may add their own, and the calendar invite downloads afterwards", async () => {
+  const { env, api } = await rsvpSetup();
+  await api("/api/admin/comms/calendar", { method: "PUT", body: { time_zone: "America/Indiana/Indianapolis", events: [
+    { title: "Ceremony", date: "2027-06-12", start: "16:00", end: "16:45", location: "Chapel", for: "ceremony" },
+    { title: "Reception", date: "2027-06-12", start: "18:00", end: "23:00", location: "Hall", for: "reception" },
+  ] } });
+  const alex = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Alex", last: "Example" } })).data.matches[0];
+  const answer = (extra) => call(env, "/api/public/rsvp/submit", { method: "POST", body: { token: alex.token, guests: alex.guests.map((g) => ({ id: g.id, rsvp: "yes" })), ...extra } });
+  assert.equal((await answer({})).status, 400, "no email, no RSVP");
+  assert.equal((await answer({ email: "not-an-email" })).status, 400);
+  const ok = await call(env, "/api/public/rsvp/submit", { method: "POST", body: { token: alex.token, email: "alex@example.com",
+    guests: alex.guests.map((g, i) => ({ id: g.id, rsvp: "yes", email: i === 1 ? "sam@example.com" : "" })) } });
+  assert.equal(ok.status, 200, JSON.stringify(ok.data));
+  assert.equal(ok.data.household.guests[1].email, "sam@example.com");
+  const ics = await call(env, ok.data.calendar_url);
+  assert.equal(ics.status, 200);
+  assert.match(ics.headers.get("content-type"), /text\/calendar/);
+  assert.ok(ics.data.includes("SUMMARY:Ceremony") && ics.data.includes("SUMMARY:Reception"), "Alex is invited to both");
+  assert.equal((await call(env, "/api/public/calendar?t=forged")).status, 400);
+  const info = (await call(env, "/api/public/info")).data;
+  assert.equal(info.rsvp_page.accept_label, "Joyfully accepts", "the RSVP page's wording comes with the info");
+  assert.ok(!JSON.stringify(info).includes("calendar_events"), "the info doesn't carry the events themselves");
+});
+
+test("emails: one per household to its email with guests copied, filled in, from Kaitlyn & Patrick, and never twice", async () => {
+  const { env, api } = await commsSetup();
+  await api("/api/admin/comms/calendar", { method: "PUT", body: { events: [{ title: "Wedding", date: "2027-06-12", start: "16:00", for: "everyone" }] } });
+  const created = await api("/api/admin/comms/messages", { method: "POST", body: {
+    subject: "Details for {greeting}", body: "Hi {greeting},\n\nSee you {wedding_date}! RSVP: {rsvp_link}", audience: { ticks: ["side:Bride", "constructor:x"] }, attach_ics: true,
+  } });
+  assert.equal(created.status, 201, JSON.stringify(created.data));
+  const id = created.data.id;
+  const who = (await api("/api/admin/comms/audience", { method: "POST", body: { audience: { ticks: ["side:Bride"] } } })).data.households;
+  assert.deepEqual(who.map((x) => [x.name, x.to]), [["Household 1", "h1@example.com"], ["Household 3", "h3@example.com"], ["No Email", null]]);
+
+  const { result, sent } = await withGmail(() => api(`/api/admin/comms/messages/${id}/send`, { method: "POST", body: {} }));
+  assert.equal(result.status, 200, JSON.stringify(result.data));
+  assert.deepEqual([result.data.result.sent, sent.length], [2, 2]);
+  const first = sent.find((m) => m.includes("To: h1@example.com"));
+  assert.match(first, /From: "Kaitlyn & Patrick" <us@gmail\.com>/);
+  assert.match(first, /Cc: own1@example\.com/, "a guest's own email is copied");
+  assert.match(first, /Subject: Details for Friends 1/);
+  assert.match(first, /filename="wedding\.ics"/);
+  const [text, html, ics] = decodeParts(first);
+  assert.match(text, /See you Saturday, June 12, 2027! RSVP: https:\/\/www\.example-wedding\.com\/rsvp\//);
+  assert.match(html, /<a href="https:\/\/www\.example-wedding\.com\/rsvp\/">/);
+  assert.match(ics, /SUMMARY:Wedding/);
+
+  const list = (await api("/api/admin/comms")).data.messages.find((m) => m.id === id);
+  assert.deepEqual([list.status, list.counts.sent, list.counts.skipped], ["sent", 2, 1], "the household with no email is recorded, not dropped silently");
+  assert.equal((await api(`/api/admin/comms/messages/${id}/send`, { method: "POST", body: {} })).status, 400, "a sent email can't go again");
+  assert.equal((await api(`/api/admin/comms/messages/${id}`, { method: "PUT", body: { subject: "x" } })).status, 400, "or be edited");
+});
+
+test("emails: a big send goes out in batches, and the cron sends the rest", async () => {
+  const { env, api } = await commsSetup({ households: 25 });
+  const id = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Hello", body: "Hi {greeting}" } })).data.id;
+  const now = await withGmail(() => api(`/api/admin/comms/messages/${id}/send`, { method: "POST", body: {} }));
+  assert.equal(now.sent.length, 20, "the first batch goes at once");
+  const later = await withGmail(() => processComms(env));
+  assert.equal(later.sent.length, 5, "the cron sends the rest");
+  const again = await withGmail(() => processComms(env));
+  assert.equal(again.sent.length, 0, "and nobody gets it twice");
+  assert.equal((await api("/api/admin/comms")).data.messages[0].status, "sent");
+});
+
+test("emails: a scheduled email waits for its time; an automatic one goes to each household once after it RSVPs", async () => {
+  const { env, api } = await commsSetup();
+  const scheduled = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "A week to go", body: "Soon!" } })).data.id;
+  assert.equal((await api(`/api/admin/comms/messages/${scheduled}/schedule`, { method: "POST", body: { send_at: "2020-01-01T09:00" } })).status, 400, "not in the past");
+  assert.equal((await api(`/api/admin/comms/messages/${scheduled}/schedule`, { method: "POST", body: { send_at: "2099-06-05T09:00" } })).status, 200);
+  assert.equal((await withGmail(() => processComms(env))).sent.length, 0, "not due yet");
+  env.DB.db.prepare("UPDATE comm_messages SET send_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(scheduled);
+  assert.equal((await withGmail(() => processComms(env))).sent.length, 3, "due: everyone with an email");
+
+  const auto = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Thanks for your RSVP", body: "Hi {greeting}", audience: { ticks: ["rsvp:Coming"] } } })).data.id;
+  assert.equal((await api(`/api/admin/comms/messages/${auto}/automate`, { method: "POST", body: { on: true } })).status, 200);
+  const lookup = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Guest2", last: "Test" } })).data.matches[0];
+  const rsvp = (answer) => call(env, "/api/public/rsvp/submit", { method: "POST", body: { token: lookup.token, email: "h2@example.com", guests: [{ id: lookup.guests[0].id, rsvp: answer }] } });
+  await rsvp("no");
+  assert.equal((await withGmail(() => processComms(env))).sent.length, 0, "a no isn't in a Coming audience");
+  await rsvp("yes");
+  const sent = (await withGmail(() => processComms(env))).sent;
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /To: h2@example\.com/);
+  await rsvp("yes");
+  assert.equal((await withGmail(() => processComms(env))).sent.length, 0, "changing the RSVP doesn't send it again");
+});
+
+test("emails: when Gmail stops working nothing is lost; the emails wait and go once it's back", async () => {
+  const { env, api } = await commsSetup();
+  const id = (await api("/api/admin/comms/messages", { method: "POST", body: { subject: "Hello", body: "Hi" } })).data.id;
+  const down = await withGmail(() => api(`/api/admin/comms/messages/${id}/send`, { method: "POST", body: {} }), { status: () => 401 });
+  assert.equal(down.result.data.result.sent, 0);
+  assert.match(down.result.data.result.stopped, /Reconnect Gmail/);
+  const status = (await api("/api/admin/comms")).data;
+  assert.equal(status.messages[0].counts.queued, 3, "all three still waiting");
+  assert.match(status.gmail.last_error, /Reconnect Gmail/, "Settings shows the problem");
+  const back = await withGmail(() => processComms(env));
+  assert.equal(back.sent.length, 3);
+  assert.equal((await api("/api/admin/comms")).data.gmail.last_error, null, "and the problem clears once it sends");
+});
+
+test("emails: a Communications user can write and send, but only an admin connects Gmail", async () => {
+  const { env, api } = await commsSetup();
+  await api("/api/admin/users", { method: "POST", body: { email: "jo@example.com", role: "user", pages: ["communications"] } });
+  const jo = `wedding_session=${await sign(env, { kind: "session", email: "jo@example.com", name: "Jo" }, 3600)}`;
+  const as = (path, opts = {}) => call(env, path, { ...opts, cookie: jo, headers: { "x-wedding": "1" } });
+  assert.equal((await as("/api/admin/comms")).status, 200);
+  assert.equal((await as("/api/admin/comms/messages", { method: "POST", body: { subject: "Hi", body: "Hi" } })).status, 201);
+  assert.equal((await as("/api/admin/comms/gmail/connect")).status, 403);
+  assert.equal((await as("/api/admin/comms/gmail/disconnect", { method: "POST" })).status, 403);
+  const nobody = `wedding_session=${await sign(env, { kind: "session", email: "jo@example.com" }, 3600)}`;
+  await api("/api/admin/users/jo%40example.com", { method: "PUT", body: { pages: ["seating"] } });
+  assert.equal((await call(env, "/api/admin/comms", { cookie: nobody })).status, 403, "without the page, no access");
+});
+
+test("RSVP page wording saves, blanks fall back to the default, and the sender name can't break the From line", async () => {
+  const { api } = await commsSetup();
+  const r = await api("/api/admin/comms/rsvp-page", { method: "PUT", body: { rsvp_open: false, rsvp_deadline: "2027-05-01", email_from_name: 'K & P <evil@x.com>"\r\nBcc: a@b.c',
+    page: { accept_label: "Count me in", constructor: "x" } } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.rsvp.page.accept_label, "Count me in");
+  assert.equal(r.data.rsvp.page.decline_label, "Regretfully declines", "a field not sent keeps its default");
+  assert.equal(r.data.email_from_name, "K & P evil@x.comBcc: a@b.c", "no quotes, angle brackets or new lines survive");
+  assert.equal(r.data.rsvp.rsvp_open, false);
 });
 
 /* ------------------------------------------------------------------------- runner -- */

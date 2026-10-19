@@ -21,7 +21,7 @@ function invitedTo(g) {
 export async function loadPeople(env) {
   const guests = await all(
     env,
-    `SELECT g.*, h.code AS household_code, h.display_name AS household, h.greeting, h.address1, h.address2, h.city,
+    `SELECT g.*, g.email AS guest_email, h.code AS household_code, h.display_name AS household, h.greeting, h.address1, h.address2, h.city,
             h.state, h.zip, h.country, h.email, h.phone
        FROM guests g JOIN households h ON h.id = g.household_id
       ORDER BY g.last_name COLLATE NOCASE, g.first_name COLLATE NOCASE, g.id`
@@ -70,6 +70,7 @@ export async function loadPeople(env) {
       immediate_family: Boolean(g.immediate_family),
       extended_family: Boolean(g.extended_family),
       notes: g.notes || "",
+      guest_email: g.guest_email || "",
       ...at(seat.guest),
     });
     if (g.plus_one_allowed) {
@@ -90,6 +91,7 @@ export async function loadPeople(env) {
         immediate_family: false,
         extended_family: false,
         notes: "",
+        guest_email: "",
         ...at(seat.plus_one),
       });
     }

@@ -29,6 +29,7 @@
  *   *      reports/*                   built-in and custom reports, CSV export (src/reports.js)
  *   *      runofshow/*                 the run of show and guest groups (src/runofshow.js)
  *   *      users/*                     who can sign in, and their pages (src/users.js), admins only
+ *   *      comms/*                     guest emails, the calendar invite, the RSVP page (src/comms.js)
  *   GET    site/status                 the Zola copy: address, last check, pages, warnings
  *   POST   site/refresh                fetch the Zola site now ("Refresh from Zola")
  *   GET    drive/status, GET drive/connect, GET drive/folders?parent=,
@@ -74,6 +75,7 @@ import { handleVendors } from "./vendors.js";
 import { handleReports } from "./reports.js";
 import { handleRunOfShow } from "./runofshow.js";
 import { handleUsers } from "./users.js";
+import { handleComms } from "./comms.js";
 
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
@@ -99,14 +101,20 @@ const textOrNull = (v) => {
 
 const HOUSEHOLD_TEXT = ["code", "display_name", "greeting", "address1", "address2", "city", "state", "zip", "country", "email", "phone", "gift", "rsvp_message", "notes"];
 const HOUSEHOLD_FLAGS = ["save_the_date_sent", "invite_sent", "gift_received", "thank_you_sent"];
-const GUEST_TEXT = ["first_name", "last_name", "plus_one_name", "dietary", "plus_one_dietary", "table_name", "notes"];
+const GUEST_TEXT = ["first_name", "last_name", "plus_one_name", "dietary", "plus_one_dietary", "table_name", "notes", "email"];
 const GUEST_FLAGS = ["wedding_party", "immediate_family", "extended_family", "plus_one_allowed", "invite_ceremony", "invite_reception", "invite_rehearsal", "out_of_town", "international"];
 // The per-guest switches the Guests page can flip for whole households at once.
 const INVITE_FLAGS = ["invite_ceremony", "invite_reception", "invite_rehearsal", "out_of_town", "international"];
 
+const checkEmail = (value, who) => {
+  if (value && !/^[^\s@<>"]+@[^\s@<>"]+\.[a-z]{2,}$/i.test(value)) throw new Error(`${who} email "${value}" doesn't look like an email address.`);
+  return value;
+};
+
 function cleanHousehold(input) {
   const patch = Object.create(null);
   for (const key of HOUSEHOLD_TEXT) if (has(input, key)) patch[key] = textOrNull(input[key]);
+  if (has(patch, "email")) checkEmail(patch.email, "The household's");
   for (const key of ["display_name", "greeting"]) if (has(patch, key) && patch[key] === null) patch[key] = "";
   for (const key of HOUSEHOLD_FLAGS) if (has(input, key)) patch[key] = bool(input[key]);
   return patch;
@@ -115,6 +123,7 @@ function cleanHousehold(input) {
 function cleanGuest(input) {
   const patch = Object.create(null);
   for (const key of GUEST_TEXT) if (has(input, key)) patch[key] = textOrNull(input[key]);
+  if (has(patch, "email")) checkEmail(patch.email, "A guest's");
   for (const key of ["first_name", "last_name"]) if (has(patch, key) && patch[key] === null) patch[key] = "";
   for (const key of GUEST_FLAGS) if (has(input, key)) patch[key] = bool(input[key]);
   if (has(input, "side")) {
@@ -235,6 +244,7 @@ const ROUTE_PAGES = {
   seating: "seating",
   runofshow: "runofshow",
   reports: "reports",
+  comms: "communications",
 };
 
 export async function handleAdminApi(route, request, env) {
@@ -497,6 +507,7 @@ export async function handleAdminApi(route, request, env) {
     if (parts[0] === "reports") return await handleReports(parts, method, request, env, body);
     if (parts[0] === "runofshow") return await handleRunOfShow(parts, method, request, env, body, user);
     if (parts[0] === "users") return await handleUsers(parts, method, request, env, body, user);
+    if (parts[0] === "comms") return await handleComms(parts, method, request, env, body, user);
 
     // ---- settings ----------------------------------------------------------------
     if (route === "settings" && method === "GET") {

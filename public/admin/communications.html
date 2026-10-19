@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
+<title>Communications — Wedding planner</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<style>
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .status { font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 1px 9px; border: 1px solid var(--border); white-space: nowrap; }
+  .status.draft { color: var(--text-secondary); background: var(--wash); }
+  .status.scheduled { color: var(--accent); border-color: rgba(42, 120, 214, .35); background: rgba(42, 120, 214, .08); }
+  .status.automated { color: #6250d6; border-color: rgba(98, 80, 214, .3); background: rgba(98, 80, 214, .1); }
+  .status.sending { color: #93370d; border-color: rgba(250, 178, 25, .5); background: rgba(250, 178, 25, .15); }
+  .status.sent { color: var(--good); border-color: rgba(12, 163, 12, .3); background: rgba(12, 163, 12, .1); }
+  .banner { border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; font-size: 13.5px; background: var(--wash); }
+  .banner.warn { background: rgba(250, 178, 25, .16); color: #93370d; }
+  @media (prefers-color-scheme: dark) { .banner.warn, .status.sending { color: var(--warn); } }
+  .audience { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px 16px; padding: 12px 14px;
+              border: 1px solid var(--border); border-radius: 10px; }
+  .audience h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 0 0 5px; }
+  .audience .group { display: flex; flex-direction: column; gap: 4px; }
+  .count { font-size: 13px; margin: 8px 0 0; color: var(--text-secondary); }
+  .count b { color: var(--text-primary); }
+  .fillins { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0 10px; }
+  .fillins button { font-size: 12px; padding: 2px 9px; border-radius: 999px; }
+  textarea.body { min-height: 260px; font-family: inherit; line-height: 1.5; }
+  h3.part { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 18px 0 8px; }
+  .send-box { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-top: 16px; display: grid; gap: 10px; }
+  .send-box .row input { width: auto; }
+  .event { border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 12px; background: var(--surface-1); }
+  .who-list { max-height: 260px; overflow: auto; font-size: 12.5px; border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; }
+  .who-list div { padding: 5px 9px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 10px; }
+  .who-list div:last-child { border-bottom: 0; }
+  .wording .fields { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar" id="topbar"></div>
+  <div class="row" style="margin-bottom:6px">
+    <div><h1>Communications</h1></div>
+    <span class="spacer"></span>
+    <button class="primary" id="newBtn">+ New email</button>
+  </div>
+  <p class="sub">Emails to your guests through Gmail, the calendar invite they download after they RSVP, and the RSVP page itself.</p>
+  <div id="gmailBanner"></div>
+  <div class="tabs" id="tabs"></div>
+  <div id="main"></div>
+</div>
+
+<script type="module">
+import { api, initPage, h, openDialog, field, check, formValues, setMsg, fmtDate } from "/admin/admin.js";
+
+const me = await initPage("communications.html");
+let data;
+let tab = new URLSearchParams(location.search).get("tab") || "emails";
+const TABS = [["emails", "Emails"], ["calendar", "Calendar invite"], ["rsvp", "RSVP page"]];
+const STATUS_TEXT = { draft: "Draft", scheduled: "Scheduled", automated: "After each RSVP", sending: "Sending", sent: "Sent" };
+
+async function load() {
+  data = await api("/api/admin/comms");
+  render();
+}
+function accept(reply) {
+  data = { ...data, ...reply };
+  render();
+}
+
+const when = (iso) => (iso ? new Date(iso).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "");
+const audienceText = (audience) => {
+  const ticks = audience?.ticks || [];
+  return ticks.length ? ticks.map((t) => t.split(":")[1]).join(", ") : "Every household";
+};
+
+function render() {
+  const g = data.gmail;
+  document.getElementById("gmailBanner").replaceChildren(g.connected
+    ? h("div", { class: `banner${g.last_error ? " warn" : ""}` },
+        `Emails go out from ${data.email_from_name} <${g.email}>.`,
+        g.last_error ? h("div", { style: "margin-top:4px" }, `Problem: ${g.last_error}`) : null)
+    : h("div", { class: "banner warn" }, "Gmail isn't connected, so nothing can be sent yet. ",
+        me.role === "admin" ? h("a", { href: "/admin/settings.html#gmail" }, "Connect it in Settings.") : "Ask Patrick or Kaitlyn to connect it in Settings."));
+  document.getElementById("tabs").replaceChildren(...TABS.map(([key, label]) =>
+    h("button", { class: key === tab ? "on" : "", onclick: () => { tab = key; history.replaceState(null, "", `?tab=${key}`); render(); } }, label)));
+  document.getElementById("newBtn").hidden = tab !== "emails";
+  const main = document.getElementById("main");
+  if (tab === "emails") main.replaceChildren(emailsView());
+  if (tab === "calendar") main.replaceChildren(calendarView());
+  if (tab === "rsvp") main.replaceChildren(rsvpView());
+}
+
+/* ------------------------------------------------------------------ emails ---- */
+
+function statusLine(m) {
+  const c = m.counts;
+  if (m.status === "scheduled") return `for ${when(m.send_at)}`;
+  if (m.status === "automated") return c.sent ? `${c.sent} sent so far` : "waiting for the next RSVP";
+  const parts = [c.sent ? `${c.sent} sent` : null, c.queued ? `${c.queued} waiting` : null, c.failed ? `${c.failed} failed` : null, c.skipped ? `${c.skipped} without an email` : null];
+  return [m.sent_at ? when(m.sent_at) : null, ...parts].filter(Boolean).join(" · ");
+}
+
+function emailsView() {
+  const rows = data.messages.map((m) => h("tr", { class: "clickable", onclick: () => editEmail(m) },
+    h("td", {}, m.subject || h("span", { class: "muted" }, "(no subject)")),
+    h("td", { class: "muted" }, audienceText(m.audience)),
+    h("td", {}, h("span", { class: `status ${m.status}` }, STATUS_TEXT[m.status] || m.status)),
+    h("td", { class: "muted" }, statusLine(m))));
+  if (!rows.length) rows.push(h("tr", {}, h("td", { colspan: 4, class: "muted" }, "No emails yet. Write the first one: the details email after someone RSVPs is a good start.")));
+  return h("div", {},
+    h("div", { class: "table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, ["Subject", "Who gets it", "Status", ""].map((t) => h("th", {}, t)))),
+      h("tbody", {}, rows))));
+}
+
+function audiencePicker(audience, onChange) {
+  const ticked = new Set(audience.ticks || []);
+  const count = h("p", { class: "count" }, "Counting…");
+  const who = h("div", { class: "who-list", hidden: true });
+  const toggleWho = h("button", { type: "button", class: "link", onclick: () => { who.hidden = !who.hidden; } }, "See who");
+  let timer = null;
+  const refresh = () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const { households } = await api("/api/admin/comms/audience", { method: "POST", body: { audience: { ticks: [...ticked] } } });
+      const missing = households.filter((x) => !x.to).length;
+      count.replaceChildren(h("b", {}, String(households.length - missing)), ` household${households.length - missing === 1 ? "" : "s"} will get this`,
+        missing ? h("span", { style: "color:var(--bad)" }, ` · ${missing} in the audience have no email`) : null, " · ", toggleWho);
+      who.replaceChildren(...households.map((x) => h("div", {}, h("span", {}, x.name), h("span", { class: "muted" }, x.to ? [x.to, ...x.cc].join(", ") : "no email"))));
+    }, 200);
+  };
+  const box = h("div", { class: "audience" }, data.audience.map((group) => h("div", { class: "group" },
+    h("h4", {}, group.title),
+    group.options.map((label) => h("label", { class: "check" },
+      h("input", { type: "checkbox", checked: ticked.has(`${group.key}:${label}`), onchange: (ev) => {
+        ev.target.checked ? ticked.add(`${group.key}:${label}`) : ticked.delete(`${group.key}:${label}`);
+        onChange({ ticks: [...ticked] });
+        refresh();
+      } }), label)))));
+  refresh();
+  return h("div", {}, h("p", { class: "desc", style: "margin:0 0 8px" }, "Nothing ticked means every household. Ticks in RSVP, Side or Priority match any of them; every other tick must also be true. One email goes to each household, copied to anyone in it who gave their own email."), box, count, who);
+}
+
+function editEmail(message) {
+  const m = message || { subject: "", body: "", audience: { ticks: [] }, attach_ics: false, status: "draft", counts: {} };
+  const locked = m.status === "sending" || m.status === "sent";
+  let audience = { ticks: [...(m.audience?.ticks || [])] };
+  openDialog(message ? (m.subject || "Email") : "New email", (close) => {
+    const msg = h("p", { class: "msg" });
+    const subject = h("input", { value: m.subject, placeholder: "Your RSVP and the details", disabled: locked });
+    const bodyBox = h("textarea", { class: "body", placeholder: "Hi {greeting},\n\nThank you for your RSVP! …", disabled: locked });
+    bodyBox.value = m.body;
+    const attach = h("input", { type: "checkbox", checked: m.attach_ics, disabled: locked });
+    let id = message?.id || null;
+    const values = () => ({ subject: subject.value, body: bodyBox.value, audience, attach_ics: attach.checked });
+    const save = async () => {
+      if (locked) return;
+      if (id) accept(await api(`/api/admin/comms/messages/${id}`, { method: "PUT", body: values() }));
+      else {
+        const reply = await api("/api/admin/comms/messages", { method: "POST", body: values() });
+        id = reply.id;
+        accept(reply);
+      }
+    };
+    const act = async (fn, okText) => {
+      try {
+        await fn();
+        if (okText) setMsg(msg, okText, "ok");
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    };
+    const insert = (key) => {
+      const start = bodyBox.selectionStart ?? bodyBox.value.length;
+      bodyBox.value = `${bodyBox.value.slice(0, start)}{${key}}${bodyBox.value.slice(bodyBox.selectionEnd ?? start)}`;
+      bodyBox.focus();
+      bodyBox.selectionStart = bodyBox.selectionEnd = start + key.length + 2;
+    };
+
+    const local = (iso) => {
+      // The schedule box shows the wedding's local time; the browser's zone is close enough to prefill.
+      const d = iso ? new Date(iso) : new Date(Date.now() + 86400000);
+      const p = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+    };
+    const sendAt = h("input", { type: "datetime-local", value: local(m.status === "scheduled" ? m.send_at : null) });
+
+    const sendBox = locked ? null : h("div", { class: "send-box" },
+      h("div", { class: "row" }, h("b", {}, "Send it"), h("span", { class: "muted", style: "font-size:12.5px" },
+        m.status === "scheduled" ? `Scheduled for ${when(m.send_at)}.` : m.status === "automated" ? "On: it goes to each household in the audience after they RSVP, once." : "")),
+      h("div", { class: "row" },
+        h("button", { class: "primary", onclick: () => act(async () => {
+          await save();
+          const { households } = await api("/api/admin/comms/audience", { method: "POST", body: { audience } });
+          const n = households.filter((x) => x.to).length;
+          if (!confirm(`Send this to ${n} household${n === 1 ? "" : "s"} now?`)) return;
+          const reply = await api(`/api/admin/comms/messages/${id}/send`, { method: "POST", body: {} });
+          accept(reply);
+          const r = reply.result;
+          close(true);
+          alert(r.stopped ? `Queued. ${r.sent} sent so far; ${r.stopped}` : `${r.sent} sent${r.failed ? `, ${r.failed} failed` : ""}. Anything left goes out within the next few minutes.`);
+        }) }, "Send now"),
+        h("span", { class: "muted" }, "or"),
+        sendAt,
+        h("span", { class: "muted", style: "font-size:12px" }, `${data.time_zone.split("/").pop().replace(/_/g, " ")} time`),
+        h("button", { onclick: () => act(async () => {
+          await save();
+          accept(await api(`/api/admin/comms/messages/${id}/schedule`, { method: "POST", body: { send_at: sendAt.value } }));
+          close(true);
+        }) }, m.status === "scheduled" ? "Change the time" : "Schedule"),
+        m.status === "scheduled" ? h("button", { onclick: () => act(async () => {
+          accept(await api(`/api/admin/comms/messages/${id}/cancel`, { method: "POST", body: {} }));
+          close(true);
+        }) }, "Unschedule") : null),
+      h("div", { class: "row" },
+        m.status === "automated"
+          ? h("button", { onclick: () => act(async () => {
+              accept(await api(`/api/admin/comms/messages/${id}/automate`, { method: "POST", body: { on: false } }));
+              close(true);
+            }) }, "Turn off sending after each RSVP")
+          : h("button", { onclick: () => act(async () => {
+              await save();
+              accept(await api(`/api/admin/comms/messages/${id}/automate`, { method: "POST", body: { on: true } }));
+              close(true);
+            }) }, "Send automatically after each RSVP"),
+        h("span", { class: "muted", style: "font-size:12.5px" }, "Each household in the audience gets it once, a few minutes after they RSVP.")));
+
+    const history = h("div", {});
+    if (id && m.status !== "draft") {
+      api(`/api/admin/comms/messages/${id}/sends`).then(({ sends }) => {
+        if (!sends.length) return;
+        const label = { sent: "Sent", queued: "Waiting", failed: "Failed", skipped: "No email" };
+        history.replaceChildren(h("h3", { class: "part" }, "Who it went to"), h("div", { class: "who-list" }, sends.map((s) => h("div", {},
+          h("span", {}, s.display_name || "(deleted household)", h("span", { class: "muted" }, s.recipients ? ` · ${s.recipients}` : "")),
+          h("span", { style: s.status === "failed" ? "color:var(--bad)" : "" }, label[s.status] || s.status, s.error ? ` · ${s.error}` : "", s.sent_at ? ` · ${when(s.sent_at)}` : "")))));
+      });
+    }
+
+    return h("div", {},
+      locked ? h("p", { class: "banner" }, "This email has been sent, so it can't be changed. Duplicate it to send a new version.") : null,
+      h("label", { class: "field" }, "Subject", subject),
+      h("label", { class: "field", style: "margin-top:12px" }, "Email", bodyBox),
+      locked ? null : h("div", { class: "fillins" }, h("span", { class: "muted", style: "font-size:12px; align-self:center" }, "Insert:"),
+        data.fill_ins.map((f) => h("button", { type: "button", title: f.help, onclick: () => insert(f.key) }, `{${f.key}}`))),
+      h("label", { class: "check" }, attach, "Attach the calendar invite (each household gets the events they're invited to)"),
+      h("h3", { class: "part" }, "Who gets it"),
+      locked ? h("p", {}, audienceText(m.audience)) : audiencePicker(audience, (next) => { audience = next; }),
+      h("div", { class: "row", style: "margin-top:14px" },
+        locked ? null : h("button", { onclick: () => act(save, "Saved.") }, "Save"),
+        h("button", { onclick: () => act(async () => {
+          if (!locked) await save();
+          const r = await api(`/api/admin/comms/messages/${id}/test`, { method: "POST", body: {} });
+          setMsg(msg, `Test sent to ${r.to}, filled in as ${r.sample}.`, "ok");
+        }) }, "Send a test to me"),
+        h("button", { onclick: () => act(async () => {
+          const reply = await api("/api/admin/comms/messages", { method: "POST", body: { ...values(), subject: `${subject.value} (copy)` } });
+          accept(reply);
+          close(true);
+          editEmail(reply.messages.find((x) => x.id === reply.id));
+        }) }, "Duplicate"),
+        id && m.status !== "sending" ? h("button", { class: "danger", onclick: () => act(async () => {
+          if (!confirm("Delete this email and its history?")) return;
+          accept(await api(`/api/admin/comms/messages/${id}`, { method: "DELETE" }));
+          close(true);
+        }) }, "Delete") : null),
+      msg, sendBox, history);
+  });
+}
+
+/* ---------------------------------------------------------------- calendar ---- */
+
+const ZONES = [["America/Indiana/Indianapolis", "Indiana (Eastern)"], ["America/New_York", "Eastern"], ["America/Chicago", "Central"],
+  ["America/Denver", "Mountain"], ["America/Phoenix", "Arizona"], ["America/Los_Angeles", "Pacific"]];
+
+function calendarView() {
+  const events = data.calendar_events.map((e) => ({ ...e }));
+  const msg = h("p", { class: "msg" });
+  const list = h("div", {});
+  const zone = h("select", {}, (ZONES.some(([z]) => z === data.time_zone) ? ZONES : [[data.time_zone, data.time_zone], ...ZONES])
+    .map(([z, label]) => h("option", { value: z, selected: z === data.time_zone }, label)));
+  const draw = () => list.replaceChildren(...events.map((e, i) => {
+    const bind = (key) => (ev) => { e[key] = ev.target.type === "checkbox" ? ev.target.checked : ev.target.value; if (key === "all_day") draw(); };
+    const input = (label, key, opts = {}) => {
+      const control = opts.type === "textarea" ? h("textarea", { oninput: bind(key), placeholder: opts.placeholder || "" }) : h("input", { type: opts.type || "text", oninput: bind(key), placeholder: opts.placeholder || "" });
+      control.value = e[key] ?? "";
+      return h("label", { class: "field", style: opts.wide ? "grid-column: 1 / -1" : null }, label, control);
+    };
+    const select = (label, key, options) => h("label", { class: "field" }, label,
+      h("select", { onchange: bind(key) }, options.map(([v, t]) => h("option", { value: v, selected: (e[key] || options[0][0]) === v }, t))));
+    return h("div", { class: "event" },
+      h("div", { class: "row", style: "margin-bottom:10px" }, h("b", {}, e.title || `Event ${i + 1}`), h("span", { class: "spacer" }),
+        h("button", { class: "small danger", onclick: () => { events.splice(i, 1); draw(); } }, "Remove")),
+      h("div", { class: "fields" },
+        input("Title", "title", { placeholder: "Patrick & Kaitlyn's wedding" }),
+        input("Date", "date", { type: "date" }),
+        e.all_day ? null : input("Starts", "start", { type: "time" }),
+        e.all_day ? null : input("Ends", "end", { type: "time" }),
+        h("label", { class: "check", style: "align-self:end; padding-bottom:8px" }, h("input", { type: "checkbox", checked: Boolean(e.all_day), onchange: bind("all_day") }), "All day"),
+        select("Who gets it", "for", [["everyone", "Everyone"], ["ceremony", "Guests invited to the ceremony"], ["reception", "Guests invited to the reception"], ["rehearsal", "Guests invited to the rehearsal dinner"]]),
+        select("Reminder", "reminder", [["none", "None"], ["1h", "1 hour before"], ["1d", "1 day before"], ["1w", "1 week before"]]),
+        input("Location", "location", { placeholder: "Venue name, street, city, state ZIP", wide: true }),
+        input("Notes", "notes", { type: "textarea", placeholder: "Dress code, parking, shuttle times…", wide: true }),
+        input("Link", "url", { placeholder: "https://www.patrickandkaitlyn.com", wide: true })));
+  }));
+  draw();
+  return h("div", { class: "card" },
+    h("h2", {}, "Calendar invite"),
+    h("p", { class: "desc" }, "Guests download this after they RSVP yes, and an email can attach it. Each household gets the events for everyone plus the ones for the parts they're invited to."),
+    h("div", { class: "fields" }, h("label", { class: "field" }, "Time zone for these times", zone)),
+    list,
+    h("div", { class: "row" },
+      h("button", { onclick: () => { events.push({ title: "", date: data.calendar_events[0]?.date || "", start: "", end: "", all_day: false, location: "", notes: "", url: "", reminder: "1d", for: "everyone" }); draw(); } }, "+ Add an event"),
+      h("span", { class: "spacer" }),
+      h("a", { class: "btn", href: "/api/admin/comms/calendar.ics", download: "wedding.ics" }, "Download to check"),
+      h("button", { class: "primary", onclick: async () => {
+        try {
+          accept(await api("/api/admin/comms/calendar", { method: "PUT", body: { events, time_zone: zone.value } }));
+          setMsg(msg, "Saved.", "ok");
+        } catch (error) {
+          setMsg(msg, error.message, "err");
+        }
+      } }, "Save")),
+    msg);
+}
+
+/* --------------------------------------------------------------- RSVP page ---- */
+
+const WORDING = [
+  ["eyebrow", "Small heading above the names"],
+  ["heading", "Big heading (blank shows your names)"],
+  ["lookup_help", "How to find your name"],
+  ["reply_help", "Above the RSVP choices"],
+  ["accept_label", "The yes choice"],
+  ["decline_label", "The no choice"],
+  ["email_label", "The household email (required)"],
+  ["guest_email_label", "Each guest's own email (optional)"],
+  ["note_label", "The note box"],
+  ["thanks_heading", "After they reply: heading"],
+  ["thanks_yes", "After they reply: someone is coming"],
+  ["thanks_no", "After they reply: nobody is coming"],
+  ["calendar_button", "The calendar download button"],
+  ["closed_heading", "When RSVPs are closed: heading"],
+  ["closed_text", "When RSVPs are closed: message"],
+];
+
+function rsvpView() {
+  const r = data.rsvp;
+  const msg = h("p", { class: "msg" });
+  const form = h("form", { class: "wording", onsubmit: async (ev) => {
+    ev.preventDefault();
+    const v = formValues(form);
+    const page = Object.fromEntries(WORDING.map(([key]) => [key, v[`page_${key}`]]));
+    try {
+      accept(await api("/api/admin/comms/rsvp-page", { method: "PUT", body: { rsvp_open: v.rsvp_open, rsvp_deadline: v.rsvp_deadline, rsvp_intro: v.rsvp_intro, email_from_name: v.email_from_name, page } }));
+      setMsg(msg, "Saved. The RSVP page shows it now.", "ok");
+    } catch (error) {
+      setMsg(msg, error.message, "err");
+    }
+  } },
+  h("div", { class: "row", style: "gap:18px; margin-bottom:12px" }, check("RSVPs are open", "rsvp_open", r.rsvp_open)),
+  h("div", { class: "fields" },
+    field("Reply by", "rsvp_deadline", { type: "date", value: r.rsvp_deadline }),
+    field("Emails come from (the name guests see)", "email_from_name", { value: data.email_from_name })),
+  h("div", { class: "fields" }, field("Message at the top of the page", "rsvp_intro", { type: "textarea", value: r.rsvp_intro, wide: true })),
+  h("h3", { class: "part" }, "Wording"),
+  h("div", { class: "fields" }, WORDING.map(([key, label]) => field(label, `page_${key}`, { value: r.page[key] ?? "", placeholder: data.defaults_page[key] || "" }))),
+  h("div", { class: "row" },
+    h("button", { class: "primary" }, "Save"),
+    h("button", { type: "button", onclick: () => {
+      if (!confirm("Put all the wording back to the original?")) return;
+      for (const [key] of WORDING) form.querySelector(`[name="page_${key}"]`).value = data.defaults_page[key] || "";
+    } }, "Reset the wording"),
+    h("span", { class: "spacer" }),
+    h("a", { class: "btn", href: "/rsvp/", target: "_blank", rel: "noopener" }, "Open the RSVP page ↗")),
+  msg);
+  return h("div", { class: "card" }, h("h2", {}, "RSVP page"),
+    h("p", { class: "desc" }, "Guests must give one email for their household; each guest can add their own. Edit what the page says here."), form);
+}
+
+document.getElementById("newBtn").addEventListener("click", () => editEmail(null));
+await load();
+</script>
+</body>
+</html>

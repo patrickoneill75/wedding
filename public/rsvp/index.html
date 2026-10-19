@@ -69,6 +69,8 @@
   .suggest li.note:hover { background: none; }
   .done { text-align: center; }
   .done ul { list-style: none; padding: 0; margin: 14px 0 20px; color: var(--soft); }
+  a.cal { display: inline-block; text-decoration: none; padding: 12px 20px; border-radius: 999px; margin: 0 0 18px;
+          background: var(--accent); border: 1px solid var(--accent); color: var(--accent-ink); font-weight: 600; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -76,7 +78,7 @@
 <main>
   <a class="home-link" href="/">← Our wedding website</a>
   <header>
-    <div class="eyebrow">Kindly reply</div>
+    <div class="eyebrow" id="eyebrow">Kindly reply</div>
     <h1 id="names">We're getting married</h1>
     <div class="when" id="when"></div>
     <div class="intro" id="intro"></div>
@@ -98,23 +100,24 @@
     <h2 id="greeting"></h2>
     <p class="help" id="replyHelp">Let us know who's coming.</p>
     <div id="people"></div>
-    <label>Email, for updates (optional) <input type="email" name="email" autocomplete="email"></label>
-    <label>A note for us (optional) <textarea name="message"></textarea></label>
+    <label><span id="emailLabel">Email for updates</span> <input type="email" name="email" autocomplete="email" required></label>
+    <label><span id="noteLabel">A note for us (optional)</span> <textarea name="message"></textarea></label>
     <button class="primary" type="submit">Send RSVP</button>
     <button type="button" class="back">Not you?</button>
     <p class="msg" id="replyMsg"></p>
   </form>
 
   <div class="card done" id="done" hidden>
-    <h2>Thank you!</h2>
+    <h2 id="thanksHeading">Thank you!</h2>
     <p class="help" id="doneText"></p>
     <ul id="doneList"></ul>
+    <a class="cal" id="calendar" hidden download="wedding.ics">Add to your calendar</a>
     <button type="button" id="edit">Change our answers</button>
   </div>
 
   <div class="card" id="closed" hidden>
-    <h2>RSVPs are closed</h2>
-    <p class="help">Please get in touch with us directly.</p>
+    <h2 id="closedHeading">RSVPs are closed</h2>
+    <p class="help" id="closedText">Please get in touch with us directly.</p>
   </div>
   <footer class="site-foot"><a href="/">Our wedding website</a><a id="contact" hidden>Contact us</a></footer>
 </main>
@@ -124,6 +127,12 @@ const $ = (id) => document.getElementById(id);
 const cards = ["lookup", "reply", "done", "closed"];
 const show = (id) => cards.forEach((c) => { $(c).hidden = c !== id; });
 let current = null;
+// The page's wording, edited in the control panel's Communications tab.
+let page = {
+  accept_label: "Joyfully accepts", decline_label: "Regretfully declines", guest_email_label: "Their own email (optional)",
+  reply_help: "Let us know who's coming.", thanks_yes: "We can't wait to celebrate with you.",
+  thanks_no: "We'll miss you, and thank you for letting us know.",
+};
 
 const el = (tag, attrs = {}, ...children) => {
   const node = document.createElement(tag);
@@ -150,10 +159,18 @@ function fmtDate(iso) {
 }
 
 fetch("/api/public/info").then((r) => r.json()).then((info) => {
-  if (info.couple_names) {
-    $("names").textContent = info.couple_names;
-    document.title = `RSVP · ${info.couple_names}`;
-  }
+  page = { ...page, ...(info.rsvp_page || {}) };
+  if (info.couple_names) document.title = `RSVP · ${info.couple_names}`;
+  if (page.heading || info.couple_names) $("names").textContent = page.heading || info.couple_names;
+  const text = (id, value) => { if (value) $(id).textContent = value; };
+  text("eyebrow", page.eyebrow);
+  text("lookupHelp", page.lookup_help);
+  text("emailLabel", page.email_label);
+  text("noteLabel", page.note_label);
+  text("thanksHeading", page.thanks_heading);
+  text("calendar", page.calendar_button);
+  text("closedHeading", page.closed_heading);
+  text("closedText", page.closed_text);
   $("when").textContent = [fmtDate(info.wedding_date), info.venue].filter(Boolean).join(" · ");
   $("intro").textContent = info.rsvp_intro || "";
   if (info.rsvp_deadline) $("lookupHelp").textContent += ` Please reply by ${fmtDate(info.rsvp_deadline)}.`;
@@ -289,15 +306,19 @@ function choice(name, value, current) {
 function openReply(household) {
   current = household;
   $("greeting").textContent = `Hi ${household.greeting}!`;
-  $("replyHelp").textContent = household.responded ? "You've already replied. Change anything below and send it again." : "Let us know who's coming.";
+  $("replyHelp").textContent = household.responded ? "You've already replied. Change anything below and send it again." : page.reply_help;
   const form = $("reply");
   form.email.value = household.email || "";
   form.message.value = household.message || "";
   $("people").replaceChildren(...household.guests.map((g) => {
     const box = el("div", { class: "person" },
       el("div", { class: "name" }, `${g.first_name} ${g.last_name}`),
-      choice(`rsvp_${g.id}`, ["Joyfully accepts", "Regretfully declines"], g.rsvp),
-      el("label", {}, "Dietary needs (optional)", el("input", { type: "text", name: `dietary_${g.id}`, value: g.dietary || "" })));
+      choice(`rsvp_${g.id}`, [page.accept_label, page.decline_label], g.rsvp),
+      el("label", {}, "Dietary needs (optional)", el("input", { type: "text", name: `dietary_${g.id}`, value: g.dietary || "" })),
+      // Only for households of more than one: a single guest's email is the household's.
+      household.guests.length > 1
+        ? el("label", {}, page.guest_email_label, el("input", { type: "email", name: `email_${g.id}`, value: g.email || "", autocomplete: "off" }))
+        : null);
     if (g.plus_one_allowed) {
       const details = el("div", {},
         el("label", {}, "Guest's name", el("input", { type: "text", name: `plus_name_${g.id}`, value: g.plus_one_name || "" })),
@@ -332,6 +353,7 @@ $("reply").addEventListener("submit", async (ev) => {
     id: g.id,
     rsvp: picked(`rsvp_${g.id}`),
     dietary: value(`dietary_${g.id}`).value,
+    email: value(`email_${g.id}`)?.value || "",
     ...(g.plus_one_allowed ? {
       plus_one_rsvp: picked(`plus_${g.id}`) || "no",
       plus_one_name: value(`plus_name_${g.id}`).value,
@@ -342,10 +364,13 @@ $("reply").addEventListener("submit", async (ev) => {
   button.disabled = true;
   $("replyMsg").textContent = "";
   try {
-    const { household } = await post("/api/public/rsvp/submit", { token: current.token, guests, email: form.email.value, message: form.message.value });
+    const { household, calendar_url } = await post("/api/public/rsvp/submit", { token: current.token, guests, email: form.email.value, message: form.message.value });
     current = { ...household, token: current.token };
     const coming = household.guests.filter((g) => g.rsvp === "yes");
-    $("doneText").textContent = coming.length ? "We can't wait to celebrate with you." : "We'll miss you, and thank you for letting us know.";
+    $("doneText").textContent = coming.length ? page.thanks_yes : page.thanks_no;
+    // The calendar invite is for people who are coming.
+    $("calendar").hidden = !(calendar_url && coming.length);
+    if (calendar_url) $("calendar").href = calendar_url;
     $("doneList").replaceChildren(...household.guests.flatMap((g) => [
       el("li", {}, `${g.first_name} ${g.last_name}: ${g.rsvp === "yes" ? "attending" : "not attending"}`),
       g.plus_one_allowed && g.plus_one_rsvp === "yes" ? el("li", {}, `${g.plus_one_name}: attending`) : null,
