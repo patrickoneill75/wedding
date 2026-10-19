@@ -102,7 +102,12 @@ function cleanItem(input, kind) {
   }
   if (has(input, "locked")) patch.locked = input.locked === true || input.locked === 1 || input.locked === "1" || input.locked === "on" ? 1 : 0;
   if (kind === "table") cleanTableShape(input, patch);
-  if ((kind === "note" || kind === "shape") && has(input, "font_size")) patch.font_size = number(input.font_size, "Text size", 0.5, 10);
+  if (kind === "note" && has(input, "font_size")) patch.font_size = number(input.font_size, "Text size", 0.5, 10);
+  // A shape's text size of 0 (sent blank) means the text sizes itself to fit the shape.
+  if (kind === "shape" && has(input, "font_size")) {
+    const blank = input.font_size === "" || input.font_size === null || Number(input.font_size) === 0;
+    patch.font_size = blank ? 0 : number(input.font_size, "Text size", 0.5, 10);
+  }
   if (kind === "shape") {
     if (has(input, "shape")) patch.shape = oneOf(input.shape, SHAPES, "Shape");
     if (has(input, "width_ft")) patch.width_ft = number(input.width_ft, "Width", 0.1, 500);
@@ -238,7 +243,7 @@ async function createItem(env, input) {
   }
 
   if (kind === "shape") {
-    const patch = Object.assign(base, { shape: "rect", width_ft: 10, length_ft: 10, color: "gray", font_size: 1.5 }, cleanItem(input, kind));
+    const patch = Object.assign(base, { shape: "rect", width_ft: 10, length_ft: 10, color: "gray", font_size: 0 }, cleanItem(input, kind));
     const result = await insert(env, "seating_items", patch);
     return [result.meta.last_row_id];
   }

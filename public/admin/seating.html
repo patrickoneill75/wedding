@@ -15,8 +15,10 @@
   @media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
   .toolbar select { width: auto; }
-  .canvas { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); max-height: 76vh; }
-  .canvas svg { display: block; user-select: none; -webkit-user-select: none; }
+  /* JS sets the height (see sizeCanvas); the corner handle makes it taller or shorter. */
+  .canvas { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); resize: vertical; min-height: 160px; }
+  .canvas svg { display: block; margin: 0 auto; user-select: none; -webkit-user-select: none; }
+  .toolbar .zoom { width: 72px; padding: 4px 6px; }
   .canvas .floor { fill: var(--surface-1); stroke: var(--text-secondary); stroke-width: .12; }
   .canvas .g1 { stroke: var(--grid); stroke-width: .03; }
   .canvas .g5 { stroke: var(--grid); stroke-width: .08; }
@@ -65,7 +67,7 @@
   @media print {
     .topbar, .toolbar, .panel, #templatesCard, #whoCard, .rooms, #addRoom { display: none !important; }
     .layout { display: block; }
-    .canvas { max-height: none; overflow: visible; border: 0; }
+    .canvas { height: auto !important; overflow: visible; border: 0; resize: none; }
     /* The whole room on the page, whatever the zoom on screen. */
     .canvas svg { width: 100% !important; min-width: 0 !important; }
     .canvas .lock-mark, .canvas .guide { display: none; }
@@ -81,7 +83,8 @@
     <button class="primary" id="addRoom">+ Add room</button>
   </div>
   <p class="sub">Lay out each room in feet. Drag tables, chairs and notes to move them. In a reception room, click a
-    chair to seat someone there: each person gets a table number and a seat letter.</p>
+    chair to seat someone there: each person gets a table number and a seat letter. Drag the plan's bottom-right
+    corner to make it taller.</p>
   <div class="rooms" id="rooms"></div>
   <div id="main"></div>
 
@@ -115,8 +118,17 @@ let picked = new Set();
 const select = (id) => { selectedId = id; picked = new Set(id == null ? [] : [id]); };
 let snapOn = true;
 try { snapOn = localStorage.getItem("seating-snap") !== "off"; } catch {}
+// The drawing's width as a share of the box: 1 fills it, below 1 shows more of a long room.
+const ZOOM_MIN = 0.1;
+const ZOOM_MAX = 8;
+const clampZoom = (z) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(z * 100) / 100));
 let zoom = 1;
-try { zoom = Number(localStorage.getItem("seating-zoom")) || 1; } catch {}
+try { zoom = clampZoom(Number(localStorage.getItem("seating-zoom")) || 1); } catch {}
+const setZoom = (z) => { zoom = clampZoom(z); try { localStorage.setItem("seating-zoom", zoom); } catch {} render(); };
+// A height someone dragged the box to, per room, so it survives each redraw.
+const boxHeights = {};
+try { Object.assign(boxHeights, JSON.parse(localStorage.getItem("seating-box-heights") || "{}")); } catch {}
+let boxWatch = null;
 
 const room = () => data.rooms.find((r) => r.id === roomId) || null;
 const itemsOf = (id) => data.items.filter((i) => i.room_id === id);
@@ -236,7 +248,8 @@ function measure(text, weight = 600) {
 /**
  * A shape's text at the largest size that fits inside it, with a margin all round: an
  * oval's text fits the rectangle inside it. Lines typed stay as typed; otherwise the
- * words wrap onto as many lines (up to six) as make the text biggest.
+ * words wrap onto as many lines (up to six) as make the text biggest. A size set on the
+ * shape (font_size above 0) is used as is, with the words wrapped to the shape's width.
  */
 function fitText(item) {
   const w = item.width_ft;
@@ -246,6 +259,22 @@ function fitText(item) {
   const room = [Math.max(inner[0] - pad * 2, 0.1), Math.max(inner[1] - pad * 2, 0.1)];
   const label = String(item.label || "").trim();
   const sizeFor = (lines) => Math.min(room[0] / Math.max(...lines.map((x) => measure(x)), 0.01), room[1] / (lines.length * 1.2));
+  if (item.font_size > 0) {
+    const size = item.font_size;
+    const lines = [];
+    for (const typed of label.split("\n")) {
+      let line = "";
+      for (const word of typed.trim().split(/\s+/)) {
+        const next = line ? `${line} ${word}` : word;
+        if (line && measure(next) * size > room[0]) {
+          lines.push(line);
+          line = word;
+        } else line = next;
+      }
+      lines.push(line);
+    }
+    return { lines, size };
+  }
   const options = [];
   if (label.includes("\n")) options.push(label.split("\n").map((x) => x.trim()));
   else {
@@ -483,6 +512,8 @@ function wireDragging(svg, r) {
 /* -------------------------------------------------------------------- page ---- */
 
 function render() {
+  const old = document.getElementById("canvas");
+  const scroll = old && { room: Number(old.dataset.room), top: old.scrollTop, left: old.scrollLeft };
   document.getElementById("rooms").replaceChildren(
     ...data.rooms.map((r) => h("button", { class: r.id === roomId ? "on" : "", onclick: () => { roomId = r.id; select(null); history.replaceState(null, "", `?room=${r.id}`); render(); } },
       r.name, h("span", { class: "kind" }, KIND_LABEL[r.kind] || r.kind)))
@@ -497,14 +528,47 @@ function render() {
       h("div", { class: "layout" },
         h("div", {},
           toolbar(r),
-          h("div", { class: "canvas", id: "canvas" }, drawRoom(r)),
+          h("div", { class: "canvas", id: "canvas", "data-room": r.id }, drawRoom(r)),
           h("div", { class: "stats", style: "margin-top:10px" }, roomStats(r))),
         h("div", { class: "card panel" }, panel(r))),
       // Not a null: replaceChildren() would print it as the word "null" under a ceremony room.
       ...(r.kind === "reception" ? [whoSitsWhere()] : []),
     );
+    sizeCanvas(r, scroll && scroll.room === r.id ? scroll : null);
   }
   renderTemplates();
+}
+
+// The plan's box: as tall as the drawing, up to most of the window (two windows for a
+// room longer than it is wide), or the height someone dragged it to. Keeps the scroll
+// position across redraws of the same room.
+function sizeCanvas(r, scroll) {
+  const box = document.getElementById("canvas");
+  const svg = box.querySelector("svg");
+  const frame = box.offsetHeight - box.clientHeight; // borders, and a sideways scroll bar
+  const natural = Math.ceil(svg.getBoundingClientRect().height) + frame;
+  const cap = window.innerHeight * (r.length_ft > r.width_ft ? 2 : 0.76);
+  const height = Math.max(160, Math.round(boxHeights[r.id] || Math.min(natural, cap)));
+  box.style.height = `${height}px`;
+  if (scroll) { box.scrollTop = scroll.top; box.scrollLeft = scroll.left; }
+  boxWatch?.disconnect();
+  boxWatch = new ResizeObserver(() => {
+    if (Math.abs(box.offsetHeight - height) < 2) return;
+    boxHeights[r.id] = box.offsetHeight;
+    try { localStorage.setItem("seating-box-heights", JSON.stringify(boxHeights)); } catch {}
+  });
+  boxWatch.observe(box);
+}
+
+// The largest zoom (up to 100%) that shows the whole drawing in the box and the window.
+function fitZoom() {
+  const box = document.getElementById("canvas");
+  const svg = box?.querySelector("svg");
+  if (!svg) return;
+  const view = svg.viewBox.baseVal;
+  const space = Math.min(box.clientHeight, window.innerHeight - 24);
+  const tall = box.clientWidth * (view.height / view.width); // the drawing's height at 100%
+  setZoom(Math.min(1, space / tall));
 }
 
 function roomStats(r) {
@@ -557,9 +621,12 @@ function toolbar(r) {
     h("label", { class: "check", title: "While dragging, line up with the edges and centers of what's nearby" },
       h("input", { type: "checkbox", checked: snapOn, onchange: (ev) => { snapOn = ev.target.checked; try { localStorage.setItem("seating-snap", snapOn ? "on" : "off"); } catch {} } }),
       "Snap to align"),
-    h("label", { class: "check" }, "Zoom",
-      h("select", { onchange: (ev) => { zoom = Number(ev.target.value); try { localStorage.setItem("seating-zoom", zoom); } catch {} render(); } },
-        [1, 1.5, 2, 3, 4].map((z) => h("option", { value: z, selected: z === zoom }, `${z * 100}%`)))),
+    h("label", { class: "check", title: "Type any zoom from 10% to 800%" }, "Zoom",
+      h("input", { class: "zoom", type: "number", min: ZOOM_MIN * 100, max: ZOOM_MAX * 100, step: 5, list: "zoomSteps", value: Math.round(zoom * 100),
+        onchange: (ev) => { const v = Number(ev.target.value); if (v > 0) setZoom(v / 100); else ev.target.value = Math.round(zoom * 100); } }),
+      "%",
+      h("datalist", { id: "zoomSteps" }, [25, 50, 75, 100, 150, 200, 300, 400].map((z) => h("option", { value: z })))),
+    h("button", { class: "small", title: "Zoom so the whole room shows without scrolling", onclick: () => fitZoom() }, "Fit"),
     h("button", { class: "small", onclick: () => window.print() }, "Print"),
     h("button", { class: "small", onclick: () => editRoom(r) }, "Room settings"));
 }
@@ -811,8 +878,9 @@ function panel(r) {
         field("Color", "color", { options: Object.entries(COLOR_LABEL), value: item.color || "gray" }),
         field("Width (ft)", "width_ft", { type: "number", step: 0.01, min: 0.1, value: item.width_ft }),
         field("Length (ft)", "length_ft", { type: "number", step: 0.01, min: 0.1, value: item.length_ft }),
-        field("Turn (degrees)", "rotation", { type: "number", step: 0.01, value: item.rotation })),
-      h("p", { class: "desc", style: "margin:0 0 8px" }, "The text sizes itself to fill the shape, with a margin."),
+        field("Turn (degrees)", "rotation", { type: "number", step: 0.01, value: item.rotation }),
+        field("Text size (ft tall)", "font_size", { type: "number", step: 0.05, min: 0.5, max: 10, value: item.font_size > 0 ? item.font_size : "", placeholder: "Fit" })),
+      h("p", { class: "desc", style: "margin:0 0 8px" }, "Leave the text size blank and the text sizes itself to fill the shape, with a margin."),
       h("div", { class: "row" }, h("button", { class: "primary" }, "Save"), h("button", { type: "button", class: "danger", onclick: remove }, "Remove")), msg);
     return h("div", {}, h("h2", {}, "Shape"), form, arrangeTools([item], r));
   }

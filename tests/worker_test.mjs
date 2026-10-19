@@ -2159,6 +2159,18 @@ test("seating: turns and shape sizes keep two decimals; locked items can't move 
   assert.deepEqual([[(await item(shape)).x, (await item(shape)).y], [(await item(table)).x, (await item(table)).y]], [[5.25, 6], [15.5, 6]]);
 });
 
+test("seating: a new shape's text fits itself (size 0) until a size is set, and a blank size goes back to fitting", async () => {
+  const { api, roomId } = await seatingSetup();
+  const shape = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "shape", label: "Bar" } })).data.ids[0];
+  const size = async () => (await api("/api/admin/seating")).data.items.find((i) => i.id === shape).font_size;
+  assert.equal(await size(), 0);
+  assert.equal((await api(`/api/admin/seating/items/${shape}`, { method: "PUT", body: { font_size: "2.25" } })).status, 200);
+  assert.equal(await size(), 2.25);
+  assert.equal((await api(`/api/admin/seating/items/${shape}`, { method: "PUT", body: { font_size: "0.1" } })).status, 400, "too small to read");
+  await api(`/api/admin/seating/items/${shape}`, { method: "PUT", body: { font_size: "" } });
+  assert.equal(await size(), 0);
+});
+
 test("seating: a person has one seat; seating them again moves them, and taking a seat bumps whoever had it", async () => {
   const { env, api, id, roomId } = await seatingSetup();
   const tableId = (await api("/api/admin/seating/items", { method: "POST", body: { room_id: roomId, kind: "table", seats: 6 } })).data.ids[0];
