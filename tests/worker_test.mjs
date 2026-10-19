@@ -1964,13 +1964,14 @@ test("run of show: one lead vendor per step, listed first, then supporting vendo
 
 /* ------------------------------------------------------------- tags and reports -- */
 
-test("contacts: out-of-town and international households and rehearsal dinner guests have their own reports", async () => {
+test("contacts: out-of-town, international and rehearsal dinner guests have their own reports", async () => {
   const { api } = await reportSetup();
   const households = (await api("/api/admin/guests")).data.households;
   const smiths = households.find((h) => h.display_name === "The Smiths");
   const lee = households.find((h) => h.display_name === "Dana Lee");
-  await api(`/api/admin/households/${smiths.id}`, { method: "PUT", body: { out_of_town: true } });
-  await api(`/api/admin/households/${lee.id}`, { method: "PUT", body: { out_of_town: true, international: true, country: "Canada" } });
+  await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: [smiths.id], field: "out_of_town", value: true } });
+  await api(`/api/admin/households/${lee.id}`, { method: "PUT", body: { country: "Canada" } });
+  await api(`/api/admin/guests/${lee.guests[0].id}`, { method: "PUT", body: { out_of_town: true, international: true } });
   await api("/api/admin/guests/bulk", { method: "POST", body: { household_ids: [smiths.id], field: "invite_rehearsal", value: true } });
 
   const rehearsal = await runReport(api, { id: "rehearsal-dinner" });
@@ -1979,9 +1980,26 @@ test("contacts: out-of-town and international households and rehearsal dinner gu
   assert.deepEqual(["Rehearsal dinner", "Out of town", "International"].map((e) => head.find((r) => r.Event === e).Invited), [3, 4, 1]);
   assert.deepEqual((await runReport(api, { id: "international" })).map((r) => [r.Name, r.Country]), [["Dana Lee", "Canada"]]);
   assert.deepEqual((await runReport(api, { id: "welcome-bags" })).map((r) => r["Name on the envelope"]), ["Dana Lee", "The Smiths"]);
-  assert.equal((await api("/api/admin/households/bulk", { method: "POST", body: { ids: [smiths.id], field: "international", value: true } })).status, 200);
+  assert.equal((await api("/api/admin/households/bulk", { method: "POST", body: { ids: [smiths.id], field: "international", value: true } })).status, 400,
+    "international is a guest's tag now, not the household's");
   const ros = (await api("/api/admin/runofshow")).data;
   assert.ok(["out_of_town", "international", "rehearsal_dinner"].every((k) => ros.presets.some((p) => p.key === k)), "each tag is a guest cohort too");
+});
+
+// Bug guard: moving the tags from households to guests must not drop tags already set.
+test("upgrading copies a household's out-of-town and international tags onto each of its guests", async () => {
+  const env = makeEnv();
+  env.DB.db.exec(`
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO settings VALUES ('_schema_version', '11');
+    CREATE TABLE households (id INTEGER PRIMARY KEY, out_of_town INTEGER NOT NULL DEFAULT 0, international INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE guests (id INTEGER PRIMARY KEY, household_id INTEGER);
+    INSERT INTO households VALUES (1, 1, 1), (2, 0, 0);
+    INSERT INTO guests VALUES (1, 1), (2, 1), (3, 2);
+  `);
+  assert.equal((await call(env, "/api/auth/me")).status, 401);
+  const rows = env.DB.db.prepare("SELECT out_of_town, international FROM guests ORDER BY id").all();
+  assert.deepEqual(rows.map((r) => [r.out_of_town, r.international]), [[1, 1], [1, 1], [0, 0]]);
 });
 
 /* ------------------------------------------------------------------------ users -- */

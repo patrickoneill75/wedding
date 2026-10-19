@@ -29,7 +29,7 @@ A Cloudflare Worker with two sides:
     it's marked done buying.
   - **Guests**: households and guests like a small CRM. Address, side, priority, separate
     ceremony, reception and rehearsal dinner invitations, out-of-town and international
-    households, family and wedding-party flags, plus-ones (named by the
+    tags, family and wedding-party flags, plus-ones (named by the
     guest when they RSVP), save-the-date / invite / gift / thank-you tracking, RSVPs,
     dietary needs and tables. Bulk edits and filters, and a Reset RSVP to un-answer a
     household.

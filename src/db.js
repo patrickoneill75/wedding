@@ -353,6 +353,16 @@ const MIGRATIONS = [
     `ALTER TABLE households ADD COLUMN international INTEGER NOT NULL DEFAULT 0`,
     `ALTER TABLE guests ADD COLUMN invite_rehearsal INTEGER NOT NULL DEFAULT 0`,
   ],
+  // 12: out of town and international are tags on each guest, next to their invitations,
+  // instead of on the household. Each guest starts with their household's setting; the
+  // household columns are left in place and no longer read.
+  [
+    `ALTER TABLE guests ADD COLUMN out_of_town INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE guests ADD COLUMN international INTEGER NOT NULL DEFAULT 0`,
+    `UPDATE guests SET
+       out_of_town = COALESCE((SELECT h.out_of_town FROM households h WHERE h.id = guests.household_id), 0),
+       international = COALESCE((SELECT h.international FROM households h WHERE h.id = guests.household_id), 0)`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
