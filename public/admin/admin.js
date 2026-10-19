@@ -66,21 +66,22 @@ export function setMsg(node, text, kind = "") {
   node.className = `msg ${kind}`;
 }
 
-// [file, label, page key]. "admin" pages are for admins only; the rest can be given to
-// a user on the Users page (PAGES in src/auth.js).
+// [file, label, page key, in the top bar]. "admin" pages are for admins only; the rest
+// can be given to a user in Settings > Users (PAGES in src/auth.js). Reports isn't in
+// the top bar: the Guests and Vendors pages open it with "Run a report".
 const PAGES = [
-  ["index.html", "Dashboard", "dashboard"],
-  ["expenses.html", "Expenses", "expenses"],
-  ["vendors.html", "Vendors", "vendors"],
-  ["guests.html", "Guests", "guests"],
-  ["seating.html", "Seating", "seating"],
-  ["runofshow.html", "Run of show", "runofshow"],
-  ["reports.html", "Reports", "reports"],
-  ["settings.html", "Settings", "admin"],
-  ["users.html", "Users", "admin"],
+  ["index.html", "Dashboard", "dashboard", true],
+  ["expenses.html", "Expenses", "expenses", true],
+  ["vendors.html", "Vendors", "vendors", true],
+  ["guests.html", "Guests", "guests", true],
+  ["seating.html", "Seating", "seating", true],
+  ["runofshow.html", "Run of show", "runofshow", true],
+  ["reports.html", "Reports", "reports", false],
+  ["settings.html", "Settings", "admin", true],
 ];
 
-const canSee = (user, key) => user.role === "admin" || (key !== "admin" && user.pages.includes(key));
+/** Whether `user` may open the page with this key ("reports", "admin", ...). */
+export const canSee = (user, key) => user.role === "admin" || (key !== "admin" && user.pages.includes(key));
 
 /**
  * Render the top bar and confirm the session. Resolves to the signed-in user. Someone
@@ -103,7 +104,7 @@ export async function initPage(active) {
     h(
       "nav",
       {},
-      mine.map(([href, label]) => h("a", { href: `/admin/${href}`, class: href === active ? "active" : "" }, label))
+      mine.filter(([, , , inNav]) => inNav).map(([href, label]) => h("a", { href: `/admin/${href}`, class: href === active ? "active" : "" }, label))
     ),
     h(
       "span",

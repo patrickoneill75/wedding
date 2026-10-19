@@ -2,7 +2,7 @@
  * Control-panel sign-in with Google, plus the signing helpers everything else uses.
  *
  * Who may sign in: the owners in the comma-separated ADMIN_EMAILS secret, who are always
- * admins, and anyone an admin adds on the Users page (the users table, src/users.js),
+ * admins, and anyone an admin adds in Settings > Users (the users table, src/users.js),
  * each an admin or a user limited to some pages. Google proves the email; these lists
  * decide whether it gets in, and both are re-checked on every request, so removing
  * someone locks them out at once.
@@ -136,8 +136,8 @@ export const PAGES = ["dashboard", "expenses", "vendors", "guests", "seating", "
 
 /**
  * Who this email is: { role: "admin" | "user", pages, owner } or null if they may not
- * sign in. Owners (ADMIN_EMAILS) are always admins and can't be locked out from the Users
- * page.
+ * sign in. Owners (ADMIN_EMAILS) are always admins and can't be locked out from
+ * Settings > Users.
  */
 export async function accessFor(env, email) {
   const clean = String(email || "").trim().toLowerCase();
@@ -171,7 +171,7 @@ export async function requirePage(request, env, page) {
   if (denied) return [null, denied];
   if (user.role === "admin") return [user, null];
   if (page === "admin" || !user.pages.includes(page)) {
-    return [null, json({ error: "You don't have access to this. Ask Patrick or Kaitlyn to add it on the Users page." }, 403)];
+    return [null, json({ error: "You don't have access to this. Ask Patrick or Kaitlyn to add it in Settings > Users." }, 403)];
   }
   return [user, null];
 }

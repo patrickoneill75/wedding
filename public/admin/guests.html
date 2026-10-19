@@ -34,6 +34,7 @@
   <div class="row" style="margin-bottom:6px">
     <div><h1>Guests</h1></div>
     <span class="spacer"></span>
+    <a class="btn" id="reportBtn" href="/admin/reports.html?r=full-list" hidden>Run a report</a>
     <button class="primary" id="addBtn">+ Add household</button>
   </div>
   <div class="summary" id="summary"></div>
@@ -88,9 +89,10 @@
 </div>
 
 <script type="module">
-import { api, initPage, h, openDialog, field, check, formValues, setMsg, fmtDate } from "/admin/admin.js";
+import { api, canSee, initPage, h, openDialog, field, check, formValues, setMsg, fmtDate } from "/admin/admin.js";
 
-await initPage("guests.html");
+const me = await initPage("guests.html");
+document.getElementById("reportBtn").hidden = !canSee(me, "reports");
 let data;
 const selected = new Set();
 const RSVP_LABEL = { pending: "Awaiting", yes: "Coming", no: "Not coming" };

@@ -44,15 +44,15 @@ A Cloudflare Worker with two sides:
     wedding party, out-of-town, international) and any other guests, groups or tables. The coordinator gets a private link to a day-of view at
     `/dayof/` for her iPad: now and next, tap to start and finish steps, who is in each
     and where they sit, and vendor phone numbers. It never shows budgets or addresses.
-  - **Reports**: head counts, meal counts, dietary needs, table cards, the seating
+  - **Reports** ("Run a report" on the Guests and Vendors pages): head counts, meal counts, dietary needs, table cards, the seating
     chart board, ceremony-only / reception-only / both lists, the chase list, mailing
     labels, thank-yous, vendor contacts and more, plus custom reports you build and
     save. Each downloads as a CSV.
-  - **Users**: the owners in `ADMIN_EMAILS` plus anyone you add, each an admin (everything)
-    or a user who sees only the pages ticked for them, such as a coordinator with Run of
-    show and Seating.
   - **Settings**: wedding details, 7% tax, budget, priority weights, the drinks
-    calculator, the expense-form link, Google Drive, and the spreadsheet import.
+    calculator, the expense-form link, Google Drive, the spreadsheet import, and Users:
+    the owners in `ADMIN_EMAILS` plus anyone you add, each an admin (everything) or a
+    user who sees only the pages ticked for them, such as a coordinator with Run of show
+    and Seating.
 
 Everything syncs to a Google Drive folder as CSV files (guests, expenses, payments,
 price history, planning numbers).
