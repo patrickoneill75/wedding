@@ -42,6 +42,7 @@ import { addPayment, createExpense, loadContext, loadSettings, listExpenses, lis
 import { uploadReceipt } from "./google.js";
 import { intakeTurn, payerFor } from "./intake.js";
 import { householdIcs, icsFor, queueAfterRsvp, testHousehold } from "./comms.js";
+import { eventsFor } from "./calendar.js";
 
 export { payerFor };
 
@@ -62,13 +63,26 @@ async function body(request) {
   }
 }
 
-/** Lowercase, strip accents and anything that isn't a letter: "O'Neill " -> "oneill". */
+/**
+ * Lowercase, strip accents and anything that isn't a letter: "O'Neill " -> "oneill".
+ * Letters of any script count, so "Ольга" stays findable.
+ */
 export function normalizeName(text) {
   return String(text || "")
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/\p{M}/gu, "")
     .toLowerCase()
-    .replace(/[^a-z]/g, "");
+    .replace(/[^\p{L}]/gu, "");
+}
+
+/**
+ * "alex@gmail.com" -> "a•••@gmail.com". The RSVP page shows only this, so a visitor
+ * who opens a household can't read its email addresses.
+ */
+export function maskEmail(email) {
+  const [user, domain] = String(email || "").split("@");
+  if (!user || !domain) return "";
+  return `${user[0]}•••@${domain}`;
 }
 
 function firstNameMatches(stored, typed) {
@@ -83,7 +97,8 @@ function firstNameMatches(stored, typed) {
 /** When and where the rehearsal dinner is, from its calendar invite entry, if there is one. */
 function rehearsalDetails(settings) {
   const event = (settings.calendar_events || []).find((e) => e.for === "rehearsal");
-  return event ? { date: event.date || "", start: event.start || "", location: event.location || "" } : null;
+  // An all-day event keeps the time typed before "All day" was ticked; it isn't shown.
+  return event ? { date: event.date || "", start: event.all_day ? "" : event.start || "", location: event.location || "" } : null;
 }
 
 async function householdForRsvp(env, householdId, settings) {
@@ -99,7 +114,8 @@ async function householdForRsvp(env, householdId, settings) {
   const rehearsal = guests.some((g) => g.invite_rehearsal) ? rehearsalDetails(settings) : null;
   return {
     greeting: household.greeting || household.display_name,
-    email: household.email || "",
+    // Emails come back masked: the page shows what's on file without revealing it.
+    email_hint: maskEmail(household.email),
     message: household.rsvp_message || "",
     responded: Boolean(household.rsvp_at),
     // Only a household with someone invited to the rehearsal dinner hears when it is.
@@ -108,7 +124,7 @@ async function householdForRsvp(env, householdId, settings) {
       id: g.id,
       first_name: g.first_name,
       last_name: g.last_name,
-      email: g.email || "",
+      email_hint: maskEmail(g.email),
       // What each guest is invited to, so the page can say so under their name.
       ceremony: Boolean(g.invite_ceremony),
       reception: Boolean(g.invite_reception),
@@ -162,9 +178,18 @@ export function searchGuests(guests, query, limit = SEARCH_LIMIT) {
 }
 
 async function rsvpSearch(env, input) {
-  const guests = await all(env, "SELECT id, first_name, last_name FROM guests");
+  const rows = await all(env, "SELECT id, first_name, last_name, plus_one_allowed, plus_one_name FROM guests");
+  // A plus-one whose name was preloaded finds their host's invitation: their name is a
+  // search entry whose pick opens the host's household.
+  const people = rows.flatMap((g) => {
+    const own = { id: g.id, first_name: g.first_name, last_name: g.last_name };
+    const typed = g.plus_one_allowed ? String(g.plus_one_name || "").trim() : "";
+    if (!typed) return [own];
+    const [first = "", ...rest] = typed.split(/\s+/);
+    return [own, { id: g.id, first_name: first, last_name: rest.join(" ") }];
+  });
   const results = [];
-  for (const g of searchGuests(guests, input.q)) {
+  for (const g of searchGuests(people, input.q)) {
     results.push({
       name: `${String(g.first_name).trim()} ${String(g.last_name).trim()}`.trim(),
       pick: await sign(env, { kind: "pick", g: g.id }, PICK_TOKEN_TTL),
@@ -218,9 +243,12 @@ async function rsvpSubmit(env, input, { preview = false } = {}) {
   if (!token || token.kind !== "rsvp") return json({ error: "This RSVP page expired. Look up your name again." }, 400);
   const householdId = token.h;
   // One email for the household is required: it's where the details and reminders go.
-  const email = String(input.email ?? "").trim().slice(0, 200);
-  if (!EMAIL.test(email)) return json({ error: email ? "That email address doesn't look right." : "Add an email address so we can send you the details." }, 400);
-  const members = await all(env, "SELECT id, plus_one_allowed, invite_rehearsal FROM guests WHERE household_id = ?", householdId);
+  // The page only sees it masked, so a blank keeps the one on file.
+  const onFile = await first(env, "SELECT email FROM households WHERE id = ?", householdId);
+  const typed = String(input.email ?? "").trim().slice(0, 200);
+  const email = typed || String(onFile?.email || "").trim();
+  if (!EMAIL.test(email)) return json({ error: typed ? "That email address doesn't look right." : "Add an email address so we can send you the details." }, 400);
+  const members = await all(env, "SELECT id, plus_one_allowed, invite_rehearsal, invite_ceremony, invite_reception FROM guests WHERE household_id = ?", householdId);
   const byId = new Map(members.map((m) => [m.id, m]));
   const answers = Array.isArray(input.guests) ? input.guests : [];
   const clip = (v, n = 500) => (v == null ? null : String(v).trim().slice(0, n) || null);
@@ -231,7 +259,8 @@ async function rsvpSubmit(env, input, { preview = false } = {}) {
     if (!guest) continue;
     if (!["yes", "no"].includes(answer.rsvp)) return json({ error: "Let us know whether each person is coming." }, 400);
     const set = { rsvp: answer.rsvp, dietary: clip(answer.dietary) };
-    // A guest's own email is optional; a blank one leaves what's on file.
+    // A guest's own email is optional; a blank one leaves what's on file (the page only
+    // sees it masked).
     const guestEmail = clip(answer.email, 200);
     if (guestEmail && !EMAIL.test(guestEmail)) return json({ error: `The email for one of your guests doesn't look right.` }, 400);
     if (guestEmail) set.email = guestEmail;
@@ -270,17 +299,23 @@ async function rsvpSubmit(env, input, { preview = false } = {}) {
 
   if (preview) {
     const household = await householdForRsvp(env, householdId, settings);
+    // Whether a calendar button shows follows the previewed answers, not the saved ones.
+    const previewed = members.map((m) => ({ ...m, ...(changes.get(m.id) || {}) }));
+    const hasEvents = eventsFor(settings.calendar_events, previewed).length > 0;
     return json({
       ok: true,
       preview: true,
       household: {
         ...household,
-        email,
+        email_hint: maskEmail(email),
         message: message || "",
         responded: true,
-        guests: household.guests.map((g) => ({ ...g, ...Object.fromEntries(Object.entries(changes.get(g.id) || {}).map(([k, v]) => [k, v ?? ""])) })),
+        guests: household.guests.map((g) => {
+          const { email: guestEmail, ...set } = changes.get(g.id) || {};
+          return { ...g, ...Object.fromEntries(Object.entries(set).map(([k, v]) => [k, v ?? ""])), ...(guestEmail ? { email_hint: maskEmail(guestEmail) } : {}) };
+        }),
       },
-      calendar_url: await calendarUrl(),
+      calendar_url: hasEvents ? `/api/public/calendar?t=${encodeURIComponent(await sign(env, { kind: "cal", h: householdId }, CALENDAR_TOKEN_TTL))}` : null,
     });
   }
 

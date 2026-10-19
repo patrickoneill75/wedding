@@ -176,7 +176,12 @@ export function mergeSettings(stored) {
   }
   merged.priority_weights = { ...DEFAULT_SETTINGS.priority_weights, ...(merged.priority_weights || {}) };
   merged.drinks = { ...DEFAULT_SETTINGS.drinks, ...(merged.drinks || {}) };
-  merged.rsvp_page = { ...DEFAULT_SETTINGS.rsvp_page, ...(merged.rsvp_page || {}) };
+  // A blank wording field means "use the default" (the editor shows it as the
+  // placeholder); only the heading may be blank, which shows your names.
+  merged.rsvp_page = { ...DEFAULT_SETTINGS.rsvp_page };
+  for (const [key, value] of Object.entries(stored?.rsvp_page || {})) {
+    if (Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS.rsvp_page, key) && (String(value ?? "").trim() || key === "heading")) merged.rsvp_page[key] = value;
+  }
   if (!Array.isArray(merged.calendar_events)) merged.calendar_events = [];
   merged.email_design = { ...DEFAULT_SETTINGS.email_design, ...(merged.email_design || {}) };
   return merged;

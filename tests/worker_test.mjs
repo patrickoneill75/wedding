@@ -1096,6 +1096,70 @@ test("RSVP preview: while RSVPs are closed only a signed-in admin can try the pa
   assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM comm_sends").get().n, 0, "and no after-RSVP email is queued");
 });
 
+// Bug guard: a visitor could walk the name search and read every household's email
+// addresses; the page now gets them masked, and a blank box keeps the one on file.
+test("RSVP: emails come back masked, a blank keeps the one on file, and a typed one replaces it", async () => {
+  const { env, api, households } = await rsvpSetup();
+  const h1 = households.find((h) => h.code === "H-001");
+  await api(`/api/admin/households/${h1.id}`, { method: "PUT", body: { email: "alex@example.com" } });
+  await api(`/api/admin/guests/${h1.guests[1].id}`, { method: "PUT", body: { email: "sam@own.example.com" } });
+  const pick = (await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "alex" } })).data.results[0].pick;
+  const alex = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick } })).data.matches[0];
+  const text = JSON.stringify(alex);
+  assert.ok(!text.includes("alex@example.com") && !text.includes("sam@own.example.com"), "no address in the lookup");
+  assert.equal(alex.email_hint, "a•••@example.com");
+  assert.equal(alex.guests[1].email_hint, "s•••@own.example.com");
+  const submit = (email) => call(env, "/api/public/rsvp/submit", { method: "POST", body: { token: alex.token, email, guests: alex.guests.map((g) => ({ id: g.id, rsvp: "yes", email: "" })) } });
+  assert.equal((await submit("")).status, 200, "a blank keeps the email on file");
+  const stored = () => env.DB.db.prepare("SELECT h.email AS h, g.email AS g FROM households h JOIN guests g ON g.household_id = h.id WHERE h.id = ? ORDER BY g.sort_order, g.id").all(h1.id);
+  assert.deepEqual(stored().map((r) => [r.h, r.g]), [["alex@example.com", null], ["alex@example.com", "sam@own.example.com"]]);
+  assert.equal((await submit("new@example.com")).status, 200);
+  assert.equal(stored()[0].h, "new@example.com");
+  // A household with no email on file still has to give one.
+  const jordan = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Jordan", last: "Sample" } })).data.matches[0];
+  const none = await call(env, "/api/public/rsvp/submit", { method: "POST", body: { token: jordan.token, email: "", guests: [{ id: jordan.guests[0].id, rsvp: "no" }] } });
+  assert.equal(none.status, 400);
+});
+
+// Bug guard: the type-ahead search replaced the first/last form and only searched
+// guests, so a preloaded plus-one could no longer find their host's invitation.
+test("RSVP: a preloaded plus-one finds their host through the name search; names in any script are found", async () => {
+  const { env, api, households } = await rsvpSetup();
+  const results = (await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "casey" } })).data.results;
+  assert.deepEqual(results.map((r) => r.name), ["Casey Guest"]);
+  const opened = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick: results[0].pick } })).data.matches[0];
+  assert.equal(opened.guests[0].first_name, "Jordan", "the pick opens the host's household");
+  await api("/api/admin/households", { method: "POST", body: { display_name: "Ivanova", guests: [{ first_name: "Ольга", last_name: "Иванова" }] } });
+  assert.deepEqual((await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "Ольга" } })).data.results.map((r) => r.name), ["Ольга Иванова"]);
+});
+
+// Bug guard: a cleared wording box saved "" and the RSVP page showed empty yes/no buttons.
+test("RSVP page: a blank wording field falls back to the default, except the heading", async () => {
+  const { env, api } = await rsvpSetup();
+  await api("/api/admin/comms/rsvp-page", { method: "PUT", body: { page: { accept_label: "", decline_label: "  ", heading: "", thanks_yes: "Yay" } } });
+  const page = (await call(env, "/api/public/info")).data.rsvp_page;
+  assert.deepEqual([page.accept_label, page.decline_label, page.heading, page.thanks_yes], ["Joyfully accepts", "Regretfully declines", "", "Yay"]);
+});
+
+// Bug guard: an all-day rehearsal dinner still showed the time typed before "All day"
+// was ticked, and an admin's preview showed the calendar button from the saved answers.
+test("RSVP: an all-day dinner shows no time, and a preview's calendar button follows the previewed answers", async () => {
+  const { env, api, households } = await rsvpSetup();
+  const alexRow = households.find((h) => h.code === "H-001").guests[0];
+  await api(`/api/admin/guests/${alexRow.id}`, { method: "PUT", body: { invite_rehearsal: true, rsvp: "no" } });
+  await api(`/api/admin/guests/${households.find((h) => h.code === "H-001").guests[1].id}`, { method: "PUT", body: { rsvp: "no" } });
+  await api("/api/admin/comms/calendar", { method: "PUT", body: { events: [{ title: "Dinner", date: "2027-06-11", start: "18:30", all_day: true, for: "rehearsal" }, { title: "Wedding", date: "2027-06-12", start: "16:00", for: "everyone" }] } });
+  await api("/api/admin/settings", { method: "PUT", body: { rsvp_open: false } });
+  const owner = await sessionCookie(env);
+  const pick = (await call(env, "/api/public/rsvp/search", { method: "POST", body: { q: "alex" }, cookie: owner })).data.results[0].pick;
+  const alex = (await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { pick }, cookie: owner })).data.matches[0];
+  assert.deepEqual(alex.rehearsal, { date: "2027-06-11", start: "", location: "" });
+  const sent = await call(env, "/api/public/rsvp/submit", { method: "POST", cookie: owner, body: { token: alex.token, email: "a@example.com",
+    guests: alex.guests.map((g) => ({ id: g.id, rsvp: "yes", rehearsal_rsvp: "yes" })) } });
+  assert.equal(sent.data.preview, true);
+  assert.ok(sent.data.calendar_url, "a previewed yes shows the calendar button even though the saved answers are no");
+});
+
 test("RSVP lookup never exposes addresses, priority or budget fields", async () => {
   const { env } = await rsvpSetup();
   const r = await call(env, "/api/public/rsvp/lookup", { method: "POST", body: { first: "Alex", last: "Example" } });
@@ -2139,7 +2203,7 @@ test("RSVP: the household email is required, guests may add their own, and the c
   const ok = await call(env, "/api/public/rsvp/submit", { method: "POST", body: { token: alex.token, email: "alex@example.com",
     guests: alex.guests.map((g, i) => ({ id: g.id, rsvp: "yes", email: i === 1 ? "sam@example.com" : "" })) } });
   assert.equal(ok.status, 200, JSON.stringify(ok.data));
-  assert.equal(ok.data.household.guests[1].email, "sam@example.com");
+  assert.equal(ok.data.household.guests[1].email_hint, "s•••@example.com", "the page only sees emails masked");
   const ics = await call(env, ok.data.calendar_url);
   assert.equal(ics.status, 200);
   assert.match(ics.headers.get("content-type"), /text\/calendar/);
