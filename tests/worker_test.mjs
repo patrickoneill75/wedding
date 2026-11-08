@@ -3063,7 +3063,7 @@ test("things to do: hidden from guests until published, previewed by an admin, t
   assert.equal(preview.status, 200);
   assert.match(preview.data, /<b>Preview\.<\/b>/, "an admin sees a preview");
   assert.equal(preview.headers.get("cache-control"), "private, no-store", "and the preview is never cached");
-  assert.equal((preview.data.match(/class="place"/g) || []).length, 97, "every place links to its map");
+  assert.equal((preview.data.match(/class="place"/g) || []).length, 99, "every place links to its map");
   assert.match(preview.data, /May 15, 2027 · Indianapolis/);
   assert.match(preview.data, /--bg:#faf6ef/, "it takes the website's look");
   assert.match(preview.data, /@font-face\{font-family:Made Up\}/, "and its fonts");
@@ -3088,7 +3088,12 @@ test("things to do: every name links to a place, the copy is escaped, and Zola's
   const { SECTIONS, PLACES, guideLine } = await import("../src/guide.js");
   const { addGuideLink } = await import("../src/site.js");
   const lines = SECTIONS.flatMap((s) => [...(s.intro || []), ...s.groups.flatMap((g) => [g.intro || "", ...g.items])]);
-  for (const line of lines) for (const m of line.matchAll(/\]\(([^)]+)\)/g)) assert.ok(Object.hasOwn(PLACES, m[1]), `no map link for ${m[1]}`);
+  const used = new Set();
+  for (const line of lines) for (const m of line.matchAll(/\]\(([^)]+)\)/g)) {
+    assert.ok(Object.hasOwn(PLACES, m[1]), `no map link for ${m[1]}`);
+    used.add(m[1]);
+  }
+  assert.deepEqual(Object.keys(PLACES).filter((key) => !used.has(key)), [], "no map links left over from places taken out");
   assert.equal(guideLine('Try <b> & [Bodhi](bodhi)'), `Try &#60;b&#62; &#38; <a class="place" href="${PLACES.bodhi.replace(/&/g, "&#38;")}" target="_blank" rel="noopener">Bodhi</a>`);
   const page = '<a href="https://www.zola.com/wedding/x/things-to-do" data-wm-nav="menu">Things To Do</a><nav id="wm-menu" hidden><a href="https://www.zola.com/wedding/x/things-to-do">Things To Do</a></nav>';
   assert.equal(addGuideLink(page), page.replace(/https:\/\/www\.zola\.com\/wedding\/x\/things-to-do/g, "/things-to-do"), "no second link");
