@@ -3032,6 +3032,22 @@ test("post-wedding call: {call_link} is a personal \"click here\" link; the page
   assert.ok(RESERVED.has("call"), "the website copy never takes over /call");
 });
 
+// Bug guard: with no registry link typed into Settings, the call page hid its "See our
+// registry" button, though the website copies a Zola site that has a registry.
+test("post-wedding call: with no registry link in Settings, the button goes to the Zola site's registry", async () => {
+  const env = makeEnv();
+  const api = await adminClient(env);
+  const t = await sign(env, { kind: "call", test: true }, 600);
+  const page = async () => (await call(env, `/api/public/call?t=${encodeURIComponent(t)}`)).data.registry_url;
+  assert.equal(await page(), "", "no registry anywhere: no button");
+  await api("/api/admin/settings", { method: "PUT", body: { zola_url: "https://www.zola.com/wedding/sam-and-alex" } });
+  assert.equal(await page(), "https://www.zola.com/wedding/sam-and-alex/registry");
+  const sent = await call(env, "/api/public/call", { method: "POST", body: { t, guests: [1] } });
+  assert.equal(sent.data.registry_url, "https://www.zola.com/wedding/sam-and-alex/registry", "and after submitting");
+  await api("/api/admin/settings", { method: "PUT", body: { registry_url: "https://example.com/our-registry" } });
+  assert.equal(await page(), "https://example.com/our-registry", "a link typed into Settings wins");
+});
+
 test("things to do: hidden from guests until published, previewed by an admin, then added to the site's menu", async () => {
   const env = makeEnv();
   const api = await adminClient(env);
@@ -3039,7 +3055,7 @@ test("things to do: hidden from guests until published, previewed by an admin, t
   env.DB.db.prepare("INSERT INTO site_pages (path, title, html, source_url, content_hash, fetched_at, changed_at) VALUES ('/', 'Home', ?, '', '', '', '')")
     .run('<html><head><style data-wm="fonts">@font-face{font-family:Made Up}</style></head><body style="background-color:#faf6ef"><p style="color:#333344">Hi</p>'
       + '<ul><li><a href="/travel" data-wm-nav="menu">Travel</a></li><li><a href="https://www.zola.com/wedding/x/registry" data-wm-nav="menu" target="_blank">Registry</a></li></ul>'
-      + '<nav id="wm-menu" aria-label="Site" hidden><a href="/travel">Travel</a></nav></body></html>');
+      + '<div class="wm-rsvp-bar"><nav id="wm-menu" aria-label="Site" hidden><a href="/travel">Travel</a></nav></div></body></html>');
   const guest = await call(env, "/things-to-do");
   assert.equal(guest.status, 404, "hidden from guests");
   assert.ok(!String(guest.data).includes("Commissary"));
@@ -3047,7 +3063,7 @@ test("things to do: hidden from guests until published, previewed by an admin, t
   assert.equal(preview.status, 200);
   assert.match(preview.data, /<b>Preview\.<\/b>/, "an admin sees a preview");
   assert.equal(preview.headers.get("cache-control"), "private, no-store", "and the preview is never cached");
-  assert.equal((preview.data.match(/class="place"/g) || []).length, 97, "every place links to its map");
+  assert.equal((preview.data.match(/class="place"/g) || []).length, 99, "every place links to its map");
   assert.match(preview.data, /May 15, 2027 · Indianapolis/);
   assert.match(preview.data, /--bg:#faf6ef/, "it takes the website's look");
   assert.match(preview.data, /@font-face\{font-family:Made Up\}/, "and its fonts");
@@ -3059,8 +3075,10 @@ test("things to do: hidden from guests until published, previewed by an admin, t
   assert.ok(!live.data.includes("<b>Preview.</b>"));
   assert.equal(live.headers.get("cache-control"), "public, max-age=300");
   const home = (await call(env, "/")).data;
-  assert.ok(home.includes('<li><a href="https://www.zola.com/wedding/x/registry" data-wm-nav="menu" target="_blank">Registry</a></li><li><a href="/things-to-do" data-wm-nav="menu">Things to Do</a></li>'),
-    "a copy of the last menu link, in its own list item");
+  // The site's own menu row gets it in the browser (PAGE_SCRIPT copies the last menu item
+  // there, wrapper and all, so it's spaced like the rest).
+  assert.ok(home.includes('<div class="wm-rsvp-bar" data-wm-guide="/things-to-do" data-wm-guide-label="Things to Do">'), "the bar tells the page script");
+  assert.ok(!home.includes('<a href="/things-to-do" data-wm-nav'), "the server doesn't guess at the menu's markup");
   assert.ok(home.includes('<a href="/travel">Travel</a><a href="/things-to-do">Things to Do</a></nav>'), "and in the phone menu");
   assert.equal((await api("/api/admin/settings", { method: "PUT", body: { things_to_do_published: false } })).status, 200);
   assert.equal((await call(env, "/things-to-do")).status, 404, "hidden again");
@@ -3070,7 +3088,12 @@ test("things to do: every name links to a place, the copy is escaped, and Zola's
   const { SECTIONS, PLACES, guideLine } = await import("../src/guide.js");
   const { addGuideLink } = await import("../src/site.js");
   const lines = SECTIONS.flatMap((s) => [...(s.intro || []), ...s.groups.flatMap((g) => [g.intro || "", ...g.items])]);
-  for (const line of lines) for (const m of line.matchAll(/\]\(([^)]+)\)/g)) assert.ok(Object.hasOwn(PLACES, m[1]), `no map link for ${m[1]}`);
+  const used = new Set();
+  for (const line of lines) for (const m of line.matchAll(/\]\(([^)]+)\)/g)) {
+    assert.ok(Object.hasOwn(PLACES, m[1]), `no map link for ${m[1]}`);
+    used.add(m[1]);
+  }
+  assert.deepEqual(Object.keys(PLACES).filter((key) => !used.has(key)), [], "no map links left over from places taken out");
   assert.equal(guideLine('Try <b> & [Bodhi](bodhi)'), `Try &#60;b&#62; &#38; <a class="place" href="${PLACES.bodhi.replace(/&/g, "&#38;")}" target="_blank" rel="noopener">Bodhi</a>`);
   const page = '<a href="https://www.zola.com/wedding/x/things-to-do" data-wm-nav="menu">Things To Do</a><nav id="wm-menu" hidden><a href="https://www.zola.com/wedding/x/things-to-do">Things To Do</a></nav>';
   assert.equal(addGuideLink(page), page.replace(/https:\/\/www\.zola\.com\/wedding\/x\/things-to-do/g, "/things-to-do"), "no second link");

@@ -25,7 +25,8 @@
  * Post-wedding call (public/call, a hidden page opened from {call_link} in an email):
  *   GET  call?t=           the names of the household's guests who said no (everyone in
  *                          it when nobody did), whether each already asked, and the
- *                          registry link. Names and the ids the form sends back; no
+ *                          registry link (Settings', else the Zola site's registry).
+ *                          Names and the ids the form sends back; no
  *                          emails or addresses.
  *   POST call              { t, guests: [id] } tags those guests "post-wedding call". Only
  *                          the household's own guests count. A test email's link opens
@@ -54,6 +55,7 @@ import { uploadReceipt } from "./google.js";
 import { intakeTurn, payerFor } from "./intake.js";
 import { householdIcs, icsFor, queueAfterRsvp, testHousehold } from "./comms.js";
 import { eventsFor } from "./calendar.js";
+import { siteSlug } from "./site.js";
 
 export { payerFor };
 
@@ -364,6 +366,13 @@ async function calendarDownload(env, request) {
 
 const SAMPLE_CALL_GUESTS = [{ id: 1, name: "Jane Sample", requested: false }, { id: 2, name: "John Sample", requested: false }];
 
+/** The registry link from Settings, else the registry on the Zola site the website copies. */
+function registryUrl(env, s) {
+  if (s.registry_url) return s.registry_url;
+  const slug = siteSlug(s.zola_url || env.ZOLA_URL);
+  return slug ? `https://www.zola.com/wedding/${slug}/registry` : "";
+}
+
 async function callToken(env, raw) {
   const token = await verify(env, raw);
   if (!token || token.kind !== "call") throw new Error("This link isn't working. Reply to our email and we'll set up a time.");
@@ -382,7 +391,7 @@ async function callInfo(env, request) {
   const s = await loadSettings(env);
   const guests = token.test ? SAMPLE_CALL_GUESTS : await callGuests(env, token.h);
   if (!guests.length) throw new Error("This link isn't working. Reply to our email and we'll set up a time.");
-  return json({ couple_names: s.couple_names, registry_url: s.registry_url || "", contact_email: s.contact_email, guests, sample: Boolean(token.test) });
+  return json({ couple_names: s.couple_names, registry_url: registryUrl(env, s), contact_email: s.contact_email, guests, sample: Boolean(token.test) });
 }
 
 async function callRequest(env, input) {
@@ -391,13 +400,13 @@ async function callRequest(env, input) {
   const s = await loadSettings(env);
   if (token.test) {
     if (!SAMPLE_CALL_GUESTS.some((g) => picked.has(g.id))) throw new Error("Pick at least one name.");
-    return json({ ok: true, sample: true, registry_url: s.registry_url || "" });
+    return json({ ok: true, sample: true, registry_url: registryUrl(env, s) });
   }
   const ids = (await callGuests(env, token.h)).filter((g) => picked.has(g.id)).map((g) => g.id);
   if (!ids.length) throw new Error("Pick at least one name.");
   await run(env, `UPDATE guests SET post_wedding_call = 1, updated_at = datetime('now') WHERE id IN (${ids.join(",")})`);
   await markDirty(env);
-  return json({ ok: true, registry_url: s.registry_url || "" });
+  return json({ ok: true, registry_url: registryUrl(env, s) });
 }
 
 /* ------------------------------------------------------------- expense form ---- */
