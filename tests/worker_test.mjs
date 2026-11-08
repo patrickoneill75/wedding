@@ -3142,6 +3142,18 @@ test("things to do: every name links to a place, the copy is escaped, and Zola's
   assert.equal(addGuideLink(page), page.replace(/https:\/\/www\.zola\.com\/wedding\/x\/things-to-do/g, "/things-to-do"), "no second link");
 });
 
+// Bug: after the fix that has the bar remember the shell's page, Gallery still showed as
+// current on Things to Do, because the shell saved before that fix had no such mark.
+test("things to do: a shell saved before the bar remembered its page still calms that page's menu item", async () => {
+  const { guideInShell } = await import("../src/guide.js");
+  const old = '<html><head><title>x</title></head><body><div class="wm-rsvp-bar"><nav id="wm-menu" aria-label="Site" hidden>'
+    + '<a href="/">Home</a><a href="/gallery" aria-current="page">Gallery</a></nav></div><ul><li><a href="/gallery" data-wm-nav="menu">Gallery</a></li></ul><!--wm-guide--></body></html>';
+  const html = guideInShell(old, { rsvp_open: true, things_to_do_published: true, couple_names: "", rsvp_button_color: "" });
+  assert.ok(html.includes('<div class="wm-rsvp-bar" data-wm-guide="/things-to-do" data-wm-guide-label="Things to Do" data-wm-shell="/gallery">'), html.slice(0, 400));
+  assert.ok(!html.includes('href="/gallery" aria-current'), "Gallery isn't current in the phone menu either");
+  assert.ok(html.includes('<a href="/things-to-do" aria-current="page">Things to Do</a>'));
+});
+
 // Bug guard: a test email that went through left an old Gmail error on the banner, so a
 // fixed problem (the Gmail API turned on) still looked broken.
 test("emails: a test email that goes through clears an old Gmail error", async () => {
