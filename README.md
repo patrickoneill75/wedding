@@ -58,8 +58,9 @@ A Cloudflare Worker with two sides:
     a video call after the wedding: their names are filled in, they hit submit, and they
     get a "post-wedding call" tag (a guest filter and an email audience) and a button to
     the registry (its link is in Settings).
-  - **Things to Do** (`/things-to-do`): our guide to Indy on the public website, in the
-    site's look, every place a link to Google Maps. It stays hidden (guests get a 404)
+  - **Things to Do** (`/things-to-do`): our guide to Indy on the public website, inside
+    the site's own header and menu (a frame each copy of the Zola site saves), every
+    place a link to Google Maps. It stays hidden (guests get a 404)
     until Settings publishes it; until then admins see a preview. Publishing adds it to
     the site's menu.
   - **Settings**: wedding details, 7% tax, budget, priority weights, the drinks

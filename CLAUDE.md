@@ -40,7 +40,9 @@
    pages into the repo; tests use a made-up page. Zola answers 403 to Cloudflare's
    servers, so the fetching and cleaning run on GitHub (`scripts/zola_refresh.mjs`) and
    the Worker only stores what `/api/site/ingest` receives. Keep `buildSite()` free of
-   database and Worker-only APIs so it keeps running in plain Node.
+   database and Worker-only APIs so it keeps running in plain Node. Each copy also saves
+   a shell (an inner page cut off after its menu, site_pages `_shell`) that frames our
+   Things to Do page; it's never served as a page of its own.
 
 10. **Who signs in**: the owners in `ADMIN_EMAILS` (always admins), plus the `users` table
     (admin, or user with a list of pages). Every `/api/admin/*` route belongs to a page in

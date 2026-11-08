@@ -1908,6 +1908,43 @@ test("a site built on GitHub is stored and served, and resending it isn't a chan
   assert.equal(again.data.status.changed, false);
 });
 
+// Bug: the published Things to Do page dropped the website's header and menu and had
+// only a "← Our wedding website" link; it now sits inside the site, framed by a shell
+// cut from an inner page's header and menu when the site is copied.
+test("things to do: sits inside the website's own header and menu, with nothing of the shell's page showing as current", async () => {
+  const { buildSite } = await import("../src/site.js");
+  const env = siteEnv();
+  const menuItem = (cls) => (page) => page.replace(`<li><a href="/wedding/${SLUG}/travel">`, `<li class="${cls}"><a class="${cls}" href="/wedding/${SLUG}/travel">`);
+  const built = await buildSite({ zolaUrl: `https://www.zola.com/wedding/${SLUG}`, fetchPage: async (url) => {
+    if (url.endsWith("fonts.css")) return "";
+    if (url.endsWith("/travel")) return menuItem("is-here")(zolaPage({ heading: "Getting there" }));
+    if (url.endsWith(SLUG)) return menuItem("plain")(zolaPage());
+    throw new Error(`Zola returned 404 for ${url}`);
+  } });
+  assert.ok(built.shell.includes("<!--wm-guide-->"));
+  assert.ok(built.shell.includes('<li class="plain"><a class="plain" href="/travel" data-wm-nav="menu">Travel</a></li>'), "Travel looks like any menu link");
+  assert.ok(!built.shell.includes("is-here"), "not like the current page");
+  assert.ok(built.shell.includes("Sam &amp; Alex</a>"), "the header stays");
+  assert.ok(!built.shell.includes("Getting there") && !built.shell.includes("Grand Test Hotel"), "the page under the menu goes");
+  assert.equal((await ingest(env, JSON.parse(JSON.stringify(built)))).status, 200);
+  assert.equal((await call(env, "/_shell")).status === 200 && (await call(env, "/_shell")).data.includes("wm-guide"), false, "the shell isn't a page");
+
+  const api = await adminClient(env);
+  await api("/api/admin/settings", { method: "PUT", body: { things_to_do_published: true, couple_names: "Sam & Alex" } });
+  const page = (await call(env, "/things-to-do")).data;
+  assert.ok(page.includes('data-wm-nav="menu">Home</a>') && page.includes("Sam &amp; Alex</a>"), "the site's header and menu");
+  assert.ok(page.includes('<main class="wm-guide">') && page.includes("Commissary</a>"), "with the guide in it");
+  assert.ok(page.indexOf("Sam &amp; Alex</a>") < page.indexOf('<main class="wm-guide">'));
+  assert.ok(!page.includes("Our wedding website"), "no back link: the menu is right there");
+  assert.ok(page.includes('class="wm-rsvp-bar" data-wm-guide="/things-to-do"'), "the page script adds Things to Do to the menu");
+  assert.match(page, /<title>Things to Do · Sam &#38; Alex<\/title>/);
+  assert.ok(page.includes('<footer class="wm-footer">') && page.includes("wm-in-nav"), "our footer and page script, as on every page");
+  assert.ok(!page.includes("<!--wm-guide-->"));
+  const again = await ingest(env, JSON.parse(JSON.stringify(built)));
+  assert.equal(again.data.status.changed, false, "a new shell alone isn't a change to the site");
+  assert.ok(!again.data.status.pages.some((p) => p.path === "_shell"), "and isn't listed as a page");
+});
+
 // Bug: with Zola's footer taken off, the copied pages ended flush at the last section,
 // with no footer and no way to get in touch.
 test("copied pages get our footer with a Contact us link from Settings, as they're served", async () => {
@@ -3065,7 +3102,7 @@ test("things to do: hidden from guests until published, previewed by an admin, t
   assert.equal(preview.headers.get("cache-control"), "private, no-store", "and the preview is never cached");
   assert.equal((preview.data.match(/class="place"/g) || []).length, 99, "every place links to its map");
   assert.match(preview.data, /May 15, 2027 · Indianapolis/);
-  assert.match(preview.data, /--bg:#faf6ef/, "it takes the website's look");
+  assert.match(preview.data, /--wm-bg:#faf6ef/, "it takes the website's look");
   assert.match(preview.data, /@font-face\{font-family:Made Up\}/, "and its fonts");
   assert.ok(!(await call(env, "/")).data.includes("/things-to-do"), "not in the menu while hidden");
 
