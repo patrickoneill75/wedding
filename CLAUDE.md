@@ -61,6 +61,11 @@
     `application/ics` and go only to guests who haven't declined (`eventsFor`). An email's `title` is a name for
     admins on the Communications page; it never goes into an email (a test checks).
 
+## Workflow
+
+When a piece of work is finished (tests green, pushed), open a pull request for it
+without waiting to be asked. If the branch's last PR already merged, open a new one.
+
 ## Tests
 
 `npm test` (`node tests/worker_test.mjs`, Node 22.5+) drives the real Worker `fetch()`
