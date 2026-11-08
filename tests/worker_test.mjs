@@ -1922,21 +1922,27 @@ test("things to do: sits inside the website's own header and menu, with nothing 
     throw new Error(`Zola returned 404 for ${url}`);
   } });
   assert.ok(built.shell.includes("<!--wm-guide-->"));
-  assert.ok(built.shell.includes('<li class="plain"><a class="plain" href="/travel" data-wm-nav="menu">Travel</a></li>'), "Travel looks like any menu link");
-  assert.ok(!built.shell.includes("is-here"), "not like the current page");
+  // Travel still looks current in the shell (Zola marks it in ways we can't see); the bar
+  // says so, and on the page the script swaps it for a copy of a plain item.
+  assert.ok(built.shell.includes('<div class="wm-rsvp-bar" data-wm-shell="/travel">'), "the bar remembers the shell's page");
   assert.ok(built.shell.includes("Sam &amp; Alex</a>"), "the header stays");
   assert.ok(!built.shell.includes("Getting there") && !built.shell.includes("Grand Test Hotel"), "the page under the menu goes");
   assert.equal((await ingest(env, JSON.parse(JSON.stringify(built)))).status, 200);
   assert.equal((await call(env, "/_shell")).status === 200 && (await call(env, "/_shell")).data.includes("wm-guide"), false, "the shell isn't a page");
 
   const api = await adminClient(env);
+  assert.equal((await call(env, "/things-to-do")).status, 404, "hidden from guests, shell or not");
+  const preview = (await api("/things-to-do")).data;
+  assert.ok(preview.includes("<b>Preview.</b>") && preview.includes('data-wm-nav="menu">Home</a>'), "an admin previews it inside the site");
   await api("/api/admin/settings", { method: "PUT", body: { things_to_do_published: true, couple_names: "Sam & Alex" } });
   const page = (await call(env, "/things-to-do")).data;
   assert.ok(page.includes('data-wm-nav="menu">Home</a>') && page.includes("Sam &amp; Alex</a>"), "the site's header and menu");
   assert.ok(page.includes('<main class="wm-guide">') && page.includes("Commissary</a>"), "with the guide in it");
   assert.ok(page.indexOf("Sam &amp; Alex</a>") < page.indexOf('<main class="wm-guide">'));
   assert.ok(!page.includes("Our wedding website"), "no back link: the menu is right there");
-  assert.ok(page.includes('class="wm-rsvp-bar" data-wm-guide="/things-to-do"'), "the page script adds Things to Do to the menu");
+  assert.ok(page.includes('class="wm-rsvp-bar" data-wm-guide="/things-to-do" data-wm-guide-label="Things to Do" data-wm-shell="/travel"'), "the page script adds Things to Do to the menu, and knows which item to calm");
+  assert.ok(page.includes('<a href="/things-to-do" aria-current="page">Things to Do</a></nav>'), "the phone menu marks this page");
+  assert.ok(!/<a [^>]*href="\/travel"[^>]*aria-current/.test(page), "and not the shell's page");
   assert.match(page, /<title>Things to Do · Sam &#38; Alex<\/title>/);
   assert.ok(page.includes('<footer class="wm-footer">') && page.includes("wm-in-nav"), "our footer and page script, as on every page");
   assert.ok(!page.includes("<!--wm-guide-->"));

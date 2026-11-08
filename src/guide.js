@@ -57,11 +57,13 @@ html{scroll-behavior:smooth;scroll-padding-top:calc(var(--wm-bar,0px) + 64px)}
 .wm-guide .tip{font-size:14px;opacity:.7;margin:14px 0 0}
 .wm-guide .jump{position:sticky;top:var(--wm-bar,0px);z-index:2;display:flex;gap:8px;overflow-x:auto;padding:10px 16px;margin:0 -16px 8px;background:var(--wm-bg,#fff);border-bottom:1px solid rgba(127,127,127,.25);scrollbar-width:none}
 .wm-guide .jump::-webkit-scrollbar{display:none}
+@media (min-width:840px){.wm-guide .jump{flex-wrap:wrap;justify-content:center;overflow:visible;gap:6px;margin:0 -60px 8px}.wm-guide .jump a{font-size:13.5px;padding:5px 11px}}
 .wm-guide .jump a{flex:none;color:inherit;text-decoration:none;font-size:14px;padding:6px 14px;border:1px solid rgba(127,127,127,.3);border-radius:999px;white-space:nowrap}
 .wm-guide .jump a:hover{background:rgba(127,127,127,.1)}
 .wm-guide section{padding:28px 0 4px}
 .wm-guide h2{font:400 30px/1.2 var(--wm-font,Georgia,serif);margin:0 0 10px;color:inherit;letter-spacing:normal;text-transform:none}
 .wm-guide h3{font:600 12.5px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;letter-spacing:.16em;text-transform:uppercase;margin:24px 0 6px;opacity:.75;color:inherit}
+.wm-guide p,.wm-guide li{color:inherit}
 .wm-guide p{margin:0 0 10px}
 .wm-guide .lead{opacity:.85}
 .wm-guide ul{list-style:none;margin:0;padding:0}

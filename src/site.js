@@ -222,18 +222,25 @@ var bar=document.querySelector(".wm-rsvp-bar"),btn=document.querySelector(".wm-m
 var guide=null,guideFrom=null;
 function addGuide(){var href=bar.getAttribute("data-wm-guide");if(!href)return;
 var links=[].slice.call(document.querySelectorAll('a[data-wm-nav="menu"]'));if(!links.length)return;
-if(links.some(function(a){return a.getAttribute("href")===href}))return;
+var existing=links.filter(function(a){return a.getAttribute("href")===href})[0]||null;
 var seen=links.filter(shown),pool=seen.length>1?seen:links,row=null;
 if(pool.length>1){row=pool[0].parentElement;while(row&&!pool.every(function(a){return row.contains(a)}))row=row.parentElement}
 function itemOf(a){if(!row)return a;var n=a;while(n.parentElement&&n.parentElement!==row)n=n.parentElement;return n.parentElement===row&&n.querySelectorAll("a").length<=1?n:a}
-var others=pool.filter(function(a){return a.getAttribute("href")!==location.pathname}),from=others[others.length-1]||pool[pool.length-1],last=pool[pool.length-1];
-var item=itemOf(from),end=itemOf(last);if((item===from)!==(end===last)){item=from;end=last}
-var copy=item.cloneNode(true),a=copy.tagName==="A"?copy:copy.querySelector("a");
-a.setAttribute("href",href);["target","rel","aria-current"].forEach(function(n){a.removeAttribute(n)});
-if(location.pathname===href)a.setAttribute("aria-current","page");
+function copyOf(item,to,label){var c=item.cloneNode(true),a=c.tagName==="A"?c:c.querySelector("a");if(!a)return null;
+a.setAttribute("href",to);["target","rel","aria-current"].forEach(function(n){a.removeAttribute(n)});
 var texts=[],w=document.createTreeWalker(a,NodeFilter.SHOW_TEXT),t;while((t=w.nextNode()))if(t.data.trim())texts.push(t);
-if(!texts.length)return;texts[0].data=bar.getAttribute("data-wm-guide-label");texts.slice(1).forEach(function(x){x.data=""});
-end.parentNode.insertBefore(copy,end.nextSibling);guide=a;guideFrom=pool.length>1?pool:null}
+if(!texts.length)return null;texts[0].data=label;texts.slice(1).forEach(function(x){x.data=""});return {item:c,link:a}}
+var here=location.pathname===href,shellPath=bar.getAttribute("data-wm-shell");
+var cur=here&&shellPath?pool.filter(function(a){return a.getAttribute("href")===shellPath})[0]||null:null;
+var others=pool.filter(function(a){return a!==cur&&a!==existing&&a.getAttribute("href")!==location.pathname}),plain=others[others.length-1]||pool[pool.length-1],last=pool[pool.length-1];
+var from=cur||plain,item=itemOf(from),end=itemOf(last);if((item===from)!==(end===last)){item=from;end=last}
+var made=existing?{link:existing}:copyOf(item,href,bar.getAttribute("data-wm-guide-label"));if(!made)return;
+if(here)made.link.setAttribute("aria-current","page");
+if(!existing)end.parentNode.insertBefore(made.item,end.nextSibling);
+if(cur&&plain!==cur){var curItem=itemOf(cur),plainItem=itemOf(plain);
+if((curItem===cur)===(plainItem===plain)){var fixed=copyOf(plainItem,shellPath,cur.textContent.replace(/\s+/g," ").trim());
+if(fixed){curItem.parentNode.replaceChild(fixed.item,curItem);pool[pool.indexOf(cur)]=fixed.link}}}
+guide=existing?null:made.link;guideFrom=pool.length>1?pool:null}
 function guideGap(){if(!guide||!guideFrom)return;guide.style.marginLeft="";
 var n=guideFrom.length,p=guideFrom[n-2].getBoundingClientRect(),l=guideFrom[n-1].getBoundingClientRect(),g=guide.getBoundingClientRect();
 if(!l.width||!g.width||Math.round(p.top)!==Math.round(l.top)||Math.round(g.top)!==Math.round(l.top))return;
@@ -270,23 +277,9 @@ addGuide();layout();addEventListener("resize",layout)})();`;
  * Clean one Zola page. Returns { html, title, hashSource, warnings }; hashSource is the
  * page with the countdown blanked, for change detection.
  */
-export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpColor = "", fontCss = "", currentPath = "/", shell = false, inactiveFrom = "" }) {
+export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpColor = "", fontCss = "", currentPath = "/", shell = false }) {
   const root = parseHtml(source);
   const warnings = [];
-  // A shell (this page's header and menu, as the frame for a page of ours) mustn't show
-  // this page's menu link as the current one: it takes the classes the same link has on
-  // another page (`inactiveFrom`), up a few levels, wherever they differ.
-  if (shell && inactiveFrom) {
-    const key = currentPath === "/" ? "" : currentPath.replace(/^\//, "");
-    const own = (tree) => elements(tree, (n) => n.tag === "a" && zolaPageKey(attr(n, "href"), slug) === key);
-    const theirs = own(parseHtml(inactiveFrom));
-    own(root).forEach((link, i) => {
-      for (let mine = link, them = theirs[i], k = 0; mine && them && k < 4; mine = mine.parent, them = them.parent, k++) {
-        const cls = attr(them, "class");
-        if (cls !== null && cls !== attr(mine, "class")) setAttr(mine, "class", cls);
-      }
-    });
-  }
   const html = find(root, "html");
   const head = find(root, "head");
   const body = find(root, "body");
@@ -441,16 +434,20 @@ export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpCol
   const titleEl = find(root, "title");
   const title = titleEl ? decode(titleEl.children.map((c) => c.text || "").join("")).trim() : "";
   const out = { html: `<!DOCTYPE html>${serialize(root).replace(/^<!DOCTYPE[^>]*>/i, "")}`, title, hashSource, warnings };
-  if (shell) out.shell = shellOf(root, body);
+  if (shell) out.shell = shellOf(root, body, currentPath);
   return out;
 }
 
 /**
  * The page cut off just after its menu: everything after the box holding the menu links
  * goes, at every level up to <body>, and a marker at the end of <body> says where our
- * page's content goes. Null when the page has no menu to keep.
+ * page's content goes. The bar remembers which page it was (data-wm-shell): its menu
+ * link still looks like the current page, which the page script fixes in the browser.
+ * Null when the page has no menu to keep.
  */
-function shellOf(root, body) {
+function shellOf(root, body, currentPath) {
+  const bar = elements(body, (n) => attr(n, "class") === "wm-rsvp-bar")[0];
+  if (bar) setAttr(bar, "data-wm-shell", currentPath);
   let links = elements(body, (n) => n.tag === "a" && attr(n, "data-wm-nav") === "menu");
   if (!links.length) links = elements(body, (n) => n.tag === "a" && attr(n, "data-wm-nav") !== null);
   if (!links.length) return null;
@@ -614,11 +611,11 @@ export async function buildSite({ zolaUrl, rsvpColor = "", fetchPage = fetchText
     });
   }
   // The frame for our Things to Do page: an inner page's header and menu (the home page's
-  // when there's no other), with its own menu link made to look like any other.
+  // when there's no other).
   const [shellKey, shellSource] = sources.find(([key]) => key) || sources[0];
   const framed = cleanPage(shellSource, {
     slug, pages, fetchedAt, rsvpColor, currentPath: localPathFor(shellKey, slug),
-    fontCss: fontFacesFor(fontsCss, shellSource), shell: true, inactiveFrom: shellKey ? homeHtml : "",
+    fontCss: fontFacesFor(fontsCss, shellSource), shell: true,
   });
   return { pages: built, failed, warnings, shell: framed.shell };
 }
@@ -767,13 +764,12 @@ export function siteFooter({ coupleNames = "", contactEmail = "" }) {
  * data-wm-guide), where the real markup and its spacing can be seen. When the Zola site
  * has a Things to Do page of its own, its links point here instead.
  */
-export function addGuideLink(html) {
+export function addGuideLink(html, { current = false } = {}) {
   const { path, label } = THINGS_TO_DO;
   const zolas = /href="https:\/\/www\.zola\.com\/wedding\/[^"/]+\/things-to-do"/g;
-  if (zolas.test(html)) return html.replace(zolas, `href="${path}"`);
-  return html
-    .replace('<div class="wm-rsvp-bar">', `<div class="wm-rsvp-bar" data-wm-guide="${path}" data-wm-guide-label="${label}">`)
-    .replace(/(<nav id="wm-menu"[^>]*>[\s\S]*?)(<\/nav>)/, `$1<a href="${path}">${label}</a>$2`);
+  const flagged = html.replace('<div class="wm-rsvp-bar"', `<div class="wm-rsvp-bar" data-wm-guide="${path}" data-wm-guide-label="${label}"`);
+  if (zolas.test(html)) return flagged.replace(zolas, `href="${path}"`);
+  return flagged.replace(/(<nav id="wm-menu"[^>]*>[\s\S]*?)(<\/nav>)/, `$1<a href="${path}"${current ? ' aria-current="page"' : ""}>${label}</a>$2`);
 }
 
 /**
@@ -785,7 +781,7 @@ export function addGuideLink(html) {
 export function dressPage(stored, s, { guide = false } = {}) {
   let html = stored;
   if (!s.rsvp_open) html = html.replace(/<a class="wm-rsvp"[^>]*>RSVP<\/a>/, "");
-  if (guide || s.things_to_do_published) html = addGuideLink(html);
+  if (guide || s.things_to_do_published) html = addGuideLink(html, { current: guide });
   const color = /^#[0-9a-f]{6}$/i.test(s.rsvp_button_color) ? s.rsvp_button_color : RSVP_COLOR;
   const head = html.indexOf("</head>");
   const style = `<style data-wm="rsvp-color">.wm-rsvp{background:${color}}.wm-rsvp:focus-visible{outline-color:${color}}</style>`;
