@@ -3,18 +3,21 @@
  *
  * It stays hidden until Settings publishes it (settings.things_to_do_published). While
  * it's hidden, guests get a 404 and a signed-in admin gets a preview with a banner.
- * Once it's published, servePage (src/site.js) adds it to the copied site's menu.
+ * Once it's published, the site's menu gets a link to it (addGuideLink, src/site.js).
  *
- * The page takes the website's look (background, text color, font) from the stored
- * copy of the Zola home page. The copy is below: in each line, [Name](key) links the
- * name to that place on Google Maps (PLACES); `short` is a section's name in the row of
- * links at the top.
+ * The page sits inside the website itself: the shell saved with each copy of the Zola
+ * site (an inner page's header and menu, SHELL_PATH) with our content where the marker
+ * is, dressed like any copied page (RSVP pill, phone menu, footer). Before the first copy
+ * that saves a shell, it stands alone in the site's colors with a link back home.
+ *
+ * The copy is below: in each line, [Name](key) links the name to that place on Google
+ * Maps (PLACES); `short` is a section's name in the row of links at the top.
  */
 
 import { currentUser } from "./auth.js";
 import { first } from "./db.js";
 import { loadSettings } from "./store.js";
-import { RSVP_COLOR, siteFooter, themeColors, themeFont, THINGS_TO_DO } from "./site.js";
+import { dressPage, GUIDE_MARK, RSVP_COLOR, SHELL_PATH, siteFooter, themeColors, themeFont, THINGS_TO_DO } from "./site.js";
 
 const GUIDE_TITLE = THINGS_TO_DO.label;
 const SUBTITLE = "Kaitlyn and Patrick's guide to Indy";
@@ -40,12 +43,43 @@ const longDate = (iso) => (/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))
   ? new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" })
   : "");
 
-/**
- * The page. `theme` is { text, background, font, fontCss, accent } from the website;
- * `preview` adds the banner an admin sees while the page is hidden.
- */
-export function renderGuide({ theme, coupleNames = "", contactEmail = "", weddingDate = "", preview = false }) {
-  const font = theme.font ? `'${theme.font.replace(/'/g, "")}', ` : "";
+// Every rule is under .wm-guide, so nothing here restyles the website around it. Colors
+// and the heading font come from the site (--wm-text, --wm-font, set by the copy); the
+// script keeps the section links clear of our top bar and gives them the page's background.
+const GUIDE_CSS = `
+html{scroll-behavior:smooth;scroll-padding-top:calc(var(--wm-bar,0px) + 64px)}
+.wm-guide{max-width:680px;margin:0 auto;padding:8px 16px 40px;color:var(--wm-text,#3d3833);font:16.5px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif;text-align:left}
+.wm-guide *{box-sizing:border-box}
+.wm-guide .g-head{text-align:center;margin:28px 0 24px}
+.wm-guide .eyebrow{font-size:12px;letter-spacing:.22em;text-transform:uppercase;opacity:.7}
+.wm-guide h1{font:400 clamp(38px,9vw,56px)/1.08 var(--wm-font,Georgia,serif);margin:12px 0 10px;color:inherit;letter-spacing:normal;text-transform:none}
+.wm-guide .sub{font:italic 400 19px/1.4 var(--wm-font,Georgia,serif);margin:0;opacity:.85}
+.wm-guide .tip{font-size:14px;opacity:.7;margin:14px 0 0}
+.wm-guide .jump{position:sticky;top:var(--wm-bar,0px);z-index:2;display:flex;gap:8px;overflow-x:auto;padding:10px 16px;margin:0 -16px 8px;background:var(--wm-bg,#fff);border-bottom:1px solid rgba(127,127,127,.25);scrollbar-width:none}
+.wm-guide .jump::-webkit-scrollbar{display:none}
+.wm-guide .jump a{flex:none;color:inherit;text-decoration:none;font-size:14px;padding:6px 14px;border:1px solid rgba(127,127,127,.3);border-radius:999px;white-space:nowrap}
+.wm-guide .jump a:hover{background:rgba(127,127,127,.1)}
+.wm-guide section{padding:28px 0 4px}
+.wm-guide h2{font:400 30px/1.2 var(--wm-font,Georgia,serif);margin:0 0 10px;color:inherit;letter-spacing:normal;text-transform:none}
+.wm-guide h3{font:600 12.5px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;letter-spacing:.16em;text-transform:uppercase;margin:24px 0 6px;opacity:.75;color:inherit}
+.wm-guide p{margin:0 0 10px}
+.wm-guide .lead{opacity:.85}
+.wm-guide ul{list-style:none;margin:0;padding:0}
+.wm-guide li{padding:11px 0;margin:0;border-bottom:1px solid rgba(127,127,127,.2)}
+.wm-guide li:last-child{border-bottom:0}
+.wm-guide a.place{color:inherit;font-weight:650;text-decoration:underline;text-decoration-color:var(--wm-accent);text-decoration-thickness:2px;text-underline-offset:3px}
+.wm-guide a.place:hover{color:var(--wm-accent)}
+.wm-guide .start{background:rgba(127,127,127,.08);border-radius:14px;padding:4px 18px 6px;margin:18px 0 6px}
+.wm-guide .start h3{margin-top:16px}
+.wm-guide .preview{background:#fff4d6;color:#5a4300;border:1px solid #f0d27a;border-radius:12px;padding:12px 16px;margin:16px 0 0;font-size:14px}
+.wm-guide .top{display:inline-block;margin:28px 0 0;color:inherit;opacity:.7;font-size:14px}`;
+const GUIDE_SCRIPT = `(function(){var r=document.documentElement,b=document.querySelector(".wm-rsvp-bar");
+function fit(){r.style.setProperty("--wm-bg",getComputedStyle(document.body).backgroundColor);
+r.style.setProperty("--wm-bar",(b&&getComputedStyle(b).display!=="none"?b.offsetHeight:0)+"px")}
+fit();addEventListener("resize",fit);addEventListener("load",fit)})();`;
+
+/** The page's content (inside .wm-guide). `preview` adds the banner an admin sees while it's hidden. */
+function guideBody({ weddingDate = "", preview = false }) {
   const when = [longDate(weddingDate), CITY].filter(Boolean).join(" · ");
   const jump = SECTIONS.map((s) => `<a href="#${anchor(s.title)}">${escapeHtml(s.short || s.title)}</a>`).join("");
   const sections = SECTIONS.map((s) => {
@@ -60,56 +94,51 @@ export function renderGuide({ theme, coupleNames = "", contactEmail = "", weddin
       + (s.intro || []).map((p) => `<p class="lead">${guideLine(p)}</p>`).join("")
       + groups + `</section>`;
   }).join("");
+  return (preview ? `<div class="preview"><b>Preview.</b> Guests can't see this page yet. Publish it in the control panel: Settings, Things to Do page.</div>` : "")
+    + `<header class="g-head" id="top"><div class="eyebrow">${escapeHtml(when)}</div><h1>${escapeHtml(GUIDE_TITLE)}</h1>`
+    + `<p class="sub">${escapeHtml(SUBTITLE)}</p><p class="tip">Tap any name to open it in Google Maps.</p></header>`
+    + `<nav class="jump" aria-label="Sections">${jump}</nav>${sections}`
+    + `<a class="top" href="#top">↑ Back to the top</a>`;
+}
+
+/** The page inside the website's shell (from the copy), dressed like any copied page. */
+export function guideInShell(shell, s, { preview = false } = {}) {
+  const accent = /^#[0-9a-f]{6}$/i.test(s.rsvp_button_color) ? s.rsvp_button_color : RSVP_COLOR;
+  let html = shell
+    .replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapeHtml(GUIDE_TITLE)}${s.couple_names ? ` · ${escapeHtml(s.couple_names)}` : ""}</title>`)
+    // The shell came from another page: nothing in it is the current page.
+    .replace(/\saria-current="page"/g, "");
+  const head = html.indexOf("</head>");
+  const css = `<style data-wm="guide">:root{--wm-accent:${accent}}${GUIDE_CSS}</style>`;
+  if (head !== -1) html = html.slice(0, head) + css + html.slice(head);
+  html = html.replace(GUIDE_MARK, () => `<main class="wm-guide">${guideBody({ weddingDate: s.wedding_date, preview })}</main><script>${GUIDE_SCRIPT}</script>`);
+  return dressPage(html, s, { guide: true });
+}
+
+/**
+ * The page on its own, before any copy of the site has saved a shell: the site's colors
+ * and fonts (`theme`, from the stored home page), with a link back home.
+ */
+export function renderGuide({ theme, coupleNames = "", contactEmail = "", weddingDate = "", preview = false }) {
+  const font = theme.font ? `'${theme.font.replace(/'/g, "")}', ` : "";
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <link rel="icon" href="/favicon.svg">
 <title>${escapeHtml(GUIDE_TITLE)}${coupleNames ? ` · ${escapeHtml(coupleNames)}` : ""}</title>
 ${theme.fontCss ? `<style>${theme.fontCss}</style>` : ""}
-<style>
-:root{--bg:${theme.background};--ink:${theme.text};--accent:${theme.accent};--line:${theme.text}26;--wash:${theme.text}0d;--head:${font}Georgia,serif;--wm-text:${theme.text};--wm-font:${font}Georgia,serif}
-*{box-sizing:border-box}
-html{scroll-behavior:smooth;scroll-padding-top:64px}
-body{margin:0;background:var(--bg);color:var(--ink);font:16.5px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:680px;margin:0 auto;padding:28px 16px 40px}
-.home{display:inline-block;color:inherit;opacity:.75;font-size:14px;text-decoration:none}
-.home:hover{opacity:1;text-decoration:underline}
-header{text-align:center;margin:36px 0 28px}
-.eyebrow{font-size:12px;letter-spacing:.22em;text-transform:uppercase;opacity:.7}
-h1{font:400 clamp(38px,9vw,56px)/1.08 var(--head);margin:12px 0 10px}
-.sub{font:italic 400 19px/1.4 var(--head);margin:0;opacity:.85}
-.tip{font-size:14px;opacity:.7;margin:14px 0 0}
-.jump{position:sticky;top:0;z-index:2;display:flex;gap:8px;overflow-x:auto;padding:10px 16px;margin:0 -16px 8px;background:var(--bg);border-bottom:1px solid var(--line);scrollbar-width:none}
-.jump::-webkit-scrollbar{display:none}
-.jump a{flex:none;color:inherit;text-decoration:none;font-size:14px;padding:6px 14px;border:1px solid var(--line);border-radius:999px;white-space:nowrap}
-.jump a:hover{background:var(--wash)}
-section{padding:28px 0 4px}
-h2{font:400 30px/1.2 var(--head);margin:0 0 10px}
-h3{font-size:12.5px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;margin:24px 0 6px;opacity:.75}
-.lead{margin:0 0 10px;opacity:.85}
-ul{list-style:none;margin:0;padding:0}
-li{padding:11px 0;border-bottom:1px solid var(--line)}
-li:last-child{border-bottom:0}
-a.place{color:inherit;font-weight:650;text-decoration:underline;text-decoration-color:var(--accent);text-decoration-thickness:2px;text-underline-offset:3px}
-a.place:hover{color:var(--accent)}
-.start{background:var(--wash);border-radius:14px;padding:4px 18px 6px;margin:18px 0 6px}
-.start h3{margin-top:16px}
-.preview{background:#fff4d6;color:#5a4300;border:1px solid #f0d27a;border-radius:12px;padding:12px 16px;margin:16px 0 0;font-size:14px}
-.top{display:inline-block;margin:28px 0 0;color:inherit;opacity:.7;font-size:14px}
-</style></head><body><main>
+<style>:root{--wm-text:${theme.text};--wm-font:${font}Georgia,serif;--wm-accent:${theme.accent};--wm-bg:${theme.background}}
+body{margin:0;background:${theme.background}}
+.home{display:block;max-width:680px;margin:0 auto;padding:28px 16px 0;color:${theme.text};opacity:.75;font:14px system-ui,sans-serif;text-decoration:none}
+${GUIDE_CSS}</style></head><body>
 <a class="home" href="/">← Our wedding website</a>
-${preview ? `<div class="preview"><b>Preview.</b> Guests can't see this page yet. Publish it in the control panel: Settings, Things to Do page.</div>` : ""}
-<header id="top"><div class="eyebrow">${escapeHtml(when)}</div><h1>${escapeHtml(GUIDE_TITLE)}</h1>
-<p class="sub">${escapeHtml(SUBTITLE)}</p><p class="tip">Tap any name to open it in Google Maps.</p></header>
-<nav class="jump" aria-label="Sections">${jump}</nav>
-${sections}
-<a class="top" href="#top">↑ Back to the top</a>
-</main>${siteFooter({ coupleNames, contactEmail })}</body></html>`;
+<main class="wm-guide">${guideBody({ weddingDate, preview })}</main>
+${siteFooter({ coupleNames, contactEmail })}</body></html>`;
 }
 
 /**
- * GET /things-to-do. Hidden: a 404 for guests, a preview for a signed-in admin. The
- * look comes from the stored home page; with no copy yet, plain defaults.
+ * GET /things-to-do. Hidden: a 404 for guests, a preview for a signed-in admin. Inside
+ * the website's shell once a copy has saved one; on its own before that.
  */
 export async function serveGuide(env, request) {
   const s = await loadSettings(env);
@@ -120,17 +149,23 @@ export async function serveGuide(env, request) {
       + `<p style="font:16px system-ui,sans-serif;text-align:center;margin:80px 16px">This page isn't here. <a href="/">Go to our wedding website</a>.</p>`,
     { status: 404, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
   }
-  const home = (await first(env, "SELECT html FROM site_pages WHERE path = '/'"))?.html || "";
-  const colors = home ? themeColors(home) : { text: "#3d3833", background: "#fbf8f3" };
-  const fontCss = home.match(/<style data-wm="fonts">([\s\S]*?)<\/style>/)?.[1] || "";
-  const accent = /^#[0-9a-f]{6}$/i.test(s.rsvp_button_color) ? s.rsvp_button_color : RSVP_COLOR;
-  const html = renderGuide({
-    theme: { ...colors, font: home ? themeFont(home) : null, fontCss, accent },
-    coupleNames: s.couple_names,
-    contactEmail: s.contact_email,
-    weddingDate: s.wedding_date,
-    preview,
-  });
+  const shell = (await first(env, "SELECT html FROM site_pages WHERE path = ?", SHELL_PATH))?.html || "";
+  let html;
+  if (shell.includes(GUIDE_MARK)) {
+    html = guideInShell(shell, s, { preview });
+  } else {
+    const home = (await first(env, "SELECT html FROM site_pages WHERE path = '/'"))?.html || "";
+    const colors = home ? themeColors(home) : { text: "#3d3833", background: "#fbf8f3" };
+    const fontCss = home.match(/<style data-wm="fonts">([\s\S]*?)<\/style>/)?.[1] || "";
+    const accent = /^#[0-9a-f]{6}$/i.test(s.rsvp_button_color) ? s.rsvp_button_color : RSVP_COLOR;
+    html = renderGuide({
+      theme: { ...colors, font: home ? themeFont(home) : null, fontCss, accent },
+      coupleNames: s.couple_names,
+      contactEmail: s.contact_email,
+      weddingDate: s.wedding_date,
+      preview,
+    });
+  }
   return new Response(request.method.toUpperCase() === "HEAD" ? null : html, {
     headers: {
       "content-type": "text/html; charset=utf-8",

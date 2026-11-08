@@ -46,6 +46,10 @@ const MAX_PAGES = 15;
 export const RESERVED = new Set(["admin", "api", "rsvp", "submit", "dayof", "call", "things-to-do", "_site", "_headers", "favicon.svg"]);
 // Our Things to Do page (src/guide.js), added to the site's menu once it's published.
 export const THINGS_TO_DO = { path: "/things-to-do", label: "Things to Do" };
+// Where the Things to Do page's content goes in the shell (site_pages row SHELL_PATH):
+// the site's header and menu, cut from one of its pages when it's copied.
+export const GUIDE_MARK = "<!--wm-guide-->";
+export const SHELL_PATH = "_shell";
 const BROWSER_HEADERS = {
   "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
   accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -217,15 +221,19 @@ if(document.querySelector("[data-wm-target]")){tick();setInterval(tick,1000)}
 var bar=document.querySelector(".wm-rsvp-bar"),btn=document.querySelector(".wm-menu-btn"),menu=document.getElementById("wm-menu");
 var guide=null,guideFrom=null;
 function addGuide(){var href=bar.getAttribute("data-wm-guide");if(!href)return;
-var links=[].slice.call(document.querySelectorAll('a[data-wm-nav="menu"]'));
-var others=links.filter(function(a){return a.getAttribute("href")!==location.pathname}),from=others[others.length-1]||links[links.length-1];if(!from)return;
-var item=from;while(item.parentElement&&item.parentElement!==document.body&&item.parentElement.children.length===1)item=item.parentElement;
+var links=[].slice.call(document.querySelectorAll('a[data-wm-nav="menu"]'));if(!links.length)return;
+if(links.some(function(a){return a.getAttribute("href")===href}))return;
+var seen=links.filter(shown),pool=seen.length>1?seen:links,row=null;
+if(pool.length>1){row=pool[0].parentElement;while(row&&!pool.every(function(a){return row.contains(a)}))row=row.parentElement}
+function itemOf(a){if(!row)return a;var n=a;while(n.parentElement&&n.parentElement!==row)n=n.parentElement;return n.parentElement===row&&n.querySelectorAll("a").length<=1?n:a}
+var others=pool.filter(function(a){return a.getAttribute("href")!==location.pathname}),from=others[others.length-1]||pool[pool.length-1],last=pool[pool.length-1];
+var item=itemOf(from),end=itemOf(last);if((item===from)!==(end===last)){item=from;end=last}
 var copy=item.cloneNode(true),a=copy.tagName==="A"?copy:copy.querySelector("a");
 a.setAttribute("href",href);["target","rel","aria-current"].forEach(function(n){a.removeAttribute(n)});
+if(location.pathname===href)a.setAttribute("aria-current","page");
 var texts=[],w=document.createTreeWalker(a,NodeFilter.SHOW_TEXT),t;while((t=w.nextNode()))if(t.data.trim())texts.push(t);
 if(!texts.length)return;texts[0].data=bar.getAttribute("data-wm-guide-label");texts.slice(1).forEach(function(x){x.data=""});
-var end=links[links.length-1];while(end.parentElement&&end.parentElement!==document.body&&end.parentElement.children.length===1)end=end.parentElement;
-end.parentNode.insertBefore(copy,end.nextSibling);guide=a;guideFrom=links.length>1?links:null}
+end.parentNode.insertBefore(copy,end.nextSibling);guide=a;guideFrom=pool.length>1?pool:null}
 function guideGap(){if(!guide||!guideFrom)return;guide.style.marginLeft="";
 var n=guideFrom.length,p=guideFrom[n-2].getBoundingClientRect(),l=guideFrom[n-1].getBoundingClientRect(),g=guide.getBoundingClientRect();
 if(!l.width||!g.width||Math.round(p.top)!==Math.round(l.top)||Math.round(g.top)!==Math.round(l.top))return;
@@ -262,9 +270,23 @@ addGuide();layout();addEventListener("resize",layout)})();`;
  * Clean one Zola page. Returns { html, title, hashSource, warnings }; hashSource is the
  * page with the countdown blanked, for change detection.
  */
-export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpColor = "", fontCss = "", currentPath = "/" }) {
+export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpColor = "", fontCss = "", currentPath = "/", shell = false, inactiveFrom = "" }) {
   const root = parseHtml(source);
   const warnings = [];
+  // A shell (this page's header and menu, as the frame for a page of ours) mustn't show
+  // this page's menu link as the current one: it takes the classes the same link has on
+  // another page (`inactiveFrom`), up a few levels, wherever they differ.
+  if (shell && inactiveFrom) {
+    const key = currentPath === "/" ? "" : currentPath.replace(/^\//, "");
+    const own = (tree) => elements(tree, (n) => n.tag === "a" && zolaPageKey(attr(n, "href"), slug) === key);
+    const theirs = own(parseHtml(inactiveFrom));
+    own(root).forEach((link, i) => {
+      for (let mine = link, them = theirs[i], k = 0; mine && them && k < 4; mine = mine.parent, them = them.parent, k++) {
+        const cls = attr(them, "class");
+        if (cls !== null && cls !== attr(mine, "class")) setAttr(mine, "class", cls);
+      }
+    });
+  }
   const html = find(root, "html");
   const head = find(root, "head");
   const body = find(root, "body");
@@ -418,7 +440,29 @@ export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpCol
   }
   const titleEl = find(root, "title");
   const title = titleEl ? decode(titleEl.children.map((c) => c.text || "").join("")).trim() : "";
-  return { html: `<!DOCTYPE html>${serialize(root).replace(/^<!DOCTYPE[^>]*>/i, "")}`, title, hashSource, warnings };
+  const out = { html: `<!DOCTYPE html>${serialize(root).replace(/^<!DOCTYPE[^>]*>/i, "")}`, title, hashSource, warnings };
+  if (shell) out.shell = shellOf(root, body);
+  return out;
+}
+
+/**
+ * The page cut off just after its menu: everything after the box holding the menu links
+ * goes, at every level up to <body>, and a marker at the end of <body> says where our
+ * page's content goes. Null when the page has no menu to keep.
+ */
+function shellOf(root, body) {
+  let links = elements(body, (n) => n.tag === "a" && attr(n, "data-wm-nav") === "menu");
+  if (!links.length) links = elements(body, (n) => n.tag === "a" && attr(n, "data-wm-nav") !== null);
+  if (!links.length) return null;
+  const holds = (box, n) => { for (let p = n; p; p = p.parent) if (p === box) return true; return false; };
+  let box = links[0].parent;
+  while (box && !links.every((a) => holds(box, a))) box = box.parent;
+  for (let n = box; n && n !== body && n.parent; n = n.parent) {
+    const siblings = n.parent.children;
+    siblings.splice(siblings.indexOf(n) + 1);
+  }
+  append(body, { type: "raw", text: GUIDE_MARK });
+  return `<!DOCTYPE html>${serialize(root).replace(/^<!DOCTYPE[^>]*>/i, "")}`;
 }
 
 /** Every { name, url } in Zola's __NEXT_DATA__ (hotels, places, registries...). */
@@ -569,7 +613,14 @@ export async function buildSite({ zolaUrl, rsvpColor = "", fetchPage = fetchText
       source_url: `${ZOLA_ORIGIN}/wedding/${slug}${key ? `/${key}` : ""}`,
     });
   }
-  return { pages: built, failed, warnings };
+  // The frame for our Things to Do page: an inner page's header and menu (the home page's
+  // when there's no other), with its own menu link made to look like any other.
+  const [shellKey, shellSource] = sources.find(([key]) => key) || sources[0];
+  const framed = cleanPage(shellSource, {
+    slug, pages, fetchedAt, rsvpColor, currentPath: localPathFor(shellKey, slug),
+    fontCss: fontFacesFor(fontsCss, shellSource), shell: true, inactiveFrom: shellKey ? homeHtml : "",
+  });
+  return { pages: built, failed, warnings, shell: framed.shell };
 }
 
 /** Store a built site, only moving changed_at for pages whose content changed. */
@@ -593,8 +644,14 @@ export async function storeSite(env, built, extra = {}) {
     );
     stored.push({ path: page.path, title: page.title, changed_at: changedAt });
   }
-  // Pages Zola no longer has.
-  const keep = new Set([...stored.map((p) => p.path), ...built.failed]);
+  if (typeof built.shell === "string") {
+    await run(env,
+      `INSERT INTO site_pages (path, title, html, source_url, content_hash, fetched_at, changed_at) VALUES (?, '', ?, '', '', ?, ?)
+       ON CONFLICT(path) DO UPDATE SET html = excluded.html, fetched_at = excluded.fetched_at, changed_at = excluded.changed_at`,
+      SHELL_PATH, built.shell, startedAt, startedAt);
+  }
+  // Pages Zola no longer has (the shell stays until a copy makes a new one).
+  const keep = new Set([...stored.map((p) => p.path), ...built.failed, SHELL_PATH]);
   for (const path of existing.keys()) {
     if (!keep.has(path)) {
       await run(env, "DELETE FROM site_pages WHERE path = ?", path);
@@ -657,7 +714,10 @@ export async function ingestSite(env, payload) {
   if (!clean.some((p) => p.path === "/")) throw new Error("The home page is missing.");
   const failed = (Array.isArray(payload.failed) ? payload.failed : []).filter((p) => typeof p === "string").slice(0, MAX_PAGES);
   const warnings = (Array.isArray(payload.warnings) ? payload.warnings : []).map((w) => String(w).slice(0, 500)).slice(0, 50);
-  return storeSite(env, { pages: clean, failed, warnings }, { source: "github" });
+  if (payload.shell != null && (typeof payload.shell !== "string" || payload.shell.length > 1_500_000 || !payload.shell.includes(GUIDE_MARK))) {
+    throw new Error("The shell for Things to Do should be a page (under 1.5 MB) with its marker.");
+  }
+  return storeSite(env, { pages: clean, failed, warnings, shell: payload.shell ?? null }, { source: "github" });
 }
 
 /** Ask GitHub to run the refresh workflow now (the "Refresh from Zola" button). */
@@ -716,6 +776,27 @@ export function addGuideLink(html) {
     .replace(/(<nav id="wm-menu"[^>]*>[\s\S]*?)(<\/nav>)/, `$1<a href="${path}">${label}</a>$2`);
 }
 
+/**
+ * A stored page as served: the RSVP pill only while RSVPs are open and in Settings'
+ * color, Things to Do in the menu once it's published (or `guide` forces it, for the
+ * page itself), our footer, and the page script. Pages copied before the script moved
+ * here carry an old copy of it, which is swapped out.
+ */
+export function dressPage(stored, s, { guide = false } = {}) {
+  let html = stored;
+  if (!s.rsvp_open) html = html.replace(/<a class="wm-rsvp"[^>]*>RSVP<\/a>/, "");
+  if (guide || s.things_to_do_published) html = addGuideLink(html);
+  const color = /^#[0-9a-f]{6}$/i.test(s.rsvp_button_color) ? s.rsvp_button_color : RSVP_COLOR;
+  const head = html.indexOf("</head>");
+  const style = `<style data-wm="rsvp-color">.wm-rsvp{background:${color}}.wm-rsvp:focus-visible{outline-color:${color}}</style>`;
+  if (head !== -1) html = html.slice(0, head) + style + html.slice(head);
+  const old = html.indexOf(`<script>${PAGE_SCRIPT.slice(0, 40)}`);
+  if (old !== -1) html = html.slice(0, old) + html.slice(html.indexOf("</script>", old) + "</script>".length);
+  const tail = `${siteFooter({ coupleNames: s.couple_names, contactEmail: s.contact_email })}<script>${PAGE_SCRIPT}</script>`;
+  const at = html.lastIndexOf("</body>");
+  return at === -1 ? html + tail : html.slice(0, at) + tail + html.slice(at);
+}
+
 /** The stored copy of a page, or null. Only plain page paths are looked up. */
 export async function servePage(env, pathname) {
   let path = pathname.replace(/\/index\.html$/, "/");
@@ -724,22 +805,7 @@ export async function servePage(env, pathname) {
   if (RESERVED.has(path.slice(1))) return null;
   const page = await first(env, "SELECT html FROM site_pages WHERE path = ?", path);
   if (!page) return null;
-  const s = await loadSettings(env);
-  const footer = siteFooter({ coupleNames: s.couple_names, contactEmail: s.contact_email });
-  // Pages copied before the script moved here carry an old copy of it: swap it out.
-  let stored = page.html;
-  // No RSVP button while RSVPs are closed; its color follows Settings without a refresh.
-  if (!s.rsvp_open) stored = stored.replace(/<a class="wm-rsvp"[^>]*>RSVP<\/a>/, "");
-  if (s.things_to_do_published) stored = addGuideLink(stored);
-  const color = /^#[0-9a-f]{6}$/i.test(s.rsvp_button_color) ? s.rsvp_button_color : RSVP_COLOR;
-  const head = stored.indexOf("</head>");
-  const style = `<style data-wm="rsvp-color">.wm-rsvp{background:${color}}.wm-rsvp:focus-visible{outline-color:${color}}</style>`;
-  if (head !== -1) stored = stored.slice(0, head) + style + stored.slice(head);
-  const old = stored.indexOf(`<script>${PAGE_SCRIPT.slice(0, 40)}`);
-  if (old !== -1) stored = stored.slice(0, old) + stored.slice(stored.indexOf("</script>", old) + "</script>".length);
-  const tail = `${footer}<script>${PAGE_SCRIPT}</script>`;
-  const at = stored.lastIndexOf("</body>");
-  const html = at === -1 ? stored + tail : stored.slice(0, at) + tail + stored.slice(at);
+  const html = dressPage(page.html, await loadSettings(env));
   return new Response(html, {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300", "x-robots-tag": "noindex" },
   });
