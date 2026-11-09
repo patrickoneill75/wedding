@@ -106,7 +106,14 @@ function guideBody({ weddingDate = "", preview = false }) {
 /** The page inside the website's shell (from the copy), dressed like any copied page. */
 export function guideInShell(shell, s, { preview = false } = {}) {
   const accent = /^#[0-9a-f]{6}$/i.test(s.rsvp_button_color) ? s.rsvp_button_color : RSVP_COLOR;
-  let html = shell
+  let html = shell;
+  // Shells saved before the bar remembered its page: our phone menu still marks that page
+  // as current, so the page script can calm its item in the site's menu.
+  if (!/<div class="wm-rsvp-bar"[^>]*data-wm-shell=/.test(html)) {
+    const page = /<nav id="wm-menu"[^>]*>[\s\S]*?<a href="(\/[a-z0-9-]*)" aria-current="page"/.exec(html)?.[1];
+    if (page) html = html.replace('<div class="wm-rsvp-bar"', `<div class="wm-rsvp-bar" data-wm-shell="${page}"`);
+  }
+  html = html
     .replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapeHtml(GUIDE_TITLE)}${s.couple_names ? ` · ${escapeHtml(s.couple_names)}` : ""}</title>`)
     // The shell came from another page: nothing in it is the current page.
     .replace(/\saria-current="page"/g, "");
