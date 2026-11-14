@@ -44,13 +44,16 @@ const longDate = (iso) => (/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))
   : "");
 
 // Every rule is under .wm-guide, so nothing here restyles the website around it. Colors
-// and the heading font come from the site (--wm-text, --wm-font, set by the copy); the
-// script keeps the section links clear of our top bar and gives them the page's background.
+// and the heading font come from the site (--wm-text, --wm-font, set by the copy). The
+// script keeps the section links clear of our top bar and gives them the page's
+// background, and closes the gap under the site's menu: the shell keeps its header's
+// containers, whose padding and heights were made for the page that was cut away, so the
+// guide is pulled up to GAP below the lowest thing the header actually shows.
 const GUIDE_CSS = `
 html{scroll-behavior:smooth;scroll-padding-top:calc(var(--wm-bar,0px) + 64px)}
 .wm-guide{max-width:680px;margin:0 auto;padding:8px 16px 40px;color:var(--wm-text,#3d3833);font:16.5px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif;text-align:left}
 .wm-guide *{box-sizing:border-box}
-.wm-guide .g-head{text-align:center;margin:28px 0 24px}
+.wm-guide .g-head{text-align:center;margin:0 0 24px}
 .wm-guide .eyebrow{font-size:12px;letter-spacing:.22em;text-transform:uppercase;opacity:.7}
 .wm-guide h1{font:400 clamp(38px,9vw,56px)/1.08 var(--wm-font,Georgia,serif);margin:12px 0 10px;color:inherit;letter-spacing:normal;text-transform:none}
 .wm-guide .sub{font:italic 400 19px/1.4 var(--wm-font,Georgia,serif);margin:0;opacity:.85}
@@ -75,10 +78,20 @@ html{scroll-behavior:smooth;scroll-padding-top:calc(var(--wm-bar,0px) + 64px)}
 .wm-guide .start h3{margin-top:16px}
 .wm-guide .preview{background:#fff4d6;color:#5a4300;border:1px solid #f0d27a;border-radius:12px;padding:12px 16px;margin:16px 0 0;font-size:14px}
 .wm-guide .top{display:inline-block;margin:28px 0 0;color:inherit;opacity:.7;font-size:14px}`;
-const GUIDE_SCRIPT = `(function(){var r=document.documentElement,b=document.querySelector(".wm-rsvp-bar");
+const GUIDE_SCRIPT = `(function(){var r=document.documentElement,b=document.querySelector(".wm-rsvp-bar"),g=document.querySelector(".wm-guide"),GAP=36;
+function seen(e){var s=getComputedStyle(e);if(s.visibility==="hidden"||s.display==="none"||Number(s.opacity)===0)return null;var x=e.getBoundingClientRect();return x.width>0&&x.height>0?x:null}
+function headerBottom(){var low=null;[].forEach.call(document.body.querySelectorAll("*"),function(e){
+if(e.closest(".wm-guide,.wm-rsvp-bar,.wm-footer,script,style,noscript,head"))return;
+var img=/^(IMG|SVG|PICTURE|VIDEO|CANVAS)$/i.test(e.tagName);if(!img&&e.children.length)return;
+var x=seen(e);if(!x)return;
+if(!img&&!e.textContent.trim()){var st=getComputedStyle(e),clear=/rgba\\(0, 0, 0, 0\\)|transparent/;
+if(clear.test(st.backgroundColor)&&st.backgroundImage==="none"&&!parseFloat(st.borderTopWidth)&&!parseFloat(st.borderBottomWidth))return}
+if(low===null||x.bottom>low)low=x.bottom});return low}
+function tighten(){if(!g)return;g.style.marginTop="";var low=headerBottom(),first=g.firstElementChild;if(low===null||!first)return;
+var extra=first.getBoundingClientRect().top-low-GAP;if(extra>0)g.style.marginTop=(-extra)+"px"}
 function fit(){r.style.setProperty("--wm-bg",getComputedStyle(document.body).backgroundColor);
-r.style.setProperty("--wm-bar",(b&&getComputedStyle(b).display!=="none"?b.offsetHeight:0)+"px")}
-fit();addEventListener("resize",fit);addEventListener("load",fit)})();`;
+r.style.setProperty("--wm-bar",(b&&getComputedStyle(b).display!=="none"?b.offsetHeight:0)+"px");tighten()}
+fit();addEventListener("resize",fit);addEventListener("load",fit);if(document.fonts&&document.fonts.ready)document.fonts.ready.then(fit)})();`;
 
 /** The page's content (inside .wm-guide). `preview` adds the banner an admin sees while it's hidden. */
 function guideBody({ weddingDate = "", preview = false }) {
