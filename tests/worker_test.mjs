@@ -1946,6 +1946,9 @@ test("things to do: sits inside the website's own header and menu, with nothing 
   assert.match(page, /<title>Things to Do · Sam &#38; Alex<\/title>/);
   assert.ok(page.includes('<footer class="wm-footer">') && page.includes("wm-in-nav"), "our footer and page script, as on every page");
   assert.ok(!page.includes("<!--wm-guide-->"));
+  // Bug: a huge gap sat between the menu and the guide (the shell's header containers keep
+  // padding and heights meant for the page cut away); the page script closes it.
+  assert.ok(page.includes("function headerBottom()") && page.includes("GAP=36"), "the guide is pulled up under the menu");
   const again = await ingest(env, JSON.parse(JSON.stringify(built)));
   assert.equal(again.data.status.changed, false, "a new shell alone isn't a change to the site");
   assert.ok(!again.data.status.pages.some((p) => p.path === "_shell"), "and isn't listed as a page");
