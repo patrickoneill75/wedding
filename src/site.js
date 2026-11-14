@@ -32,6 +32,7 @@
 
 import { all, first, getSetting, run, setSetting } from "./db.js";
 import { loadSettings } from "./store.js";
+import { zonedTime } from "./calendar.js";
 
 // The RSVP button's color unless Settings picks another.
 export const RSVP_COLOR = "#A4727E";
@@ -216,6 +217,7 @@ function tick(){document.querySelectorAll("[data-wm-target]").forEach(function(b
 var left=Math.max(0,Math.floor((Number(box.getAttribute("data-wm-target"))-Date.now())/1000));
 var v=[Math.floor(left/86400),Math.floor(left%86400/3600),Math.floor(left%3600/60),left%60];
 var units=[];box.querySelectorAll("span").forEach(function(s){if(s.children.length>=2)units.push(s)});
+if(!units.length){box.textContent=v.map(function(n,i){return n+" "+L[i][0]+(n===1?"":"s")}).join("  ");return}
 units.slice(0,4).forEach(function(u,i){u.children[0].textContent=v[i]+" "+L[i][0]+(v[i]===1?"":"s");u.children[1].textContent=v[i]+" "+L[i][1]})})}
 if(document.querySelector("[data-wm-target]")){tick();setInterval(tick,1000)}
 var bar=document.querySelector(".wm-rsvp-bar"),btn=document.querySelector(".wm-menu-btn"),menu=document.getElementById("wm-menu");
@@ -773,6 +775,24 @@ export function addGuideLink(html, { current = false } = {}) {
 }
 
 /**
+ * When the home page's countdown ends, from Settings rather than from Zola's page: the
+ * earliest timed event on the wedding date in the calendar invite (the ceremony), else
+ * midnight that day, in the wedding's time zone. Null with no wedding date. Zola's own
+ * countdown text is only read when the site is copied, and Zola can change it at any time.
+ */
+export function countdownEnd(s) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(s.wedding_date || ""))) return null;
+  const starts = (s.calendar_events || [])
+    .filter((e) => e && e.date === s.wedding_date && !e.all_day && /^\d{2}:\d{2}$/.test(e.start || ""))
+    .map((e) => e.start).sort();
+  try {
+    return zonedTime(s.wedding_date, starts[0] || "00:00", s.time_zone || "America/Indiana/Indianapolis").getTime();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * A stored page as served: the RSVP pill only while RSVPs are open and in Settings'
  * color, Things to Do in the menu once it's published (or `guide` forces it, for the
  * page itself), our footer, and the page script. Pages copied before the script moved
@@ -780,6 +800,11 @@ export function addGuideLink(html, { current = false } = {}) {
  */
 export function dressPage(stored, s, { guide = false } = {}) {
   let html = stored;
+  const end = countdownEnd(s);
+  if (end) {
+    html = html.replace(/(<[a-z]+\b[^>]*\bdata-testid="WeddingCountdown")([^>]*)>/, (whole, open, rest) =>
+      `${open}${rest.replace(/\sdata-wm-target="[^"]*"/, "")} data-wm-target="${end}">`);
+  }
   if (!s.rsvp_open) html = html.replace(/<a class="wm-rsvp"[^>]*>RSVP<\/a>/, "");
   if (guide || s.things_to_do_published) html = addGuideLink(html, { current: guide });
   const color = /^#[0-9a-f]{6}$/i.test(s.rsvp_button_color) ? s.rsvp_button_color : RSVP_COLOR;
