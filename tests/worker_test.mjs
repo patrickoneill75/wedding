@@ -1954,6 +1954,30 @@ test("things to do: sits inside the website's own header and menu, with nothing 
   assert.ok(!again.data.status.pages.some((p) => p.path === "_shell"), "and isn't listed as a page");
 });
 
+// Bug: the home page's countdown stopped working; its end came only from Zola's countdown
+// text at copy time, which Zola can change (a countdown it fills in later reads as zero).
+test("the countdown counts to the wedding from Settings, whatever Zola's copy said", async () => {
+  const { buildSite, PAGE_SCRIPT } = await import("../src/site.js");
+  const env = siteEnv();
+  const zeroed = zolaPage().replace(/<div data-testid="WeddingCountdown">[\s\S]*?<\/div>/, '<div data-testid="WeddingCountdown"><span><span>0 days</span><span>0 d</span></span></div>');
+  const built = await buildSite({ zolaUrl: `https://www.zola.com/wedding/${SLUG}`, fetchPage: async (url) => {
+    if (url.endsWith("fonts.css")) return "";
+    if (url.endsWith(SLUG)) return zeroed;
+    throw new Error(`Zola returned 404 for ${url}`);
+  } });
+  assert.equal((await ingest(env, JSON.parse(JSON.stringify(built)))).status, 200);
+  const api = await adminClient(env);
+  await api("/api/admin/settings", { method: "PUT", body: { wedding_date: "2027-05-15" } });
+  await api("/api/admin/comms/calendar", { method: "PUT", body: { time_zone: "America/Indiana/Indianapolis", events: [
+    { title: "Reception", date: "2027-05-15", start: "17:30", end: "23:00" },
+    { title: "Ceremony", date: "2027-05-15", start: "15:00", end: "16:00" },
+  ] } });
+  const page = (await call(env, "/")).data;
+  assert.equal(page.match(/data-wm-target="(\d+)"/)?.[1], String(Date.UTC(2027, 4, 15, 19, 0)), "3 PM in Indianapolis, the ceremony");
+  assert.equal((page.match(/data-wm-target=/g) || []).length, 1);
+  assert.ok(PAGE_SCRIPT.includes("if(!units.length){box.textContent="), "a countdown without Zola's units still shows the time left");
+});
+
 // Bug: with Zola's footer taken off, the copied pages ended flush at the last section,
 // with no footer and no way to get in touch.
 test("copied pages get our footer with a Contact us link from Settings, as they're served", async () => {
