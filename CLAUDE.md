@@ -63,15 +63,14 @@
     `application/ics` and go only to guests who haven't declined (`eventsFor`). An email's `title` is a name for
     admins on the Communications page; it never goes into an email (a test checks).
 
-12. **The coded website** (`src/website.js`, the Website page) replaces the Zola copy once
-    `settings.web_live` is on; until then it previews at `/_new/` for the Website page
-    only. Pages live in `web_pages` (bodies cleaned by `sanitizeHtml(html, { page: true })`,
-    which also keeps our photos and links within the site); photos in `web_photos` as
-    BLOBs, resized to a JPEG and a thumbnail in the browser (D1 keeps a value up to 2 MB)
-    and served from `/_site/photo/<id>`. "Fill from the Zola page" picks the words out in
-    the browser, so the Worker never parses a whole Zola page (Workers Free CPU time).
-    The editor's look mirrors `SITE_CSS`; change both together. The names at the top
-    (`settings.web_home`) are kept in D1 like every other personal detail, never in code.
+12. **The coded website** (`src/website.js`) remakes the Zola site page for page, at the
+    sizes measured from it; it replaces the Zola copy once `settings.web_live` is on (the
+    Website page's switch), and until then previews at `/_new/` for the Website page only.
+    Its words are in `src/website_content.js` and its photos in `public/_site/gallery/`:
+    the couple asked for it all in code, no editor, and these are on their public site
+    anyway. Guest data still never goes there. Radiograph loads from Zola's font server
+    through `/_site/fonts` (its license may not allow a copy in a public repo). The
+    `web_pages` and `web_photos` tables (migration 22) are no longer used.
 
 ## Workflow
 
