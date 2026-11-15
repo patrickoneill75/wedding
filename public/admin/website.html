@@ -7,7 +7,7 @@
 <link rel="icon" href="/favicon.svg">
 <title>Website — Wedding planner</title>
 <link rel="stylesheet" href="/admin/admin.css">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Forum&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Lato:wght@400;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Lato:wght@400;700&display=swap">
 <style>
   .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
   .tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
@@ -173,18 +173,34 @@ function pageEditor(page) {
   const visible = h("input", { type: "checkbox", checked: Boolean(page.visible), disabled: page.kind === "home" });
   const url = h("input", { value: page.url, placeholder: "https://…" });
   const rte = ["home", "text", "gallery"].includes(page.kind) ? richEditor(page) : null;
+  // The home page also holds the top of the site: the names over the menu, the two
+  // names side by side, and the place under the date. Blank uses the grey example.
+  const topField = (key, label, help) => {
+    const input = h("input", { value: data.home[key] || "", placeholder: data.defaults[key] || "", maxlength: 80 });
+    return [input, h("label", { class: "field" }, label, input, help ? h("span", { class: "muted", style: "font-size:11.5px" }, help) : null)];
+  };
+  const top = page.kind === "home" ? {
+    header: topField("header", "Names over the menu, on every page", "Like Kaitlyn & Patrick"),
+    first: topField("first", "First name, big on the home page", "A full name: the last name goes on its own line"),
+    second: topField("second", "Second name, after \"and\""),
+    place: topField("place", "Under the date", "Like Indianapolis, IN"),
+  } : null;
   const start = JSON.stringify(values());
   function values() {
     return {
       title: title.value, slug: slug.value, in_menu: inMenu.checked, visible: visible.checked,
       ...(page.kind === "link" ? { url: url.value } : {}),
       ...(rte ? { body: rte.html() } : {}),
+      ...(top ? { home: Object.fromEntries(Object.entries(top).map(([k, [input]]) => [k, input.value])) } : {}),
     };
   }
   const save = async () => {
     try {
       const body = values();
+      const home = body.home;
+      delete body.home;
       if (page.kind === "home" || page.kind === "guide") delete body.slug;
+      if (home) await api("/api/admin/website/settings", { method: "PUT", body: { home } });
       data = await api(`/api/admin/website/pages/${page.id}`, { method: "PUT", body });
       editor = null;
       render();
@@ -209,7 +225,10 @@ function pageEditor(page) {
     page.kind === "link" ? h("p", { class: "desc", style: "margin:12px 0 0" }, "A link in the menu that opens another website in a new tab, like your registry.") : null,
     page.kind === "guide" ? h("p", { class: "desc", style: "margin:12px 0 0" }, "Your guide to Indy. Its places and words are kept in the code: ask Claude to change them.") : null,
     page.kind === "gallery" ? h("p", { class: "desc", style: "margin:12px 0 0" }, "A few words, then every photo from ", h("a", { href: "#photos", onclick: (ev) => { ev.preventDefault(); if (!leaveOk()) return; tab = "photos"; history.replaceState(null, "", "#photos"); render(); } }, "Gallery photos"), ".") : null,
-    page.kind === "home" ? h("p", { class: "desc", style: "margin:12px 0 0" }, "Above these words guests see the cover photo, the date and venue from Settings, and the countdown. Below them, an RSVP button while RSVPs are open.") : null,
+    top ? h("div", { style: "margin-top:16px" },
+      h("h3", { style: "margin:0 0 8px;font-size:13px" }, "Top of the site"),
+      h("div", { class: "fields", style: "grid-template-columns: repeat(auto-fit, minmax(220px, 1fr))" }, top.header[1], top.first[1], top.second[1], top.place[1])) : null,
+    page.kind === "home" ? h("p", { class: "desc", style: "margin:12px 0 0" }, "Guests see the two names, the date from Settings, the place and the countdown, then the cover photo and these words, then an RSVP button while RSVPs are open.") : null,
     rte ? rte.el : null,
     h("div", { class: "row", style: "margin-top:14px" },
       h("button", { class: "primary", onclick: save }, "Save"),
