@@ -2043,6 +2043,32 @@ test("website: a preview at /_new/ for the Website page only, then live for gues
   assert.ok((await call(env, "/travel")).data.includes("Getting there"), "and back to the Zola copy");
 });
 
+// Asked for: the gallery's close button as an × at the top right; no shadow on the RSVP
+// button; the RSVP page in the website's look, with its menu.
+test("website: lightbox closes from an × at the top right, the RSVP pill has no shadow, the RSVP page gets the site's menu", async () => {
+  const { env, api } = await codedSite();
+  const photos = (await api("/_new/photo")).data;
+  assert.ok(photos.includes('<button type="button" class="close" aria-label="Close the photo"><svg'), "an × button with a name for screen readers");
+  assert.ok(!photos.includes(">Close</button>"), "not a word in the row of buttons");
+  assert.match(photos, /\.lightbox button\.close\{position:fixed;top:[^}]*right:/);
+  assert.ok(!/\.rsvp\{[^}]*box-shadow/.test(photos), "the coded site's RSVP pill");
+  // Asked for: on phones the menu button on the left, RSVP on the right, and neither the
+  // button nor the menu it opens in white.
+  assert.match(photos, /\.burger\{position:fixed;top:12px;left:[^}]*background:var\(--bg\)/);
+  assert.match(photos, /\.phone-rsvp\{position:fixed;top:15px;right:/);
+  assert.match(photos, /\.drawer\{[^}]*left:0;[^}]*background:var\(--bg\);color:var\(--ink\)/);
+  assert.ok(!/\.(burger|drawer)\{[^}]*#fff/.test(photos), "no white");
+  const { buildSite } = await import("../src/site.js");
+  const built = await buildSite({ zolaUrl: `https://www.zola.com/wedding/${SLUG}`, fetchPage: async (url) => (url.endsWith("fonts.css") ? "" : zolaPage()) });
+  assert.ok(!JSON.stringify(built).includes("box-shadow:0 2px 10px"), "and the Zola copy's");
+  const info = (await call(env, "/api/public/info")).data;
+  const { SITE } = await import("../src/website_content.js");
+  assert.equal(info.site.header, SITE.header);
+  assert.deepEqual(info.site.menu.map((m) => m.href), ["/", "/photo", "/travel", "/faq"], "Things to Do waits until it's published");
+  await api("/api/admin/settings", { method: "PUT", body: { things_to_do_published: true } });
+  assert.equal((await call(env, "/api/public/info")).data.site.menu.at(-1).href, "/things-to-do");
+});
+
 test("website: a user with the Website page can preview it; others can't", async () => {
   const { env, api } = await codedSite();
   await api("/api/admin/users", { method: "POST", body: { email: "jo@example.com", role: "user", pages: ["website"] } });
