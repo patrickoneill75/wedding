@@ -5,83 +5,98 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/favicon.svg">
 <title>RSVP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Cormorant+Garamond:wght@400;500&display=swap">
 <style>
+  /* The website's look (src/website.js): its colors, fonts, header, side lines and footer. */
+  @font-face { font-family: "Radiograph"; font-weight: 400; font-style: normal; font-display: swap; src: url("/_site/fonts/Radiograph-Regular.otf") format("opentype"); }
   :root {
     color-scheme: light;
-    --page: #f7f4ee; --card: #fffdf9; --ink: #1f1c18; --soft: #5f5850; --muted: #948b80;
-    --line: rgba(31, 28, 24, 0.12); --accent: #5b6b4f; --accent-ink: #fff; --bad: #b3261e; --good: #2f6b2f;
-    --wash: rgba(31, 28, 24, 0.04);
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      color-scheme: dark;
-      --page: #151412; --card: #1e1c19; --ink: #f2eee7; --soft: #c9c1b5; --muted: #8f877c;
-      --line: rgba(255, 255, 255, 0.12); --accent: #9db38c; --accent-ink: #151412; --bad: #f2b8b5; --good: #a6d49b;
-      --wash: rgba(255, 255, 255, 0.05);
-    }
+    --page: #F5EFE8; --card: #FCF9F6; --ink: #89645C; --soft: #8F7068; --muted: #A88D85;
+    --line: rgba(137, 100, 92, 0.22); --rule: #DBBBAA; --accent: #89645C; --accent-ink: #fff; --bad: #A3362A; --good: #4F6B3F;
+    --wash: rgba(137, 100, 92, 0.07);
+    --display: "Radiograph", "Cormorant Garamond", Georgia, serif; --serif: "Libre Baskerville", Georgia, serif;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 620px; margin: 0 auto; padding: 56px 16px 80px; }
-  header { text-align: center; margin-bottom: 32px; }
-  .home-link { display: inline-block; margin: -32px 0 24px; color: var(--soft); text-decoration: none; font-size: 14px; }
-  .home-link:hover { color: var(--ink); text-decoration: underline; }
-  .site-foot { text-align: center; margin: 56px 0 0; padding: 28px 0 40px; border-top: 1px solid var(--line); font-size: 14px; color: var(--soft); }
-  .site-foot a { color: inherit; margin: 0 12px; text-underline-offset: 3px; }
-  .site-foot a:hover { color: var(--ink); }
-  .eyebrow { letter-spacing: .22em; text-transform: uppercase; font-size: 12px; color: var(--muted); }
-  h1 { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; font-weight: 400; font-size: clamp(34px, 8vw, 52px);
-       line-height: 1.1; margin: 10px 0 12px; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 400 16px/1.6 var(--serif); }
+  .top { padding: 20px 16px 0; text-align: center; }
+  .top .names { margin: 0; font: 400 34px/1.6 var(--display); letter-spacing: 4px; text-transform: uppercase; }
+  .top a { color: inherit; text-decoration: none; }
+  .menu { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 24px; margin: 29px 0 0; padding: 0 0 3px; }
+  .menu a { padding: 0 0 6px; border-bottom: 3px solid transparent; }
+  .menu a:hover { border-bottom-color: rgba(137, 100, 92, .35); }
+  .frame { position: relative; }
+  .frame::before, .frame::after { content: ""; position: absolute; top: 0; bottom: 0; width: 10%; pointer-events: none; }
+  .frame::before { left: 0; background: linear-gradient(to right, transparent 53.6%, var(--rule) 53.6% 56.8%, transparent 56.8% 71.2%, var(--rule) 71.2% 74.4%, transparent 74.4% 90.4%, var(--rule) 90.4% 93.6%, transparent 93.6%); }
+  .frame::after { right: 0; background: linear-gradient(to right, transparent 6.4%, var(--rule) 6.4% 9.6%, transparent 9.6% 25.6%, var(--rule) 25.6% 28.8%, transparent 28.8% 43.2%, var(--rule) 43.2% 46.4%, transparent 46.4%); }
+  main { position: relative; z-index: 1; max-width: 620px; margin: 0 auto; padding: 72px 16px 0; }
+  header { text-align: center; margin-bottom: 40px; }
+  .site-foot { position: relative; z-index: 1; text-align: center; padding: 110px 16px 64px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .site-foot p { margin: 0; font-size: 18px; letter-spacing: .72px; }
+  .site-foot a { color: inherit; font-size: 15px; letter-spacing: 1.2px; text-transform: uppercase; text-underline-offset: 4px; }
+  .eyebrow { font-style: italic; font-size: 15px; color: var(--soft); }
+  h1 { font: 400 clamp(24px, 6vw, 34px)/1.4 var(--display); letter-spacing: 4px; text-transform: uppercase; margin: 10px 0 14px; }
   .when { color: var(--soft); }
   .intro { color: var(--soft); margin-top: 14px; white-space: pre-line; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 24px; }
-  h2 { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; font-weight: 400; font-size: 24px; margin: 0 0 6px; }
-  p.help { color: var(--soft); margin: 0 0 18px; font-size: 15px; }
-  label { display: block; font-size: 14px; color: var(--soft); margin-bottom: 14px; }
-  input[type="text"], input[type="email"], textarea { display: block; width: 100%; margin-top: 5px; font: inherit; color: var(--ink);
-    background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 28px; }
+  h2 { font: 400 20px/1.5 var(--display); letter-spacing: 3px; text-transform: uppercase; margin: 0 0 8px; }
+  p.help { color: var(--soft); margin: 0 0 20px; font-size: 15px; }
+  label { display: block; font-size: 14px; color: var(--soft); margin-bottom: 16px; }
+  input[type="text"], input[type="email"], textarea { display: block; width: 100%; margin-top: 6px; font: inherit; color: #4A3631;
+    background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; }
+  input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   textarea { min-height: 80px; resize: vertical; }
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   @media (max-width: 480px) { .two { grid-template-columns: 1fr; } }
-  button { font: inherit; border-radius: 999px; border: 1px solid var(--line); padding: 11px 22px; cursor: pointer; background: var(--card); color: var(--ink); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button { font: 600 15px/1 var(--serif); border-radius: 4px; border: 1px solid var(--ink); min-height: 48px; padding: 0 24px; cursor: pointer; background: transparent; color: var(--ink); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button:hover { filter: brightness(1.06); }
   button:disabled { opacity: .55; cursor: wait; }
   .msg { min-height: 1.4em; margin: 12px 0 0; font-size: 14px; color: var(--bad); }
   .person { border-top: 1px solid var(--line); padding: 18px 0 4px; }
   .person:first-of-type { border-top: 0; padding-top: 4px; }
-  .person .name { font-weight: 600; margin-bottom: 2px; }
+  .person .name { font-weight: 700; margin-bottom: 2px; }
   .person .invited { font-size: 14px; color: var(--soft); margin-bottom: 10px; }
   .plus .lead { font-size: 14px; color: var(--soft); margin-bottom: 8px; }
-  .plus .lead b { color: var(--ink); font-weight: 600; }
+  .plus .lead b { color: var(--ink); font-weight: 700; }
   .choice { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
   .choice label { margin: 0; }
   .choice input { position: absolute; opacity: 0; pointer-events: none; }
-  .choice span { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 7px 16px; cursor: pointer; color: var(--ink); }
+  .choice span { display: inline-block; border: 1px solid var(--line); border-radius: 4px; padding: 8px 16px; cursor: pointer; color: var(--ink); background: #fff; }
   .choice input:checked + span { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
   .choice input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .plus { background: var(--wash); border-radius: 12px; padding: 14px 14px 2px; margin: 4px 0 12px; }
+  .plus { background: var(--wash); border-radius: 4px; padding: 14px 14px 2px; margin: 4px 0 12px; }
   .combo { position: relative; }
   .combo input { font-size: 17px; padding: 12px 14px; }
   .suggest { position: absolute; left: 0; right: 0; top: 100%; margin: 4px 0 0; padding: 6px; list-style: none; z-index: 5;
-             background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
-             max-height: 340px; overflow-y: auto; }
-  .suggest li { padding: 10px 12px; border-radius: 8px; cursor: pointer; color: var(--ink); }
+             background: #fff; border: 1px solid var(--line); border-radius: 4px; max-height: 340px; overflow-y: auto; }
+  .suggest li { padding: 10px 12px; border-radius: 4px; cursor: pointer; color: var(--ink); }
   .suggest li b { font-weight: 700; }
   .suggest li[aria-selected="true"], .suggest li:hover { background: var(--wash); }
   .suggest li.note { color: var(--soft); cursor: default; font-size: 14px; }
   .suggest li.note:hover { background: none; }
   .done { text-align: center; }
   .done ul { list-style: none; padding: 0; margin: 14px 0 20px; color: var(--soft); }
-  a.cal { display: inline-block; text-decoration: none; padding: 12px 20px; border-radius: 999px; margin: 0 0 18px;
-          background: var(--accent); border: 1px solid var(--accent); color: var(--accent-ink); font-weight: 600; }
-  .preview { background: #fff4d6; color: #5a4300; border: 1px solid #f0d27a; border-radius: 12px; padding: 12px 16px; margin: 0 0 20px; font-size: 14px; }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .preview { background: #3a2f12; color: #f6dc95; border-color: #6b5520; } }
+  a.cal { display: inline-flex; align-items: center; min-height: 48px; text-decoration: none; padding: 0 24px; border-radius: 4px; margin: 0 0 18px;
+          background: var(--accent); border: 1px solid var(--accent); color: var(--accent-ink); font: 600 15px/1 var(--serif); }
+  .preview { background: #FFF4D6; color: #5A4300; border: 1px solid #F0D27A; border-radius: 4px; padding: 12px 16px; margin: 0 0 20px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
   [hidden] { display: none !important; }
+  @media (max-width: 767px) {
+    .top .names { font-size: 24px; letter-spacing: 3px; }
+    .menu { gap: 4px 18px; margin-top: 16px; font-size: 15px; }
+    .frame::before, .frame::after { width: 5%; }
+    main { padding: 44px 39px 0; }
+    .card { padding: 22px 18px; }
+    .site-foot { padding-top: 72px; }
+  }
+  @media (max-width: 420px) { main { padding-left: 26px; padding-right: 26px; } }
 </style>
 </head>
 <body>
+<header class="top"><p class="names"><a href="/" id="siteName">Our wedding</a></p><nav class="menu" id="menu" aria-label="Site"><a href="/">Home</a></nav></header>
+<div class="frame">
 <main>
-  <a class="home-link" href="/">← Our wedding website</a>
   <header>
     <div class="eyebrow" id="eyebrow">Kindly reply</div>
     <h1 id="names">We're getting married</h1>
@@ -126,8 +141,9 @@
     <h2 id="closedHeading">RSVPs are closed</h2>
     <p class="help" id="closedText">Please get in touch with us directly.</p>
   </div>
-  <footer class="site-foot"><a href="/">Our wedding website</a><a id="contact" hidden>Contact us</a></footer>
 </main>
+<footer class="site-foot"><p id="footName"></p><a id="contact" hidden>Contact us</a></footer>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -202,6 +218,11 @@ fetch("/api/public/info").then((r) => r.json()).then((info) => {
   if (info.rsvp_deadline) $("lookupHelp").textContent += ` Please reply by ${fmtDate(info.rsvp_deadline)}.`;
   $("preview").hidden = !info.preview;
   if (!info.rsvp_open && !info.preview) show("closed");
+  if (info.site) {
+    $("siteName").textContent = info.site.header;
+    $("footName").textContent = info.site.footer;
+    $("menu").replaceChildren(...info.site.menu.map((m) => el("a", { href: m.href }, m.label)));
+  }
   if (info.contact_email) {
     $("contact").href = `mailto:${info.contact_email}`;
     $("contact").hidden = false;

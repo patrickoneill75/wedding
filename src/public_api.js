@@ -56,6 +56,7 @@ import { intakeTurn, payerFor } from "./intake.js";
 import { householdIcs, icsFor, queueAfterRsvp, testHousehold } from "./comms.js";
 import { eventsFor } from "./calendar.js";
 import { siteSlug } from "./site.js";
+import { MENU, SITE } from "./website_content.js";
 
 export { payerFor };
 
@@ -607,6 +608,12 @@ export async function handlePublicApi(route, request, env) {
         rsvp_intro: s.rsvp_intro,
         rsvp_page: s.rsvp_page,
         contact_email: s.contact_email,
+        // The website's header and menu, so the RSVP page wears the site's look.
+        site: {
+          header: SITE.header,
+          footer: SITE.footer,
+          menu: MENU.filter((m) => !m.guide || s.things_to_do_published).map((m) => ({ href: `/${m.path}`, label: m.label })),
+        },
       });
     }
     if (route === "calendar" && method === "GET") return await calendarDownload(env, request);

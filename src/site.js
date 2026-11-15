@@ -396,8 +396,8 @@ export function cleanPage(source, { slug, pages, fetchedAt = Date.now(), rsvpCol
     + `#wm-menu a:last-child{border-bottom:0}#wm-menu a[aria-current]{font-weight:700}`
     + `.wm-rsvp{display:inline-block;padding:11px 30px;border-radius:999px;background:${pill};color:#fff;`
     + `font:600 15px/1 system-ui,-apple-system,"Segoe UI",sans-serif;letter-spacing:.12em;text-transform:uppercase;text-decoration:none;`
-    + `box-shadow:0 2px 10px rgba(0,0,0,.15);transition:transform .15s ease,box-shadow .15s ease}`
-    + `.wm-rsvp:hover,.wm-rsvp:focus-visible{transform:translateY(-1px);box-shadow:0 4px 16px rgba(0,0,0,.2);color:#fff}`
+    + `transition:transform .15s ease}`
+    + `.wm-rsvp:hover,.wm-rsvp:focus-visible{transform:translateY(-1px);color:#fff}`
     + `.wm-rsvp:focus-visible{outline:3px solid ${pill};outline-offset:3px}`
     // On a wide screen the pill sits at the right end of the site's menu row.
     + `.wm-rsvp.wm-in-nav{position:absolute;transform:translateY(-50%);z-index:5}`
