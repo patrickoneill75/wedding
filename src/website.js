@@ -133,17 +133,19 @@ body.web{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.6 var(--
 .foot{position:relative;z-index:1;padding:110px 16px 64px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:10px}
 .foot p{margin:0;font:400 18px/1.4 var(--serif);letter-spacing:.72px}
 .foot a{font:400 15px/1.4 var(--serif);letter-spacing:1.2px;text-transform:uppercase;text-underline-offset:4px}
-.burger{position:fixed;top:12px;right:max(12px,env(safe-area-inset-right,0px));z-index:30;width:44px;height:44px;border:0;border-radius:50%;background:#fff;color:#21201F;box-shadow:0 2px 8px rgba(0,0,0,.15);display:none;align-items:center;justify-content:center;cursor:pointer}
-.phone-rsvp{position:fixed;top:15px;left:max(12px,env(safe-area-inset-left,0px));z-index:30;padding:10px 18px;font-size:13px;display:none}
-.drawer{position:fixed;top:0;right:0;bottom:0;width:min(300px,85vw);z-index:40;background:#fff;color:#21201F;padding:28px 40px;transform:translateX(100%);visibility:hidden;transition:transform .25s ease,visibility .25s;box-shadow:-8px 0 24px rgba(0,0,0,.12);overflow-y:auto}
+.burger{position:fixed;top:12px;left:max(12px,env(safe-area-inset-left,0px));z-index:30;width:44px;height:44px;border:1px solid var(--line);border-radius:50%;background:var(--bg);color:var(--ink);display:none;align-items:center;justify-content:center;cursor:pointer}
+.phone-rsvp{position:fixed;top:15px;right:max(12px,env(safe-area-inset-right,0px));z-index:30;padding:10px 18px;font-size:13px;display:none}
+.drawer{position:fixed;top:0;left:0;bottom:0;width:min(300px,85vw);z-index:40;background:var(--bg);color:var(--ink);padding:72px 32px 32px;transform:translateX(-100%);visibility:hidden;transition:transform .25s ease,visibility .25s;border-right:1px solid var(--line);overflow-y:auto}
 .drawer.open{transform:none;visibility:visible}
-.drawer .who{font:600 16px/1.5 var(--sans)}
-.drawer .when{font:400 16px/1.5 var(--sans);color:#767676}
-.drawer nav{display:flex;flex-direction:column;margin:48px 0 24px}
-.drawer nav a{font:600 24px/1.5 var(--sans);text-decoration:none;color:#21201F;padding:12px 0}
-.drawer nav a[aria-current="page"]{text-decoration:underline;text-underline-offset:6px}
-.drawer .close{position:absolute;top:12px;right:12px;width:44px;height:44px;border:0;background:none;font-size:28px;line-height:1;cursor:pointer;color:#21201F}
-.shade{position:fixed;inset:0;z-index:35;background:rgba(0,0,0,.25);display:none}
+.drawer .who{font:400 20px/1.4 var(--display);letter-spacing:3px;text-transform:uppercase}
+.drawer .when{font:italic 400 15px/1.6 var(--serif);margin:6px 0 0}
+.drawer .when+.when{margin:0}
+.drawer nav{display:flex;flex-direction:column;align-items:flex-start;margin:36px 0 28px;padding:28px 0 0;border-top:1px solid var(--line)}
+.drawer nav a{font:400 18px/1.6 var(--serif);text-decoration:none;color:var(--ink);padding:10px 0 4px;border-bottom:3px solid transparent}
+.drawer nav a[aria-current="page"]{border-bottom-color:var(--ink)}
+.drawer .close{position:absolute;top:12px;left:12px;width:44px;height:44px;border:0;border-radius:50%;background:none;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--ink)}
+.drawer .close:hover{background:rgba(137,100,92,.1)}
+.shade{position:fixed;inset:0;z-index:35;background:rgba(74,54,49,.35);display:none}
 .shade.open{display:block}
 @media (max-width:767px){
   .top{display:none}
@@ -273,7 +275,7 @@ ${preview ? `<div class="preview-note"><b>Preview of the new website.</b> ${s.we
 <button type="button" class="burger" aria-label="Menu" aria-expanded="false" aria-controls="drawer"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
 ${rsvp ? rsvp.replace('class="rsvp"', 'class="rsvp phone-rsvp"') : ""}
 <div class="shade"></div>
-<aside class="drawer" id="drawer" aria-hidden="true" aria-label="Menu"><button type="button" class="close" aria-label="Close the menu">×</button>
+<aside class="drawer" id="drawer" aria-hidden="true" aria-label="Menu"><button type="button" class="close" aria-label="Close the menu"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
 <div class="who">${escapeHtml(SITE.header)}</div><div class="when">${escapeHtml(SITE.date)}</div><div class="when">${escapeHtml(SITE.place)}</div>
 <nav aria-label="Site">${links}</nav>${rsvp}</aside>
 <div class="frame"><div class="inner" id="main">${main}</div>
