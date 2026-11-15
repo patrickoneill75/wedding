@@ -85,6 +85,7 @@ const PAGES = [
   ["seating.html", "Seating", "seating", true],
   ["runofshow.html", "Run of show", "runofshow", true],
   ["communications.html", "Communications", "communications", true],
+  ["website.html", "Website", "website", true],
   ["reports.html", "Reports", "reports", false],
   ["settings.html", "Settings", "admin", true],
 ];

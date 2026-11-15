@@ -63,6 +63,15 @@
     `application/ics` and go only to guests who haven't declined (`eventsFor`). An email's `title` is a name for
     admins on the Communications page; it never goes into an email (a test checks).
 
+12. **The coded website** (`src/website.js`, the Website page) replaces the Zola copy once
+    `settings.web_live` is on; until then it previews at `/_new/` for the Website page
+    only. Pages live in `web_pages` (bodies cleaned by `sanitizeHtml(html, { page: true })`,
+    which also keeps our photos and links within the site); photos in `web_photos` as
+    BLOBs, resized to a JPEG and a thumbnail in the browser (D1 keeps a value up to 2 MB)
+    and served from `/_site/photo/<id>`. "Fill from the Zola page" picks the words out in
+    the browser, so the Worker never parses a whole Zola page (Workers Free CPU time).
+    The editor's look mirrors `SITE_CSS`; change both together.
+
 ## Workflow
 
 When a piece of work is finished (tests green, pushed), open a pull request for it

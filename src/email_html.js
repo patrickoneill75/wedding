@@ -41,11 +41,29 @@ export function safeHref(raw) {
   return null;
 }
 
+/** An attribute's value from a tag's attribute text, or null. */
+function attrOf(attrs, name) {
+  const m = attrs.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"));
+  return m ? m[1] ?? m[2] ?? m[3] : null;
+}
+/** A website page's link to the site itself: "/travel", "/", "#top". */
+function pageHref(raw) {
+  const href = decodeEntities(String(raw || "")).trim();
+  return /^\/[a-z0-9\-/]*(#[A-Za-z0-9_-]+)?$/i.test(href) || /^#[A-Za-z0-9_-]+$/.test(href) ? href : null;
+}
+/** A photo a website page may show: one we host, or any https address. */
+function pageImage(raw) {
+  const src = decodeEntities(String(raw || "")).trim();
+  return /^\/_site\/photo\/\d+(\/thumb)?$/.test(src) || /^https:\/\/[^\s"<>]+$/i.test(src) ? src : null;
+}
+
 /**
  * The editor's HTML with only the tags above, no styles or scripts, links only to safe
  * places, and every tag closed. Text keeps its entities; a stray < or & is escaped.
+ * `page` is for the website's pages (src/website.js): it also keeps photos (our own
+ * uploads, or https) and links to the site's own pages ("/travel", "#top").
  */
-export function sanitizeHtml(html) {
+export function sanitizeHtml(html, { page = false } = {}) {
   const out = [];
   const open = [];
   let dropping = null;
@@ -83,6 +101,14 @@ export function sanitizeHtml(html) {
       continue;
     }
     const name = RENAME[raw] || raw;
+    if (page && name === "img") {
+      if (closing) continue;
+      const src = pageImage(attrOf(m[3], "src"));
+      if (!src) continue;
+      wrap();
+      out.push(`<img src="${escapeHtml(src)}" alt="${escapeHtml(decodeEntities(attrOf(m[3], "alt") || "").slice(0, 300))}">`);
+      continue;
+    }
     if (!KEEP.has(name)) continue;
     if (closing) {
       const at = open.lastIndexOf(name);
@@ -102,8 +128,8 @@ export function sanitizeHtml(html) {
       continue;
     }
     if (name === "a") {
-      const hrefMatch = m[3].match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
-      const href = hrefMatch ? safeHref(hrefMatch[1] ?? hrefMatch[2] ?? hrefMatch[3]) : null;
+      const rawHref = attrOf(m[3], "href");
+      const href = rawHref === null ? null : safeHref(rawHref) || (page ? pageHref(rawHref) : null);
       if (!href) continue; // no safe link: keep the words only
       const classMatch = m[3].match(/\bclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
       const button = /\bbutton\b/.test(classMatch ? classMatch[1] ?? classMatch[2] ?? classMatch[3] : "");

@@ -28,6 +28,7 @@ export const PAGE_LABELS = {
   runofshow: "Run of show (and the day-of view)",
   reports: "Reports",
   communications: "Communications (guest emails, calendar invite, RSVP page)",
+  website: "Website (its pages and gallery photos)",
 };
 
 function cleanUser(input) {

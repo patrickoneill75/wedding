@@ -49,7 +49,7 @@ const longDate = (iso) => (/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))
 // background, and closes the gap under the site's menu: the shell keeps its header's
 // containers, whose padding and heights were made for the page that was cut away, so the
 // guide is pulled up to GAP below the lowest thing the header actually shows.
-const GUIDE_CSS = `
+export const GUIDE_CSS = `
 html{scroll-behavior:smooth;scroll-padding-top:calc(var(--wm-bar,0px) + 64px)}
 .wm-guide{max-width:680px;margin:0 auto;padding:8px 16px 40px;color:var(--wm-text,#3d3833);font:16.5px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif;text-align:left}
 .wm-guide *{box-sizing:border-box}
@@ -94,7 +94,7 @@ r.style.setProperty("--wm-bar",(b&&getComputedStyle(b).display!=="none"?b.offset
 fit();addEventListener("resize",fit);addEventListener("load",fit);if(document.fonts&&document.fonts.ready)document.fonts.ready.then(fit)})();`;
 
 /** The page's content (inside .wm-guide). `preview` adds the banner an admin sees while it's hidden. */
-function guideBody({ weddingDate = "", preview = false }) {
+export function guideBody({ weddingDate = "", preview = false }) {
   const when = [longDate(weddingDate), CITY].filter(Boolean).join(" · ");
   const jump = SECTIONS.map((s) => `<a href="#${anchor(s.title)}">${escapeHtml(s.short || s.title)}</a>`).join("");
   const sections = SECTIONS.map((s) => {

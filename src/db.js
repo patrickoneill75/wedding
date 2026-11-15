@@ -435,6 +435,34 @@ const MIGRATIONS = [
   [
     `ALTER TABLE guests ADD COLUMN post_wedding_call INTEGER NOT NULL DEFAULT 0`,
   ],
+  // 22: the website, coded here (src/website.js) instead of copied from Zola: its pages,
+  // written in the control panel's editor, and the gallery's photos (each a resized
+  // JPEG and a thumbnail, uploaded from the browser).
+  [
+    `CREATE TABLE IF NOT EXISTS web_pages (
+       id INTEGER PRIMARY KEY,
+       slug TEXT NOT NULL UNIQUE,
+       title TEXT NOT NULL,
+       kind TEXT NOT NULL DEFAULT 'text',
+       body TEXT NOT NULL DEFAULT '',
+       url TEXT NOT NULL DEFAULT '',
+       in_menu INTEGER NOT NULL DEFAULT 1,
+       visible INTEGER NOT NULL DEFAULT 1,
+       sort_order INTEGER NOT NULL DEFAULT 0,
+       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+     )`,
+    `CREATE TABLE IF NOT EXISTS web_photos (
+       id INTEGER PRIMARY KEY,
+       caption TEXT NOT NULL DEFAULT '',
+       sort_order INTEGER NOT NULL DEFAULT 0,
+       width INTEGER NOT NULL DEFAULT 0,
+       height INTEGER NOT NULL DEFAULT 0,
+       mime TEXT NOT NULL,
+       data BLOB NOT NULL,
+       thumb BLOB NOT NULL,
+       created_at TEXT NOT NULL DEFAULT (datetime('now'))
+     )`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
