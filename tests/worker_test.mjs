@@ -2092,7 +2092,18 @@ test("website: a preview at /_new/ for the Website page only, then live for gues
   assert.ok(!home.data.includes('href="/_new/things-to-do"'), "a hidden page isn't in the menu");
   assert.match(home.data, /<img class="cover" src="\/_site\/photo\/\d+" alt="Us"/);
   assert.match(home.data, /class="countdown" data-end="\d+"/);
-  assert.match(home.data, /June 12, 2099 · The Test Barn/);
+  // Bug: the coded home page didn't look like the Zola one, which opens with both names
+  // big and side by side, "and" between them, then the date and the place.
+  assert.ok(home.data.includes('<h1 class="couple"><span class="who left"><span>Sam</span></span><span class="and">and</span><span class="who right"><span>Alex</span></span></h1>'),
+    "the names from Settings until the Website page gives full ones");
+  assert.ok(home.data.includes('<p class="date">June 12, 2099</p><p class="place">The Test Barn</p>'), "the date, and the venue until a place is given");
+  await api("/api/admin/website/settings", { method: "PUT", body: { home: { header: "Alex & Sam", first: "Sam  Example-Smith", second: "Alex Test", place: "Testville, IN", extra: "x" } } });
+  const set = await api("/_new/");
+  assert.ok(set.data.includes('<p class="names"><a href="/_new">Alex &#38; Sam</a></p>'), "the names over the menu can differ from the big ones");
+  assert.ok(set.data.includes('<span class="who left"><span>Sam</span><span>Example-Smith</span></span>') && set.data.includes('<span class="who right"><span>Alex</span><span>Test</span></span>'), "a full name breaks after the first word");
+  assert.ok(set.data.includes('<p class="place">Testville, IN</p>'));
+  assert.deepEqual((await api("/api/admin/website")).data.home, { header: "Alex & Sam", first: "Sam Example-Smith", second: "Alex Test", place: "Testville, IN" });
+  await api("/api/admin/website/settings", { method: "PUT", body: { home: { header: "", first: "", second: "", place: "" } } });
   assert.ok((await api("/_new/travel")).data.includes("<p>The Test Inn.</p>"));
   assert.equal((await api("/_new/registry")).status, 302, "a menu link goes to its site");
   const hidden = await api("/_new/things-to-do");

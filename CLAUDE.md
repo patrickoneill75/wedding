@@ -70,7 +70,8 @@
     BLOBs, resized to a JPEG and a thumbnail in the browser (D1 keeps a value up to 2 MB)
     and served from `/_site/photo/<id>`. "Fill from the Zola page" picks the words out in
     the browser, so the Worker never parses a whole Zola page (Workers Free CPU time).
-    The editor's look mirrors `SITE_CSS`; change both together.
+    The editor's look mirrors `SITE_CSS`; change both together. The names at the top
+    (`settings.web_home`) are kept in D1 like every other personal detail, never in code.
 
 ## Workflow
 

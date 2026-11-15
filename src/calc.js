@@ -99,6 +99,10 @@ export const DEFAULT_SETTINGS = {
   // and the gallery photo the home page opens with (null: the first one).
   web_live: false,
   web_cover_photo: null,
+  // The top of the coded site: the names over every page's menu, and the home page's
+  // two names, side by side, with the place under the date. Blank: from couple_names
+  // and venue.
+  web_home: { header: "", first: "", second: "", place: "" },
   rsvp_intro: "",
   tax_rate: 0.07,
   guest_basis: "weighted",

@@ -29,7 +29,7 @@
  *                                   height, caption
  *   PUT    website/photos/:id       { caption } / DELETE website/photos/:id
  *   POST   website/photos/order     { ids }
- *   PUT    website/settings         { live, cover }
+ *   PUT    website/settings         { live, cover, home: { header, first, second, place } }
  */
 
 import { currentUser, json } from "./auth.js";
@@ -118,7 +118,10 @@ async function overview(env) {
   }
   const photos = await all(env, "SELECT id, caption, sort_order, width, height FROM web_photos ORDER BY sort_order, id");
   const copies = await all(env, "SELECT path FROM site_pages WHERE path LIKE '/%'");
-  return { pages, photos, live: Boolean(s.web_live), cover: s.web_cover_photo ?? null, copies: copies.map((c) => c.path), preview: `${PREVIEW_BASE}/` };
+  return {
+    pages, photos, live: Boolean(s.web_live), cover: s.web_cover_photo ?? null, copies: copies.map((c) => c.path), preview: `${PREVIEW_BASE}/`,
+    home: { header: "", first: "", second: "", place: "", ...(s.web_home || {}) }, defaults: topOf({ ...s, web_home: {} }),
+  };
 }
 
 async function body(request) {
@@ -194,6 +197,11 @@ export async function handleWebsite(parts, method, request, env) {
   if (section === "settings" && method === "PUT") {
     const input = await body(request);
     if (has(input, "live")) await setSetting(env, "web_live", Boolean(bool(input.live)));
+    if (has(input, "home")) {
+      const home = input.home && typeof input.home === "object" ? input.home : {};
+      const text = (key) => (has(home, key) ? String(home[key] ?? "").replace(/\s+/g, " ").trim().slice(0, 80) : "");
+      await setSetting(env, "web_home", { header: text("header"), first: text("first"), second: text("second"), place: text("place") });
+    }
     if (has(input, "cover")) {
       const cover = input.cover === null || input.cover === "" ? null : Number(input.cover);
       if (cover !== null && !(await first(env, "SELECT id FROM web_photos WHERE id = ?", cover))) throw new Error("That photo isn't in the gallery.");
@@ -289,16 +297,16 @@ export async function handleWebsite(parts, method, request, env) {
 // Also served at /_site/web.css for the editor, so what's written there looks like this.
 export const SITE_CSS = `
 :root{--bg:#F5EFE8;--ink:#6E5550;--head:#8C665D;--link:#7A5850;--muted:#86675E;--line:#E2D3C9;--wash:#E7DCD2;--accent:${RSVP_COLOR};
---display:'Forum','Libre Baskerville',Georgia,serif;--serif:'Libre Baskerville',Georgia,serif;--sans:'Lato','Helvetica Neue',Arial,sans-serif}
+--display:'Cormorant Garamond','Libre Baskerville',Georgia,serif;--serif:'Libre Baskerville',Georgia,serif;--sans:'Lato','Helvetica Neue',Arial,sans-serif}
 *{box-sizing:border-box}
 body.web{margin:0;background:var(--bg);color:var(--ink);font:17px/1.7 var(--sans)}
 .web a{color:var(--link)}.web a:hover{color:#5E423C}
 .skip{position:absolute;left:-999px;top:8px;background:#fff;padding:8px 12px;border-radius:6px}.skip:focus{left:8px;z-index:10}
 .preview-note{background:#FFF4D6;color:#5A4300;border-bottom:1px solid #F0D27A;padding:10px max(16px,env(safe-area-inset-left,0px));font:14px var(--sans);text-align:center}
-.site-head{max-width:1120px;margin:0 auto;padding:48px max(16px,env(safe-area-inset-left,0px)) 0;display:flex;flex-direction:column;align-items:center;gap:26px;text-align:center}
-.names{margin:0;font:400 clamp(38px,6vw,64px)/1.05 var(--display);letter-spacing:.16em;text-transform:uppercase}
+.site-head{max-width:1120px;margin:0 auto;padding:36px max(16px,env(safe-area-inset-left,0px)) 0;display:flex;flex-direction:column;align-items:center;gap:28px;text-align:center}
+.names{margin:0;font:500 clamp(30px,3.8vw,48px)/1.1 var(--display);letter-spacing:.12em;text-transform:uppercase}
 .names a{color:var(--head);text-decoration:none}
-.site-nav{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:12px 40px;font:400 20px var(--serif)}
+.site-nav{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:12px 36px;font:400 20px var(--serif)}
 .site-nav a{color:var(--link);text-decoration:none;padding-bottom:6px;border-bottom:3px solid transparent}
 .site-nav a:hover{border-bottom-color:#D9C3B8}
 .site-nav a[aria-current="page"]{border-bottom-color:var(--head)}
@@ -316,7 +324,14 @@ body.web{margin:0;background:var(--bg);color:var(--ink);font:17px/1.7 var(--sans
 .page-title{margin:0;font:400 clamp(32px,4.5vw,42px)/1.15 var(--serif);color:var(--head);text-align:center;text-wrap:balance}
 .cover{width:100%;max-height:640px;object-fit:cover;border-radius:4px;display:block}
 .cover-empty{width:100%;aspect-ratio:16/7;border-radius:4px;background:var(--wash)}
-.when{margin:0;font:700 13px var(--sans);letter-spacing:.24em;text-transform:uppercase;color:var(--muted);text-align:center}
+.hero{width:100%;display:flex;flex-direction:column;align-items:center;gap:14px;padding:clamp(48px,10vw,150px) 0 clamp(24px,5vw,60px);text-align:center;color:var(--head)}
+.couple{margin:0;font:inherit;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:clamp(20px,5vw,64px);width:100%}
+.who{margin:0;font:500 clamp(40px,7.2vw,86px)/1.12 var(--display);letter-spacing:.06em;text-transform:uppercase;color:var(--head)}
+.who{display:block}.who span{display:block}
+.who.left{text-align:right}.who.right{text-align:left}
+.and{font:400 clamp(18px,2vw,26px) var(--serif);color:var(--head)}
+.date{margin:clamp(40px,8vw,110px) 0 0;font:500 clamp(28px,3.4vw,42px)/1.2 var(--display);letter-spacing:.14em;color:var(--head);font-variant-numeric:lining-nums}
+.place{margin:0;font:400 clamp(18px,1.8vw,24px)/1.4 var(--serif);color:var(--head)}
 .countdown{display:flex;gap:clamp(14px,4vw,36px);justify-content:center}
 .countdown div{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:64px}
 .countdown b{font:400 clamp(32px,5vw,44px)/1 var(--serif);color:var(--head);font-variant-numeric:tabular-nums}
@@ -351,10 +366,11 @@ body.web{margin:0;background:var(--bg);color:var(--ink);font:17px/1.7 var(--sans
 .site-foot{margin-top:72px;padding:40px max(16px,env(safe-area-inset-left,0px)) 64px;border-top:1px solid var(--line);text-align:center;display:flex;flex-direction:column;gap:12px}
 .site-foot p{margin:0;font:400 18px var(--serif);letter-spacing:.04em;color:var(--head)}
 .site-foot a{font:700 14px var(--sans);letter-spacing:.12em;text-transform:uppercase}
-@media (max-width:760px){.site-nav{display:none}.phone-bar{display:flex}.site-head{padding-top:12px;gap:18px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:760px){.site-nav{display:none}.phone-bar{display:flex}.site-head{padding-top:12px;gap:18px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.couple{grid-template-columns:minmax(0,1fr);gap:10px}.who.left,.who.right{text-align:center}}
 @media (prefers-reduced-motion:reduce){*{scroll-behavior:auto !important}}`;
 
-const FONTS = "https://fonts.googleapis.com/css2?family=Forum&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Lato:wght@400;700&display=swap";
+const FONTS = "https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Lato:wght@400;700&display=swap";
 
 const longDate = (iso) => (/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))
   ? new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" })
@@ -386,16 +402,38 @@ function menuLinks(pages, current, base) {
   }).join("");
 }
 
+/** The top of the site: the names over the menu, and the home page's two names and place. */
+export function topOf(s) {
+  const home = s.web_home || {};
+  const couple = String(s.couple_names || "").split(/\s+(?:&|and)\s+/i).map((n) => n.trim()).filter(Boolean);
+  return {
+    header: String(home.header || "").trim() || s.couple_names || "Our wedding",
+    first: String(home.first || "").trim() || couple[0] || "",
+    second: String(home.second || "").trim() || couple[1] || "",
+    place: String(home.place || "").trim() || s.venue || "",
+  };
+}
+
+/** A name in big capitals, a line per word after the first ("Patrick" / "O'Neill"). */
+const nameLines = (name) => {
+  const [firstWord, ...rest] = String(name).trim().split(/\s+/);
+  return [firstWord, rest.join(" ")].filter(Boolean).map((line) => `<span>${escapeHtml(line)}</span>`).join("");
+};
+
 function homeBody(page, s, photos) {
   const cover = photos.find((p) => p.id === s.web_cover_photo) || photos[0];
   const end = countdownEnd(s);
-  const when = [longDate(s.wedding_date), s.venue].filter(Boolean).join(" · ");
+  const top = topOf(s);
   const units = ["Days", "Hours", "Minutes", "Seconds"];
-  return (cover ? `<img class="cover" src="/_site/photo/${cover.id}" alt="${escapeHtml(cover.caption || "")}" width="${cover.width || ""}" height="${cover.height || ""}">` : "")
-    + `<div style="display:flex;flex-direction:column;align-items:center;gap:22px">`
-    + (when ? `<p class="when">${escapeHtml(when)}</p>` : "")
+  const couple = top.first && top.second
+    ? `<h1 class="couple"><span class="who left">${nameLines(top.first)}</span><span class="and">and</span><span class="who right">${nameLines(top.second)}</span></h1>`
+    : `<h1 class="who">${escapeHtml(top.first || top.header)}</h1>`;
+  return `<section class="hero">${couple}`
+    + (s.wedding_date ? `<p class="date">${escapeHtml(longDate(s.wedding_date))}</p>` : "")
+    + (top.place ? `<p class="place">${escapeHtml(top.place)}</p>` : "")
+    + `</section>`
     + (end && end > Date.now() ? `<div class="countdown" data-end="${end}" role="timer" aria-label="Time until the wedding">${units.map((u) => `<div><b>0</b><span>${u}</span></div>`).join("")}</div>` : "")
-    + `</div>`
+    + (cover ? `<img class="cover" src="/_site/photo/${cover.id}" alt="${escapeHtml(cover.caption || "")}" width="${cover.width || ""}" height="${cover.height || ""}">` : "")
     + (page.body ? `<div class="prose">${page.body}</div>` : "")
     + (s.rsvp_open ? `<div class="cta"><h2>Will you be there?</h2><a class="rsvp" href="/rsvp/">RSVP${s.rsvp_deadline ? ` by ${escapeHtml(longDate(s.rsvp_deadline).replace(/, \d{4}$/, ""))}` : ""}</a></div>` : "");
 }
@@ -416,7 +454,7 @@ function galleryBody(page, photos) {
  * (no image data), `base` "" live or PREVIEW_BASE in the preview.
  */
 export function renderWebPage({ page, pages, photos, s, base = "", preview = false, missing = false }) {
-  const names = s.couple_names || "Our wedding";
+  const names = topOf(s).header;
   const accent = /^#[0-9a-f]{6}$/i.test(s.rsvp_button_color) ? s.rsvp_button_color : RSVP_COLOR;
   const rsvp = s.rsvp_open ? `<a class="rsvp" href="/rsvp/">RSVP</a>` : "";
   let main;
