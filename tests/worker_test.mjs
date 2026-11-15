@@ -1991,151 +1991,67 @@ async function codedSite() {
   } });
   assert.equal((await ingest(env, JSON.parse(JSON.stringify(built)))).status, 200);
   const api = await adminClient(env);
-  await api("/api/admin/settings", { method: "PUT", body: { couple_names: "Sam & Alex", wedding_date: "2099-06-12", venue: "The Test Barn" } });
+  await api("/api/admin/settings", { method: "PUT", body: { wedding_date: "2099-06-12", rsvp_open: true } });
   return { env, api };
 }
-const photoForm = (bytes, { caption = "", type = "image/jpeg" } = {}) => {
-  const form = new FormData();
-  form.set("photo", new Blob([new Uint8Array(bytes)], { type }), "p.jpg");
-  form.set("thumb", new Blob([new Uint8Array(bytes.slice(0, 2))], { type }), "t.jpg");
-  form.set("width", "1600");
-  form.set("height", "1200");
-  form.set("caption", caption);
-  return form;
-};
 
-test("website: the first visit sets the pages up from the Zola copy's menu, plus the guide", async () => {
+// Asked for: the website remade in code from the Zola site, page for page, with no editor.
+test("website: the coded pages remake the Zola site, from the content in the code", async () => {
   const { api } = await codedSite();
-  const site = (await api("/api/admin/website")).data;
-  assert.deepEqual(site.pages.map((p) => [p.slug, p.title, p.kind]), [
-    ["", "Home", "home"], ["travel", "Travel", "text"], ["registry", "Registry", "link"], ["things-to-do", "Things to Do", "guide"],
-  ]);
-  assert.equal(site.pages.find((p) => p.kind === "link").url, `https://www.zola.com/wedding/${SLUG}/registry`);
-  assert.equal(site.pages.find((p) => p.kind === "guide").visible, 0, "the guide stays hidden like the published Things to Do page");
-  assert.equal(site.live, false);
-  assert.deepEqual(site.copies.sort(), ["/", "/travel"], "the Zola pages the editor can fill from");
-  assert.equal((await api("/api/admin/website")).data.pages.length, 4, "set up once");
-  const copy = await api("/api/admin/website/copy?path=/travel");
-  assert.ok(copy.data.html.includes("Getting there"));
-  assert.equal((await api("/api/admin/website/copy?path=/nope")).status, 404);
-});
-
-test("website: pages are edited with clean HTML, safe addresses, and the home page and guide can't be deleted", async () => {
-  const { api } = await codedSite();
-  const pages = (await api("/api/admin/website")).data.pages;
-  const travel = pages.find((p) => p.slug === "travel");
-  const saved = await api(`/api/admin/website/pages/${travel.id}`, { method: "PUT", body: {
-    title: "Getting Here", slug: "getting-here",
-    body: '<h1>Stay</h1><p onclick="x()">Hi <a href="/faqs">FAQs</a> <a href="javascript:alert(1)">bad</a></p><script>steal()</script><img src="/_site/photo/9" alt="Us"><img src="http://plain.example/x.jpg">',
-  } });
-  assert.equal(saved.status, 200, JSON.stringify(saved.data));
-  const page = saved.data.pages.find((p) => p.id === travel.id);
-  assert.equal(page.slug, "getting-here");
-  assert.equal(page.body, '<h2>Stay</h2><p>Hi <a href="/faqs">FAQs</a> bad</p><p><img src="/_site/photo/9" alt="Us"></p>');
-  assert.equal((await api(`/api/admin/website/pages/${travel.id}`, { method: "PUT", body: { slug: "admin" } })).status, 400, "our own paths are taken");
-  assert.equal((await api(`/api/admin/website/pages/${travel.id}`, { method: "PUT", body: { slug: "Not OK" } })).status, 400);
-  assert.equal((await api("/api/admin/website/pages", { method: "POST", body: { title: "Getting Here" } })).status, 400, "one page per address");
-  const made = await api("/api/admin/website/pages", { method: "POST", body: { title: "Wedding Party", kind: "gallery" } });
-  assert.equal(made.status, 201);
-  assert.deepEqual(made.data.pages.at(-1), { ...made.data.pages.at(-1), slug: "wedding-party", kind: "gallery", in_menu: 1, visible: 1 });
-  assert.equal((await api("/api/admin/website/pages", { method: "POST", body: { title: "Hotel", kind: "link", url: "javascript:x" } })).status, 400);
-  const home = pages.find((p) => p.kind === "home");
-  const guide = pages.find((p) => p.kind === "guide");
-  assert.equal((await api(`/api/admin/website/pages/${home.id}`, { method: "DELETE" })).status, 400);
-  assert.equal((await api(`/api/admin/website/pages/${guide.id}`, { method: "DELETE" })).status, 400);
-  await api(`/api/admin/website/pages/${home.id}`, { method: "PUT", body: { visible: false, slug: "elsewhere" } });
-  const after = (await api("/api/admin/website")).data.pages.find((p) => p.id === home.id);
-  assert.deepEqual([after.slug, after.visible], ["", 1], "the home page stays at / and can't be hidden");
-  const ids = (await api("/api/admin/website")).data.pages.map((p) => p.id).reverse();
-  assert.deepEqual((await api("/api/admin/website/pages/order", { method: "POST", body: { ids } })).data.pages.map((p) => p.id), ids);
-});
-
-test("website: photos upload, serve, caption, reorder, cover and delete", async () => {
-  const { env, api } = await codedSite();
-  const up = await api("/api/admin/website/photos", { method: "POST", form: photoForm([1, 2, 3, 4], { caption: "The proposal" }) });
-  assert.equal(up.status, 201, JSON.stringify(up.data));
-  const second = (await api("/api/admin/website/photos", { method: "POST", form: photoForm([9, 8, 7]) })).data.id;
-  const first = up.data.id;
-  const full = await worker.fetch(new Request(`${ORIGIN}/_site/photo/${first}`), env);
-  assert.equal(full.headers.get("content-type"), "image/jpeg");
-  assert.deepEqual([...new Uint8Array(await full.arrayBuffer())], [1, 2, 3, 4]);
-  const thumb = await worker.fetch(new Request(`${ORIGIN}/_site/photo/${first}/thumb`), env);
-  assert.deepEqual([...new Uint8Array(await thumb.arrayBuffer())], [1, 2]);
-  assert.equal((await worker.fetch(new Request(`${ORIGIN}/_site/photo/999`), env)).status, 404);
-  assert.equal((await api("/api/admin/website/photos", { method: "POST", form: photoForm([1], { type: "image/gif" }) })).status, 400, "JPEG, PNG or WebP");
-  let site = (await api(`/api/admin/website/photos/${second}`, { method: "PUT", body: { caption: "Our second date" } })).data;
-  assert.deepEqual(site.photos.map((p) => [p.id, p.caption]), [[first, "The proposal"], [second, "Our second date"]]);
-  assert.ok(!("data" in site.photos[0]), "the list carries no image data");
-  site = (await api("/api/admin/website/photos/order", { method: "POST", body: { ids: [second, first] } })).data;
-  assert.deepEqual(site.photos.map((p) => p.id), [second, first]);
-  assert.equal((await api("/api/admin/website/settings", { method: "PUT", body: { cover: first } })).data.cover, first);
-  assert.equal((await api("/api/admin/website/settings", { method: "PUT", body: { cover: 999 } })).status, 400);
-  const travel = site.pages.find((p) => p.slug === "travel");
-  await api(`/api/admin/website/pages/${travel.id}`, { method: "PUT", body: { body: `<p>Before</p><img src="/_site/photo/${first}" alt="x"><p>After <img src="/_site/photo/${second}" alt="y"></p>` } });
-  site = (await api(`/api/admin/website/photos/${first}`, { method: "DELETE" })).data;
-  assert.deepEqual([site.photos.length, site.cover], [1, null], "deleting the cover photo clears it");
-  assert.equal(site.pages.find((p) => p.id === travel.id).body, `<p>Before</p><p>After <img src="/_site/photo/${second}" alt="y"></p>`, "and takes it off the pages it was on");
+  const { FAQS, GALLERY, SITE, TRAVEL } = await import("../src/website_content.js");
+  const home = await api("/_new/");
+  assert.equal(home.status, 200);
+  assert.ok(home.data.includes(`<h1 class="couple"><span class="who left"><span>${SITE.first[0]}</span><span>${SITE.first[1].replace("'", "&#39;")}</span></span><span class="and">and</span>`), "both names, big and side by side");
+  assert.ok(home.data.includes(`<p class="date">${SITE.date}</p><p class="place">${SITE.place}</p>`));
+  assert.match(home.data, /class="countdown" data-end="\d+"/);
+  assert.ok(home.data.includes('<a href="/_new/" aria-current="page">Home</a><a href="/_new/photo">Gallery</a><a href="/_new/travel">Travel</a><a href="/_new/faq">FAQs</a><a class="rsvp" href="/rsvp/">RSVP</a>'), "the menu in Zola's order, then the RSVP pill");
+  assert.ok(!home.data.includes("Things to Do</a>"), "Things to Do waits until it's published");
+  assert.ok(home.data.includes("Radiograph-Regular.otf") && home.data.includes(".frame::before"), "the site's display face and its side lines");
+  const photos = (await api("/_new/photo")).data;
+  assert.equal((photos.match(/<li class="g\d+"><button/g) || []).length, GALLERY.length);
+  assert.ok(photos.includes('<img src="/_site/gallery/01.jpg"'), "the photos are ours, not Zola's");
+  const travel = (await api("/_new/travel")).data;
+  assert.equal((travel.match(/<li class="hotel">/g) || []).length, TRAVEL.hotels.length);
+  assert.ok(travel.includes("<h2>Stone Soup Inn</h2>") && travel.includes('href="https://www.stonesoupinn.com/rooms-overview" target="_blank"'));
+  const faq = (await api("/_new/faq")).data;
+  for (const f of FAQS) assert.ok(faq.includes(f.q.replace("'", "&#39;")));
+  assert.equal((await api("/_new/nope")).status, 404);
+  for (const file of GALLERY.map((g) => g.src)) assert.ok(fs.existsSync(path.join(ROOT, "public", file)), `${file} is in public/`);
 });
 
 test("website: a preview at /_new/ for the Website page only, then live for guests in place of the Zola copy", async () => {
   const { env, api } = await codedSite();
-  const pages = (await api("/api/admin/website")).data.pages;
-  await api("/api/admin/website/photos", { method: "POST", form: photoForm([1, 2, 3], { caption: "Us" }) });
-  const travel = pages.find((p) => p.slug === "travel");
-  await api(`/api/admin/website/pages/${travel.id}`, { method: "PUT", body: { body: "<h3>Where to stay</h3><p>The Test Inn.</p>" } });
   assert.equal((await call(env, "/_new/")).status, 404, "guests can't see the preview");
-  const home = await api("/_new/");
-  assert.equal(home.status, 200);
-  assert.match(home.data, /<b>Preview of the new website\.<\/b>/);
-  assert.match(home.data, /<p class="names"><a href="\/_new">Sam &#38; Alex<\/a><\/p>/);
-  assert.ok(home.data.includes('<a href="/_new/travel">Travel</a>') && home.data.includes(`href="https://www.zola.com/wedding/${SLUG}/registry" target="_blank"`), "the menu, in order");
-  assert.ok(!home.data.includes('href="/_new/things-to-do"'), "a hidden page isn't in the menu");
-  assert.match(home.data, /<img class="cover" src="\/_site\/photo\/\d+" alt="Us"/);
-  assert.match(home.data, /class="countdown" data-end="\d+"/);
-  // Bug: the coded home page didn't look like the Zola one, which opens with both names
-  // big and side by side, "and" between them, then the date and the place.
-  assert.ok(home.data.includes('<h1 class="couple"><span class="who left"><span>Sam</span></span><span class="and">and</span><span class="who right"><span>Alex</span></span></h1>'),
-    "the names from Settings until the Website page gives full ones");
-  assert.ok(home.data.includes('<p class="date">June 12, 2099</p><p class="place">The Test Barn</p>'), "the date, and the venue until a place is given");
-  await api("/api/admin/website/settings", { method: "PUT", body: { home: { header: "Alex & Sam", first: "Sam  Example-Smith", second: "Alex Test", place: "Testville, IN", extra: "x" } } });
-  const set = await api("/_new/");
-  assert.ok(set.data.includes('<p class="names"><a href="/_new">Alex &#38; Sam</a></p>'), "the names over the menu can differ from the big ones");
-  assert.ok(set.data.includes('<span class="who left"><span>Sam</span><span>Example-Smith</span></span>') && set.data.includes('<span class="who right"><span>Alex</span><span>Test</span></span>'), "a full name breaks after the first word");
-  assert.ok(set.data.includes('<p class="place">Testville, IN</p>'));
-  assert.deepEqual((await api("/api/admin/website")).data.home, { header: "Alex & Sam", first: "Sam Example-Smith", second: "Alex Test", place: "Testville, IN" });
-  await api("/api/admin/website/settings", { method: "PUT", body: { home: { header: "", first: "", second: "", place: "" } } });
-  assert.ok((await api("/_new/travel")).data.includes("<p>The Test Inn.</p>"));
-  assert.equal((await api("/_new/registry")).status, 302, "a menu link goes to its site");
-  const hidden = await api("/_new/things-to-do");
-  assert.ok(hidden.status === 200 && hidden.data.includes("This page is hidden from guests") && hidden.data.includes("Commissary</a>"), "a hidden page previews, with a note");
-  assert.equal((await api("/_new/nope")).status, 404);
-
+  assert.match((await api("/_new/")).data, /<b>Preview of the new website\.<\/b>/);
   assert.ok((await call(env, "/travel")).data.includes("Getting there"), "guests still get the Zola copy");
-  await api("/api/admin/website/settings", { method: "PUT", body: { live: true } });
+  const site = (await api("/api/admin/website/settings", { method: "PUT", body: { live: true } })).data;
+  assert.equal(site.live, true);
   const live = await call(env, "/");
-  assert.ok(live.data.includes('class="site-head"') && !live.data.includes("Preview of the new website"), "now the coded site");
+  assert.ok(live.data.includes('<h1 class="couple">') && !live.data.includes("Preview of the new website"), "now the coded site");
   assert.equal(live.headers.get("cache-control"), "public, max-age=60");
-  assert.ok((await call(env, "/travel")).data.includes("<p>The Test Inn.</p>"));
-  assert.equal((await call(env, "/things-to-do")).status, 404, "hidden pages stay hidden");
+  assert.ok((await call(env, "/travel")).data.includes('<li class="hotel">'));
   assert.equal((await call(env, "/nope")).status, 404);
   assert.equal((await call(env, "/rsvp/")).data, "asset", "our own pages still work");
-  const guide = pages.find((p) => p.kind === "guide");
-  await api(`/api/admin/website/pages/${guide.id}`, { method: "PUT", body: { visible: true } });
+  assert.equal((await call(env, "/things-to-do")).status, 404, "Things to Do stays hidden from guests");
+  const preview = await api("/things-to-do");
+  assert.ok(preview.status === 200 && preview.data.includes("Commissary</a>") && preview.data.includes("hidden from guests"), "an admin previews it");
+  await api("/api/admin/settings", { method: "PUT", body: { things_to_do_published: true } });
   const todo = (await call(env, "/things-to-do")).data;
-  assert.ok(todo.includes('class="site-head"') && todo.includes("Commissary</a>") && todo.includes('aria-current="page">Things to Do</a>'), "the guide inside the coded site");
+  assert.ok(todo.includes('aria-current="page">Things to Do</a>') && todo.includes("Commissary</a>"), "the guide inside the coded site");
+  assert.ok((await call(env, "/")).data.includes('<a href="/things-to-do">Things to Do</a>'), "and in its menu");
   await api("/api/admin/website/settings", { method: "PUT", body: { live: false } });
   assert.ok((await call(env, "/travel")).data.includes("Getting there"), "and back to the Zola copy");
 });
 
-test("website: a user with the Website page can edit and preview it; others can't", async () => {
+test("website: a user with the Website page can preview it; others can't", async () => {
   const { env, api } = await codedSite();
   await api("/api/admin/users", { method: "POST", body: { email: "jo@example.com", role: "user", pages: ["website"] } });
   await api("/api/admin/users", { method: "POST", body: { email: "mo@example.com", role: "user", pages: ["guests"] } });
-  const as = async (email) => { const cookie = await sessionCookie(env, email); return (path, opts = {}) => call(env, path, { ...opts, cookie, headers: { "x-wedding": "1" } }); };
+  const as = async (email) => { const cookie = await sessionCookie(env, email); return (p, opts = {}) => call(env, p, { ...opts, cookie, headers: { "x-wedding": "1" } }); };
   const jo = await as("jo@example.com");
   const mo = await as("mo@example.com");
   assert.equal((await jo("/api/admin/website")).status, 200);
-  assert.equal((await jo("/_new/")).status, 200);
+  assert.equal((await jo("/_new/photo")).status, 200);
   assert.equal((await mo("/api/admin/website")).status, 403);
   assert.equal((await mo("/_new/")).status, 404);
 });

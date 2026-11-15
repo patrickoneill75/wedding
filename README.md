@@ -63,13 +63,10 @@ A Cloudflare Worker with two sides:
     place a link to Google Maps. It stays hidden (guests get a 404)
     until Settings publishes it; until then admins see a preview. Publishing adds it to
     the site's menu.
-  - **Website**: the wedding website coded here instead of copied from Zola. Its pages
-    (home, text pages, a photo gallery, the Things to Do guide, menu links like the
-    registry) are written in a WYSIWYG editor that shows them in the site's own fonts and
-    colors, in the order of the menu; "Fill from the Zola page" brings a page's words over
-    from the Zola copy. Gallery photos upload from the browser (resized there first). It
-    previews at `/_new/` until you switch guests to it; switching back to the Zola copy
-    is one button.
+  - **Website**: the wedding website coded here, a page-for-page remake of the Zola site
+    (home with the countdown, gallery, travel, FAQs, and Things to Do once published).
+    Its words are in `src/website_content.js`. It previews at `/_new/` until the Website
+    page switches guests to it; switching back to the Zola copy is one button.
   - **Settings**: wedding details, 7% tax, budget, priority weights, the drinks
     calculator, the expense-form link, Google Drive, the spreadsheet import, and Users:
     the owners in `ADMIN_EMAILS` plus anyone you add, each an admin (everything) or a
@@ -124,7 +121,7 @@ src/email_html.js  guest emails as HTML: the editor's cleaned tags, the plain-te
 src/sync.js        CSV exports and the Drive sync (cron every 5 minutes)
 src/site.js        the Zola website copy: fetch, clean, store, serve
 src/guide.js       the Things to Do page (/things-to-do) and its copy
-src/website.js     the coded website: pages, gallery photos, the preview at /_new/
+src/website.js     the coded website and its preview at /_new/ (words: src/website_content.js)
 scripts/zola_refresh.mjs  runs src/site.js on GitHub and sends the pages to the site
 src/importer.js    one-time import of Wedding_Data.xlsx
 src/xlsx.js        a minimal .xlsx reader (no dependencies)
