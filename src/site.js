@@ -44,7 +44,7 @@ const MAX_PAGES = 15;
 // Paths the copy can never take over.
 // Our own paths: every top-level entry in public/ plus the Worker's. A copied Zola page
 // can never take one of these (a test checks public/ against this list).
-export const RESERVED = new Set(["admin", "api", "rsvp", "submit", "dayof", "call", "things-to-do", "_site", "_headers", "favicon.svg"]);
+export const RESERVED = new Set(["admin", "api", "rsvp", "submit", "dayof", "call", "things-to-do", "_new", "_site", "_headers", "favicon.svg"]);
 // Our Things to Do page (src/guide.js), added to the site's menu once it's published.
 export const THINGS_TO_DO = { path: "/things-to-do", label: "Things to Do" };
 // Where the Things to Do page's content goes in the shell (site_pages row SHELL_PATH):

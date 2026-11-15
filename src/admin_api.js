@@ -26,6 +26,7 @@
  *   POST   import                      the original spreadsheet (multipart)
  *   *      seating/*                   rooms, tables, templates and seats (src/seating.js)
  *   *      vendors/*                   vendors and their contacts (src/vendors.js)
+ *   *      website/*                   the coded website's pages and gallery photos (src/website.js)
  *   *      reports/*                   built-in and custom reports, CSV export (src/reports.js)
  *   *      runofshow/*                 the run of show and guest groups (src/runofshow.js)
  *   *      users/*                     who can sign in, and their pages (src/users.js), admins only
@@ -75,6 +76,7 @@ import { handleVendors } from "./vendors.js";
 import { handleReports } from "./reports.js";
 import { handleRunOfShow } from "./runofshow.js";
 import { handleUsers } from "./users.js";
+import { handleWebsite } from "./website.js";
 import { handleComms } from "./comms.js";
 
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -257,6 +259,7 @@ const ROUTE_PAGES = {
   runofshow: "runofshow",
   reports: "reports",
   comms: "communications",
+  website: "website",
 };
 
 export async function handleAdminApi(route, request, env) {
@@ -533,6 +536,7 @@ export async function handleAdminApi(route, request, env) {
     if (parts[0] === "runofshow") return await handleRunOfShow(parts, method, request, env, body, user);
     if (parts[0] === "users") return await handleUsers(parts, method, request, env, body, user);
     if (parts[0] === "comms") return await handleComms(parts, method, request, env, body, user);
+    if (parts[0] === "website") return await handleWebsite(parts, method, request, env, body);
 
     // ---- settings ----------------------------------------------------------------
     if (route === "settings" && method === "GET") {

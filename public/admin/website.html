@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
+<title>Website — Wedding planner</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Forum&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Lato:wght@400;700&display=swap">
+<style>
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .layout { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .pages { flex: 0 0 260px; padding: 12px; }
+  .pages ol { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .pages li { display: flex; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 8px; }
+  .pages li.on { background: rgba(42, 120, 214, .08); border-color: rgba(42, 120, 214, .3); }
+  .pages li.drop { border-top: 2px solid var(--accent); }
+  .pages li .grip { cursor: grab; color: var(--text-muted); padding: 10px 2px 10px 6px; font-size: 14px; user-select: none; }
+  .pages li .open { flex: 1; text-align: left; border: 0; background: none; padding: 10px 4px; font-weight: 550; min-height: 40px; color: var(--text-primary); }
+  .pages li .tag { font-size: 11px; color: var(--text-muted); padding-right: 4px; }
+  .pages li .tag.off { color: var(--bad); }
+  .pages .move { display: flex; flex-direction: column; }
+  .pages .move button { padding: 0 6px; font-size: 10px; line-height: 1.4; border: 0; background: none; color: var(--text-muted); min-height: 0; }
+  .editor { flex: 999 1 560px; min-width: 0; }
+  .rte { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-top: 12px; }
+  .rte .toolbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 7px; border-bottom: 1px solid var(--border); background: var(--wash); }
+  .rte .toolbar button { font-size: 12.5px; padding: 4px 9px; min-width: 32px; }
+  .rte .toolbar .sep { width: 1px; background: var(--border); margin: 2px 3px; }
+  /* The page as guests see it: these mirror the .prose rules in src/website.js (SITE_CSS). */
+  .canvas { background: #F5EFE8; padding: 32px max(16px, 6%); max-height: 62vh; overflow: auto; }
+  .canvas .ptitle { margin: 0 0 18px; text-align: center; font: 400 36px/1.15 'Libre Baskerville', Georgia, serif; color: #8C665D; }
+  .site-prose { max-width: 680px; margin: 0 auto; min-height: 240px; outline: none; color: #6E5550; font: 17px/1.7 'Lato', 'Helvetica Neue', Arial, sans-serif; }
+  .site-prose:focus { box-shadow: 0 0 0 2px rgba(42, 120, 214, .25); border-radius: 4px; }
+  .site-prose:empty::before { content: "Start writing. Use Heading and Label for titles, and Photo to add a picture from the gallery."; color: #A88C83; font-style: italic; }
+  .site-prose h2 { font: 400 30px/1.25 'Libre Baskerville', Georgia, serif; color: #8C665D; margin: 30px 0 12px; }
+  .site-prose h3 { font: 700 13px 'Lato', sans-serif; letter-spacing: .2em; text-transform: uppercase; color: #86675E; margin: 26px 0 8px; }
+  .site-prose p { margin: 0 0 16px; }
+  .site-prose ul, .site-prose ol { margin: 0 0 16px; padding-left: 22px; }
+  .site-prose blockquote { margin: 20px 0; padding: 4px 0 4px 20px; border-left: 3px solid #E2D3C9; font: italic 18px/1.7 'Libre Baskerville', Georgia, serif; color: #8C665D; }
+  .site-prose hr { border: 0; border-top: 1px solid #E2D3C9; margin: 28px 0; }
+  .site-prose img { max-width: 100%; height: auto; border-radius: 3px; display: block; margin: 12px auto; }
+  .site-prose a { color: #7A5850; }
+  .site-prose a.button { display: inline-block; padding: 12px 26px; border-radius: 999px; background: #A4727E; color: #fff; text-decoration: none; font: 700 13.5px 'Lato', sans-serif; letter-spacing: .12em; text-transform: uppercase; }
+  .site-prose > :first-child { margin-top: 0; }
+  .canvas.center .site-prose { text-align: center; }
+  .drop-zone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 140px; padding: 20px; border: 2px dashed var(--border); border-radius: 14px; background: var(--surface-1); text-align: center; cursor: pointer; }
+  .drop-zone.over { border-color: var(--accent); background: rgba(42, 120, 214, .05); }
+  .drop-zone input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-top: 14px; }
+  .photo { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface-1); display: flex; flex-direction: column; }
+  .photo .pic { position: relative; aspect-ratio: 4 / 3; background: #E7DCD2; }
+  .photo .pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .photo .badge { position: absolute; left: 8px; top: 8px; padding: 2px 9px; border-radius: 999px; background: #A4727E; color: #fff; font-size: 11.5px; font-weight: 600; }
+  .photo .body { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .photo .body .row { gap: 6px; }
+  .pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+  .pick button { padding: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden; background: #E7DCD2; aspect-ratio: 4 / 3; }
+  .pick button:hover, .pick button:focus-visible { border-color: var(--accent); }
+  .pick img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .live { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-1); margin-bottom: 14px; font-size: 14px; }
+  .live.on { border-color: rgba(12, 163, 12, .35); background: rgba(12, 163, 12, .06); }
+  @media (max-width: 760px) { .pages { flex-basis: 100%; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar" id="topbar"></div>
+  <div class="row" style="margin-bottom:6px">
+    <div><h1>Website</h1></div>
+    <span class="spacer"></span>
+    <a class="btn" id="previewSite" href="/_new/" target="_blank" rel="noopener">Preview the new site ↗</a>
+  </div>
+  <p class="sub">Your wedding website, written here: its pages, in the order of the menu, and the gallery's photos.</p>
+  <div class="live" id="live"></div>
+  <div class="tabs" id="tabs"></div>
+  <div id="main"></div>
+</div>
+
+<script type="module">
+import { api, initPage, h, openDialog, field, check, formValues, setMsg } from "/admin/admin.js";
+
+await initPage("website.html");
+
+const KIND_LABEL = { home: "Home", text: "Page", gallery: "Photos", guide: "Guide", link: "Link" };
+const escapeText = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+let data = await api("/api/admin/website");
+let tab = location.hash === "#photos" ? "photos" : "pages";
+let selectedId = data.pages[0]?.id ?? null;
+let editor = null; // the open page's editor: { dirty(), save() }
+
+window.addEventListener("beforeunload", (ev) => {
+  if (editor?.dirty()) ev.preventDefault();
+});
+const leaveOk = () => !editor?.dirty() || confirm("Leave without saving your changes to this page?");
+
+function render() {
+  renderLive();
+  document.getElementById("tabs").replaceChildren(
+    ...[["pages", "Pages"], ["photos", `Gallery photos (${data.photos.length})`]].map(([key, label]) =>
+      h("button", { class: key === tab ? "on" : "", onclick: () => { if (key !== tab && !leaveOk()) return; tab = key; history.replaceState(null, "", key === "photos" ? "#photos" : "#"); render(); } }, label)));
+  document.getElementById("main").replaceChildren(tab === "photos" ? photosView() : pagesView());
+}
+
+function renderLive() {
+  const box = document.getElementById("live");
+  box.className = `live${data.live ? " on" : ""}`;
+  box.replaceChildren(
+    h("span", {}, data.live
+      ? h("span", {}, h("b", {}, "Guests see the new website."), " The Zola copy is no longer shown.")
+      : h("span", {}, h("b", {}, "Guests still see the Zola copy."), " Write and preview the new site here, then switch when it's ready.")),
+    h("span", { class: "spacer" }),
+    h("button", { class: data.live ? "" : "primary", onclick: async () => {
+      const ok = data.live
+        ? confirm("Switch guests back to the copy of your Zola site?")
+        : confirm("Switch guests to the new website? It replaces the Zola copy at your website's address. You can switch back any time.");
+      if (!ok) return;
+      try {
+        data = await api("/api/admin/website/settings", { method: "PUT", body: { live: !data.live } });
+        render();
+      } catch (error) {
+        alert(error.message);
+      }
+    } }, data.live ? "Switch back to the Zola copy" : "Switch guests to the new site"));
+}
+
+/* -------------------------------------------------------------------- pages ---- */
+
+function pagesView() {
+  const list = h("ol", {});
+  let dragging = null;
+  data.pages.forEach((p, i) => {
+    const li = h("li", { class: p.id === selectedId ? "on" : "", draggable: "true" },
+      h("span", { class: "grip", "aria-hidden": "true", title: "Drag to reorder" }, "⋮⋮"),
+      h("button", { class: "open", onclick: () => { if (p.id === selectedId || !leaveOk()) return; selectedId = p.id; render(); } }, p.title),
+      h("span", { class: `tag${p.visible ? "" : " off"}` }, p.visible ? (p.in_menu ? KIND_LABEL[p.kind] : "Not in menu") : "Hidden"),
+      h("span", { class: "move" },
+        h("button", { "aria-label": `Move ${p.title} up`, disabled: i === 0, onclick: () => reorder(i, i - 1) }, "▲"),
+        h("button", { "aria-label": `Move ${p.title} down`, disabled: i === data.pages.length - 1, onclick: () => reorder(i, i + 1) }, "▼")));
+    li.addEventListener("dragstart", (ev) => { dragging = i; ev.dataTransfer.effectAllowed = "move"; });
+    li.addEventListener("dragover", (ev) => { ev.preventDefault(); li.classList.add("drop"); });
+    li.addEventListener("dragleave", () => li.classList.remove("drop"));
+    li.addEventListener("drop", (ev) => { ev.preventDefault(); li.classList.remove("drop"); if (dragging !== null && dragging !== i) reorder(dragging, i); dragging = null; });
+    list.append(li);
+  });
+  const selected = data.pages.find((p) => p.id === selectedId) || data.pages[0];
+  return h("div", { class: "layout" },
+    h("div", { class: "card pages" },
+      h("div", { class: "row", style: "margin-bottom:8px" }, h("h2", { style: "margin:0;font-size:15px" }, "Pages"), h("span", { class: "spacer" }), h("span", { class: "muted", style: "font-size:12px" }, "Menu order")),
+      list,
+      h("button", { style: "width:100%", onclick: newPage }, "+ New page")),
+    h("div", { class: "editor" }, selected ? pageEditor(selected) : h("p", {}, "No pages yet.")));
+}
+
+async function reorder(from, to) {
+  const ids = data.pages.map((p) => p.id);
+  const [moved] = ids.splice(from, 1);
+  ids.splice(to, 0, moved);
+  try {
+    data = await api("/api/admin/website/pages/order", { method: "POST", body: { ids } });
+    render();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+function pageEditor(page) {
+  const msg = h("p", { class: "msg" });
+  const title = h("input", { value: page.title, maxlength: 80 });
+  const slug = h("input", { value: page.slug, disabled: page.kind === "home" || page.kind === "guide", style: "font-family: ui-monospace, Menlo, monospace" });
+  const inMenu = h("input", { type: "checkbox", checked: Boolean(page.in_menu) });
+  const visible = h("input", { type: "checkbox", checked: Boolean(page.visible), disabled: page.kind === "home" });
+  const url = h("input", { value: page.url, placeholder: "https://…" });
+  const rte = ["home", "text", "gallery"].includes(page.kind) ? richEditor(page) : null;
+  const start = JSON.stringify(values());
+  function values() {
+    return {
+      title: title.value, slug: slug.value, in_menu: inMenu.checked, visible: visible.checked,
+      ...(page.kind === "link" ? { url: url.value } : {}),
+      ...(rte ? { body: rte.html() } : {}),
+    };
+  }
+  const save = async () => {
+    try {
+      const body = values();
+      if (page.kind === "home" || page.kind === "guide") delete body.slug;
+      data = await api(`/api/admin/website/pages/${page.id}`, { method: "PUT", body });
+      editor = null;
+      render();
+      setMsg(document.querySelector(".editor .msg"), `Saved at ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`, "ok");
+    } catch (error) {
+      setMsg(msg, error.message, "err");
+    }
+  };
+  editor = { dirty: () => JSON.stringify(values()) !== start, save };
+  const address = page.kind === "home" ? "/" : `/${page.slug}`;
+  const copyPath = page.kind === "home" ? "/" : `/${page.slug}`;
+  const canFill = rte && data.copies.includes(copyPath);
+  return h("div", { class: "card" },
+    h("div", { class: "fields", style: "grid-template-columns: repeat(auto-fit, minmax(200px, 1fr))" },
+      h("label", { class: "field" }, "Page title", title),
+      page.kind === "link"
+        ? h("label", { class: "field" }, "Goes to", url)
+        : h("label", { class: "field" }, page.kind === "home" ? "Web address (the home page is always /)" : page.kind === "guide" ? "Web address" : "Web address (after the /)", slug)),
+    h("div", { class: "row", style: "gap:18px" },
+      h("label", { class: "check" }, inMenu, "In the menu"),
+      h("label", { class: "check", title: page.kind === "home" ? "The home page is always there" : "" }, visible, "Guests can see it")),
+    page.kind === "link" ? h("p", { class: "desc", style: "margin:12px 0 0" }, "A link in the menu that opens another website in a new tab, like your registry.") : null,
+    page.kind === "guide" ? h("p", { class: "desc", style: "margin:12px 0 0" }, "Your guide to Indy. Its places and words are kept in the code: ask Claude to change them.") : null,
+    page.kind === "gallery" ? h("p", { class: "desc", style: "margin:12px 0 0" }, "A few words, then every photo from ", h("a", { href: "#photos", onclick: (ev) => { ev.preventDefault(); if (!leaveOk()) return; tab = "photos"; history.replaceState(null, "", "#photos"); render(); } }, "Gallery photos"), ".") : null,
+    page.kind === "home" ? h("p", { class: "desc", style: "margin:12px 0 0" }, "Above these words guests see the cover photo, the date and venue from Settings, and the countdown. Below them, an RSVP button while RSVPs are open.") : null,
+    rte ? rte.el : null,
+    h("div", { class: "row", style: "margin-top:14px" },
+      h("button", { class: "primary", onclick: save }, "Save"),
+      page.kind === "link" ? null : h("a", { class: "btn", href: `/_new${address === "/" ? "/" : address}`, target: "_blank", rel: "noopener" }, "Preview ↗"),
+      canFill ? h("button", { onclick: () => fillFromZola(rte, copyPath, msg, title.value) }, "Fill from the Zola page") : null,
+      h("span", { class: "spacer" }),
+      page.kind === "home" || page.kind === "guide" ? null : h("button", { class: "danger", onclick: async () => {
+        if (!confirm(`Delete the page "${page.title}"? This can't be undone.`)) return;
+        try {
+          data = await api(`/api/admin/website/pages/${page.id}`, { method: "DELETE" });
+          editor = null;
+          selectedId = data.pages[0]?.id ?? null;
+          render();
+        } catch (error) {
+          setMsg(msg, error.message, "err");
+        }
+      } }, "Delete page")),
+    msg);
+}
+
+/**
+ * The editor: the page's words in the site's own fonts and colors. Its HTML is cleaned
+ * again on save (sanitizeHtml in src/email_html.js), so only the tags below are kept.
+ */
+function richEditor(page) {
+  const area = h("div", { class: "site-prose", contenteditable: "true", role: "textbox", "aria-multiline": "true", "aria-label": "Page text" });
+  area.innerHTML = page.body || "";
+  let saved = null;
+  const inArea = (node) => node && area.contains(node.nodeType === 1 ? node : node.parentNode);
+  document.addEventListener("selectionchange", () => {
+    const sel = getSelection();
+    if (sel.rangeCount && inArea(sel.anchorNode)) saved = sel.getRangeAt(0).cloneRange();
+  });
+  const restore = () => {
+    area.focus();
+    if (saved) {
+      const sel = getSelection();
+      sel.removeAllRanges();
+      sel.addRange(saved);
+    }
+  };
+  const run = (command, value = null) => {
+    restore();
+    document.execCommand("defaultParagraphSeparator", false, "p");
+    document.execCommand(command, false, value);
+  };
+  const askLink = (button) => {
+    restore();
+    const sel = getSelection();
+    const current = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement)?.closest("a");
+    const href = prompt("Link address: https://… for another site, or a page of yours like /travel", current?.getAttribute("href") || "https://");
+    if (!href || href === "https://") return;
+    const clean = href.trim();
+    if (!/^(https?:\/\/|mailto:)\S+$|^\/[a-z0-9\-/]*(#[A-Za-z0-9_-]+)?$/i.test(clean)) return alert("Links start with https://, mailto:, or / for a page of this site.");
+    if (current) {
+      current.setAttribute("href", clean);
+      current.classList.toggle("button", button);
+      return;
+    }
+    const label = sel.toString() || (button ? prompt("Button text", "Book the room block") : clean);
+    if (!label) return;
+    run("insertHTML", `<a href="${escapeText(clean)}"${button ? ' class="button"' : ""}>${escapeText(label)}</a>`);
+  };
+  const mapLink = () => {
+    restore();
+    const place = prompt("The place to find on Google Maps (a name and city, or an address)", getSelection().toString());
+    if (!place) return;
+    const href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place)}`;
+    const label = getSelection().toString() || place;
+    run("insertHTML", `<a href="${escapeText(href)}">${escapeText(label)}</a>`);
+  };
+  const addPhoto = () => {
+    if (!data.photos.length) return alert("Upload photos in Gallery photos first, then add them to a page here.");
+    openDialog("Add a photo", (close) => h("div", {},
+      h("p", { class: "desc" }, "Pick one of your gallery photos."),
+      h("div", { class: "pick" }, data.photos.map((p) => h("button", { type: "button", title: p.caption || `Photo ${p.id}`, onclick: () => {
+        close(true);
+        run("insertHTML", `<img src="/_site/photo/${p.id}" alt="${escapeText(p.caption || "")}">`);
+      } }, h("img", { src: `/_site/photo/${p.id}/thumb`, alt: p.caption || "" }))))));
+  };
+  const tool = (label, title, fn) => h("button", { type: "button", title, onmousedown: (ev) => ev.preventDefault(), onclick: fn }, label);
+  const toolbar = h("div", { class: "toolbar", role: "toolbar", "aria-label": "Formatting" },
+    tool("Heading", "A big heading", () => run("formatBlock", "h2")),
+    tool("Label", "A small capitals heading", () => run("formatBlock", "h3")),
+    tool("Text", "A normal paragraph", () => run("formatBlock", "p")),
+    h("span", { class: "sep" }),
+    tool(h("b", {}, "B"), "Bold", () => run("bold")),
+    tool(h("i", {}, "I"), "Italic", () => run("italic")),
+    h("span", { class: "sep" }),
+    tool("• List", "A bulleted list", () => run("insertUnorderedList")),
+    tool("1. List", "A numbered list", () => run("insertOrderedList")),
+    tool("Quote", "A quote", () => run("formatBlock", "blockquote")),
+    tool("Divider", "A line across", () => run("insertHorizontalRule")),
+    h("span", { class: "sep" }),
+    tool("Link", "Link the selected words", () => askLink(false)),
+    tool("Button", "A button that links somewhere", () => askLink(true)),
+    tool("Map link", "A link that opens a place in Google Maps", mapLink),
+    tool("Photo", "A photo from the gallery", addPhoto),
+    tool("Unlink", "Remove the link", () => run("unlink")),
+    h("span", { class: "sep" }),
+    tool("Undo", "Undo", () => run("undo")),
+    tool("Clear", "Clear formatting", () => { run("removeFormat"); run("formatBlock", "p"); }));
+  area.addEventListener("paste", (ev) => {
+    ev.preventDefault();
+    document.execCommand("insertText", false, ev.clipboardData.getData("text/plain"));
+  });
+  area.addEventListener("click", (ev) => { if (ev.target.closest("a")) ev.preventDefault(); });
+  const canvas = h("div", { class: `canvas${page.kind === "home" ? " center" : ""}` },
+    page.kind === "home" ? null : h("h1", { class: "ptitle" }, page.title),
+    area);
+  return { el: h("div", { class: "rte" }, toolbar, canvas), html: () => area.innerHTML, set: (html) => { area.innerHTML = html; } };
+}
+
+/**
+ * The words of a page from the Zola copy: everything under the site's menu, as headings,
+ * paragraphs, lists, links and Zola's photos (still kept by Zola). Read here in the
+ * browser, so the Worker never has to take a whole Zola page apart.
+ */
+function wordsFrom(html, title = "") {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const marked = [...doc.querySelectorAll('a[data-wm-nav="menu"]')];
+  const links = marked.length ? marked : [...doc.querySelectorAll("a[data-wm-nav]")];
+  let box = links[0]?.parentElement || null;
+  while (box && !links.every((a) => box.contains(a))) box = box.parentElement;
+  const SKIP = "script,style,noscript,svg,button,form,iframe,nav,footer,[data-testid='WeddingCountdown'],.wm-rsvp-bar,.wm-footer";
+  const BLOCKS = "p,h1,h2,h3,h4,h5,h6,ul,ol,li,blockquote,div,section,article,header,main,figure,img,table";
+  const out = [];
+  let after = !box;
+  const inline = (n) => [...n.childNodes].map((c) => {
+    if (c.nodeType === 3) return escapeText(c.textContent.replace(/\s+/g, " "));
+    if (c.nodeType !== 1 || c.matches(SKIP)) return "";
+    if (c.tagName === "A" && c.getAttribute("href")) return `<a href="${escapeText(c.getAttribute("href"))}">${inline(c)}</a>`;
+    if (/^(B|STRONG)$/.test(c.tagName)) return `<b>${inline(c)}</b>`;
+    if (/^(I|EM)$/.test(c.tagName)) return `<i>${inline(c)}</i>`;
+    if (c.tagName === "BR") return "<br>";
+    return inline(c);
+  }).join("");
+  const visit = (n) => {
+    if (n === box) { after = true; return; }
+    if (n.nodeType === 3) { if (after && n.textContent.trim()) out.push(`<p>${escapeText(n.textContent.trim())}</p>`); return; }
+    if (n.nodeType !== 1 || n.matches(SKIP)) return;
+    if (!after) { [...n.childNodes].forEach(visit); return; }
+    const tag = n.tagName;
+    const text = () => inline(n).replace(/\s+/g, " ").trim();
+    if (/^H[1-6]$/.test(tag)) {
+      const t = text();
+      // The page's own title is already above the words.
+      if (t && t.replace(/<[^>]*>/g, "").toLowerCase() !== title.trim().toLowerCase()) out.push(tag <= "H2" ? `<h2>${t}</h2>` : `<h3>${t}</h3>`);
+      return;
+    }
+    if (tag === "A" && n.getAttribute("href") && !n.querySelector(BLOCKS)) {
+      const t = text();
+      if (t) out.push(`<p><a href="${escapeText(n.getAttribute("href"))}">${t}</a></p>`);
+      return;
+    }
+    if (tag === "P" || tag === "BLOCKQUOTE") { const t = text(); if (t) out.push(`<p>${t}</p>`); return; }
+    if (tag === "UL" || tag === "OL") {
+      const items = [...n.children].filter((li) => li.tagName === "LI").map((li) => inline(li).replace(/\s+/g, " ").trim()).filter(Boolean);
+      if (items.length) out.push(`<ul>${items.map((i) => `<li>${i}</li>`).join("")}</ul>`);
+      return;
+    }
+    if (tag === "IMG") {
+      const src = (n.getAttribute("src") || "").replace(/^\/\//, "https://");
+      if (/^https:\/\//.test(src)) out.push(`<p><img src="${escapeText(src)}" alt="${escapeText(n.getAttribute("alt") || "")}"></p>`);
+      return;
+    }
+    if (n.querySelector(BLOCKS)) { [...n.childNodes].forEach(visit); return; }
+    const t = text();
+    if (t) out.push(`<p>${t}</p>`);
+  };
+  visit(doc.body);
+  return out.filter((block, i) => block !== out[i - 1]).join("");
+}
+
+async function fillFromZola(rte, path, msg, title) {
+  if (rte.html().replace(/<[^>]*>/g, "").trim() && !confirm("Replace what's in the editor with the words from the Zola page? Nothing is saved until you press Save.")) return;
+  try {
+    const { html } = await api(`/api/admin/website/copy?path=${encodeURIComponent(path)}`);
+    const words = wordsFrom(html, title);
+    if (!words) return setMsg(msg, "That Zola page has no words under its menu to bring over.", "err");
+    rte.set(words);
+    setMsg(msg, "Filled in from the Zola page. Tidy it up, then press Save. Zola's photos still load from Zola: upload your own to Gallery photos to keep them for good.", "ok");
+  } catch (error) {
+    setMsg(msg, error.message, "err");
+  }
+}
+
+function newPage() {
+  if (!leaveOk()) return;
+  openDialog("New page", (close) => {
+    const msg = h("p", { class: "msg" });
+    const kinds = [["text", "Text page", "Headings, words, buttons and photos, written in the editor."], ["gallery", "Photo gallery", "A few words, then the photos from Gallery photos."], ["link", "Link in the menu", "Goes to another website, like your registry."]];
+    const url = field("Goes to", "url", { placeholder: "https://…" });
+    url.hidden = true;
+    const slugField = field("Web address (after the /)", "slug", { placeholder: "filled in from the title" });
+    const titleField = field("Page title", "title", { required: true });
+    const titleInput = titleField.querySelector("input");
+    const slugInput = slugField.querySelector("input");
+    titleInput.addEventListener("input", () => { slugInput.placeholder = titleInput.value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "filled in from the title"; });
+    const form = h("form", { onsubmit: async (ev) => {
+      ev.preventDefault();
+      const v = formValues(form);
+      try {
+        const reply = await api("/api/admin/website/pages", { method: "POST", body: { title: v.title, slug: v.slug, kind: v.kind, url: v.url, in_menu: v.in_menu } });
+        data = reply;
+        selectedId = reply.id;
+        editor = null;
+        close(true);
+        render();
+      } catch (error) {
+        setMsg(msg, error.message, "err");
+      }
+    } },
+      h("div", { class: "fields" }, titleField, slugField),
+      h("fieldset", { style: "border:0;padding:0;margin:0 0 12px;display:flex;flex-direction:column;gap:8px" },
+        h("legend", { class: "muted", style: "font-size:12.5px;margin-bottom:6px" }, "What kind of page"),
+        kinds.map(([value, label, help], i) => h("label", { class: "check", style: "align-items:flex-start" },
+          h("input", { type: "radio", name: "kind", value, checked: i === 0, onchange: () => { url.hidden = value !== "link"; } }),
+          h("span", {}, h("b", {}, label), h("br"), h("span", { class: "muted", style: "font-size:12.5px" }, help))))),
+      url,
+      check("Add it to the menu", "in_menu", true),
+      h("div", { class: "row", style: "margin-top:14px" }, h("button", { class: "primary" }, "Create and edit")),
+      msg);
+    return form;
+  });
+}
+
+/* ------------------------------------------------------------------- photos ---- */
+
+/** A photo shrunk in the browser: the long edge at most `max` px, as a JPEG. */
+async function shrink(file, max, quality) {
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  } catch {
+    throw new Error(`${file.name} can't be read in this browser. Save it as a JPG and try again.`);
+  }
+  const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+  const width = Math.round(bitmap.width * scale);
+  const height = Math.round(bitmap.height * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
+  let blob = await new Promise((done) => canvas.toBlob(done, "image/jpeg", quality));
+  if (blob && blob.size > 1_700_000) blob = await new Promise((done) => canvas.toBlob(done, "image/jpeg", 0.7));
+  if (!blob) throw new Error(`${file.name} couldn't be resized.`);
+  return { blob, width, height };
+}
+
+async function upload(files, status) {
+  const list = [...files].filter((f) => f.type.startsWith("image/") || /\.(heic|heif)$/i.test(f.name));
+  if (!list.length) return setMsg(status, "Those aren't photos.", "err");
+  const failed = [];
+  for (const [i, file] of list.entries()) {
+    setMsg(status, `Uploading ${i + 1} of ${list.length}: ${file.name}`);
+    try {
+      const full = await shrink(file, 2000, 0.82);
+      const thumb = await shrink(file, 640, 0.78);
+      const form = new FormData();
+      form.set("photo", full.blob, "photo.jpg");
+      form.set("thumb", thumb.blob, "thumb.jpg");
+      form.set("width", full.width);
+      form.set("height", full.height);
+      data = await api("/api/admin/website/photos", { method: "POST", form });
+    } catch (error) {
+      failed.push(error.message);
+    }
+  }
+  render();
+  const done = list.length - failed.length;
+  const box = document.getElementById("photoMsg");
+  setMsg(box, failed.length ? `${done} uploaded. ${failed.join(" ")}` : `${done} photo${done === 1 ? "" : "s"} uploaded.`, failed.length ? "err" : "ok");
+}
+
+function photosView() {
+  const status = h("p", { class: "msg", id: "photoMsg" });
+  const input = h("input", { type: "file", multiple: true, accept: "image/*,.heic,.heif", onchange: (ev) => { upload(ev.target.files, status); ev.target.value = ""; } });
+  const zone = h("label", { class: "drop-zone" },
+    h("b", { style: "font-size:15px" }, "Drop photos here, or choose them"),
+    h("span", { class: "muted", style: "font-size:12.5px" }, "Each is resized in your browser to 2000 px on its long side before it uploads, so big camera files are fine."),
+    input);
+  zone.addEventListener("dragover", (ev) => { ev.preventDefault(); zone.classList.add("over"); });
+  zone.addEventListener("dragleave", () => zone.classList.remove("over"));
+  zone.addEventListener("drop", (ev) => { ev.preventDefault(); zone.classList.remove("over"); upload(ev.dataTransfer.files, status); });
+  const coverId = data.cover ?? data.photos[0]?.id;
+  const move = async (i, to) => {
+    const ids = data.photos.map((p) => p.id);
+    const [moved] = ids.splice(i, 1);
+    ids.splice(to, 0, moved);
+    data = await api("/api/admin/website/photos/order", { method: "POST", body: { ids } });
+    render();
+  };
+  const cards = data.photos.map((p, i) => {
+    const caption = h("input", { value: p.caption, placeholder: "Caption (optional)", maxlength: 300, "aria-label": "Caption" });
+    caption.addEventListener("change", async () => {
+      try {
+        data = await api(`/api/admin/website/photos/${p.id}`, { method: "PUT", body: { caption: caption.value } });
+        setMsg(status, "Caption saved.", "ok");
+      } catch (error) {
+        setMsg(status, error.message, "err");
+      }
+    });
+    return h("div", { class: "photo" },
+      h("div", { class: "pic" }, h("img", { src: `/_site/photo/${p.id}/thumb`, alt: p.caption || `Photo ${i + 1}`, loading: "lazy" }),
+        p.id === coverId ? h("span", { class: "badge" }, "Cover photo") : null),
+      h("div", { class: "body" },
+        caption,
+        h("div", { class: "row" },
+          h("button", { class: "small", "aria-label": "Move earlier", disabled: i === 0, onclick: () => move(i, i - 1) }, "←"),
+          h("button", { class: "small", "aria-label": "Move later", disabled: i === data.photos.length - 1, onclick: () => move(i, i + 1) }, "→"),
+          p.id === coverId ? null : h("button", { class: "small", onclick: async () => { data = await api("/api/admin/website/settings", { method: "PUT", body: { cover: p.id } }); render(); } }, "Use as cover"),
+          h("span", { class: "spacer" }),
+          h("button", { class: "small danger", "aria-label": `Delete photo ${i + 1}`, onclick: async () => {
+            if (!confirm("Delete this photo? It also comes off any page it's on.")) return;
+            data = await api(`/api/admin/website/photos/${p.id}`, { method: "DELETE" });
+            render();
+          } }, "Delete"))));
+  });
+  return h("div", {},
+    zone, status,
+    data.photos.length
+      ? h("div", { class: "photos" }, cards)
+      : h("p", { class: "muted", style: "margin-top:14px" }, "No photos yet. The home page opens with the first one, or the one you pick as the cover."));
+}
+
+render();
+</script>
+</body>
+</html>

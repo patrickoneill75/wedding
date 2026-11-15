@@ -152,7 +152,7 @@ export function adminEmails(env) {
 }
 
 /** The control panel's pages a user can be given. Settings and Users are admin-only. */
-export const PAGES = ["dashboard", "expenses", "vendors", "guests", "seating", "runofshow", "reports", "communications"];
+export const PAGES = ["dashboard", "expenses", "vendors", "guests", "seating", "runofshow", "reports", "communications", "website"];
 
 /**
  * Who this email is: { role: "admin" | "user", pages, owner } or null if they may not

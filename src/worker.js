@@ -8,6 +8,7 @@ import { processComms } from "./comms.js";
 import { scheduledSync } from "./sync.js";
 import { ingestSite, recordSiteError, serveFont, servePage } from "./site.js";
 import { serveGuide } from "./guide.js";
+import { PREVIEW_BASE, serveWebsite, servePhoto, SITE_CSS } from "./website.js";
 import { loadSettings } from "./store.js";
 import { handleDayOf } from "./runofshow.js";
 
@@ -129,8 +130,30 @@ export default {
       }
     }
     if (url.pathname.startsWith("/_site/fonts/")) return serveFont(url.pathname);
+    if (url.pathname.startsWith("/_site/photo/") && env.DB) {
+      await ensureSchema(env);
+      return servePhoto(env, url.pathname);
+    }
+    if (url.pathname === "/_site/web.css") return new Response(SITE_CSS, { headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=300" } });
     const method = request.method.toUpperCase();
     const pageLike = url.pathname === "/index.html" || !url.pathname.includes(".", url.pathname.lastIndexOf("/"));
+    // The coded website: a preview at /_new/ for the Website page, and for guests once
+    // it's switched on (settings.web_live) in place of the Zola copy.
+    if ((method === "GET" || method === "HEAD") && env.DB && (url.pathname === PREVIEW_BASE || url.pathname.startsWith(`${PREVIEW_BASE}/`))) {
+      await ensureSchema(env);
+      return serveWebsite(env, request, { preview: true });
+    }
+    if ((method === "GET" || method === "HEAD") && env.DB && pageLike) {
+      try {
+        await ensureSchema(env);
+        if ((await loadSettings(env)).web_live) {
+          const page = await serveWebsite(env, request);
+          if (page) return page;
+        }
+      } catch (error) {
+        console.error("Serving the coded website failed:", error.message);
+      }
+    }
     if ((method === "GET" || method === "HEAD") && env.DB && /^\/things-to-do\/?$/.test(url.pathname)) {
       await ensureSchema(env);
       return serveGuide(env, request);
