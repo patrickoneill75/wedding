@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="/favicon.svg">
+<title>Choose a Drive folder</title>
+<link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+<!-- This page shows no financial numbers. It runs Google's own folder picker, which
+     gives the finance tool access to the one folder you pick (the drive.file permission). -->
+<div class="wrap">
+  <div class="card" style="max-width: 640px">
+    <h2>Choose where your finance file lives</h2>
+    <p class="desc" id="who">Google's folder picker opens below. Pick a folder, then click Select.</p>
+    <p class="msg" id="msg"></p>
+    <div class="row">
+      <button class="primary" id="open" disabled>Open the folder picker</button>
+      <button id="fallback">Make a "Finances" folder in My Drive instead</button>
+      <a class="btn" href="/admin/personal/#drive">Back</a>
+    </div>
+  </div>
+</div>
+<script type="module" src="/admin/personal/picker.js"></script>
+</body>
+</html>

@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="/favicon.svg">
+<title>Finances</title>
+<link rel="stylesheet" href="/admin/admin.css">
+<link rel="stylesheet" href="/admin/personal/personal.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar" id="topbar"></div>
+
+  <div class="row head">
+    <h1>Finances</h1>
+    <select id="scenarioPick" aria-label="Scenario"></select>
+    <span class="spacer"></span>
+    <span class="msg" id="saveStatus" role="status" aria-live="polite"></span>
+    <button id="exportBtn" class="small">Export JSON</button>
+    <button id="importBtn" class="small">Import JSON</button>
+    <input type="file" id="importFile" accept="application/json,.json" hidden>
+  </div>
+  <p class="sub">Private to the two of you. Every number here is an estimate built from your inputs and the assumptions you set.</p>
+
+  <div class="callout warnbox" id="driveBanner" hidden>
+    <span id="driveBannerText"></span>
+    <button class="small primary" id="driveBannerBtn">Go to Settings</button>
+  </div>
+
+  <div class="tiles" id="summary"></div>
+
+  <div class="card">
+    <div class="row">
+      <h2>What if</h2>
+      <span class="spacer"></span>
+      <label class="check"><input type="checkbox" id="realToggle"> Show today's dollars</label>
+      <button class="small" id="sliderReset">Reset sliders</button>
+    </div>
+    <div class="sliders" id="sliders"></div>
+    <p class="desc" id="sliderNote" hidden>The sliders change the charts only. Your saved scenario stays as it is.</p>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <h2>Net worth</h2>
+      <span class="spacer"></span>
+      <select id="comparePick" aria-label="Compare with another scenario"></select>
+    </div>
+    <div class="chart" id="nwChart"></div>
+    <p class="desc" id="nwNote"></p>
+    <details class="milestones-box">
+      <summary>Milestones</summary>
+      <ul class="milestones" id="milestones"></ul>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>Where the money goes each year</h2>
+    <div class="chart" id="cfChart"></div>
+  </div>
+
+  <div class="card">
+    <h2>Things to check <span class="muted" id="checkCount"></span></h2>
+    <ul class="checks" id="checks"></ul>
+  </div>
+
+  <div class="card" id="inputsCard">
+    <h2>Inputs</h2>
+    <div class="tabs" id="tabs" role="tablist"></div>
+    <div id="tabBody"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <h2>Year by year</h2>
+      <span class="spacer"></span>
+      <button class="small" id="csvBtn">Download CSV</button>
+    </div>
+    <p class="desc">Click + on a column to see its line items. Rows in red have spending the money didn't cover.</p>
+    <div class="table-wrap yt"><table id="yearTable"></table></div>
+  </div>
+
+  <div class="card">
+    <h2>Range of outcomes (Monte Carlo)</h2>
+    <p class="desc">Runs the plan many times with investment returns that vary from year to year, to show how wide the outcomes are and how often the money lasts. It uses today's dollars and the sliders above.</p>
+    <div class="row">
+      <select id="mcRuns" aria-label="Number of runs"><option value="200">200 runs</option><option value="500" selected>500 runs</option><option value="1000">1,000 runs</option></select>
+      <button class="primary" id="mcRun">Run</button>
+    </div>
+    <p id="mcResult"></p>
+    <div class="chart" id="mcChart"></div>
+  </div>
+</div>
+
+<template id="methodTpl">
+  <section class="fsec method">
+    <h3>How the model works</h3>
+    <p>Everything runs in your browser, month by month, from the start month until you've both reached the end age (95 unless you change it). The year table and charts add the months up by calendar year. Inside, money is in future dollars. "Today's dollars" divides each year by the inflation that built up since the start.</p>
+
+    <h4>Each month, in order</h4>
+    <ol>
+      <li><b>Growth.</b> Every account grows by its yearly return, spread evenly over 12 months (a yearly return of r becomes (1 + r)^(1/12) a month). The house grows by home appreciation the same way.</li>
+      <li><b>Pay.</b> Each income stream pays its yearly amount ÷ 12 (a bonus pays once, in its month). Raises apply each January. A one-time jump applies from its month. A gap or parental leave pays only its share. Every stream stops at its owner's retirement age.</li>
+      <li><b>Pre-tax deductions.</b> Traditional 401(k)/403(b) contributions come out first, up to the IRS limit for the year (plus the catch-up at 50). Payroll HSA contributions, pre-tax health premiums and the dependent care FSA come out too. The employer match and employer HSA money go straight into the accounts.</li>
+      <li><b>Taxes.</b> At the start of each year the model works out the whole year's tax on that year's planned pay. Each paycheck then carries its share. In December it works the tax out again with what actually happened (withdrawals from traditional accounts, brokerage gains, taxable loan forgiveness) and settles the difference.</li>
+      <li><b>Required spending.</b> Rent or the house's costs, utilities, health, kids, pets, budget categories, one-time events, car costs and every loan's required payment.</li>
+      <li><b>Goals, in your order.</b> Whatever is left funds each account's monthly contribution, extra loan payments and kids' 529s, in the savings order on the Accounts tab, until it runs out. IRA, 401(k) and HSA contributions stop at their yearly limits. The emergency fund stops at its target. The house fund stops once the house is bought.</li>
+      <li><b>Leftover.</b> Anything still left goes to the leftover account you pick.</li>
+      <li><b>Shortfalls.</b> If required spending is more than take-home pay, the model draws from the leftover account first. Then it goes to checking, savings, the emergency fund and the house fund, and then investments in the retirement order. Each draw outside checking shows in "Things to check". If everything is empty, the leftover account goes below zero, the year shows in red, and the summary says when the money runs out.</li>
+    </ol>
+
+    <h4>Taxes</h4>
+    <ul>
+      <li>You each file single until the year of the wedding. From that year on you file married filing jointly (the IRS treats you as married for the whole year).</li>
+      <li><b>Federal:</b> income after pre-tax deductions, less the standard deduction, through the brackets. Brokerage gains use one capital gains rate. The child tax credit ($2,200 for each child under 17, less $50 per $1,000 over the phase-out) and the dependent care credit come off the federal tax. In this model they can't take it below zero.</li>
+      <li><b>FICA:</b> 6.2% Social Security up to the wage cap and 1.45% Medicare on all wages, both after HSA and cafeteria deductions (401(k) contributions still count). An extra 0.9% Medicare applies over the threshold.</li>
+      <li><b>Social Security benefits:</b> up to 85% are federally taxable, using the IRS's provisional-income formula. Indiana doesn't tax them.</li>
+      <li><b>Indiana and county:</b> federal income, less Social Security, less the exemptions, times the state rate plus the county rate (Marion by default).</li>
+      <li>After the defaults' tax year, brackets, the standard deduction and credit thresholds grow by "Tax bracket indexing". Contribution limits grow by "Contribution limit growth".</li>
+      <li>This is an estimate, not tax software. It leaves out itemized deductions, the refundable part of credits, the alternative minimum tax, state credits, and Roth IRA income limits. It also treats traditional IRA contributions as fully deductible.</li>
+    </ul>
+
+    <h4>The house</h4>
+    <ul>
+      <li>The target price is in today's dollars and grows with home appreciation until you buy.</li>
+      <li><b>Automatic timing:</b> at the start of each month, the model checks whether the down payment fund covers the down payment plus closing costs at that month's price. The first month it does, you buy. The fund pays, and anything left in it moves to the leftover account.</li>
+      <li><b>Chosen year:</b> you buy in that month. If the fund is short, the rest comes from savings and is flagged.</li>
+      <li>The mortgage is a standard fixed-rate loan. PMI is charged while the loan is more than 80% of the home's current value. Property tax and upkeep are a share of the current value. Insurance and HOA grow with inflation.</li>
+      <li>Rent stops at purchase and utilities switch to the homeowner amount. Home value counts as an asset and the mortgage as a debt.</li>
+      <li>When you sell, the proceeds after selling costs and the loan pay the next down payment. Any extra goes to the leftover account. Without a next house, rent starts again at today's rent grown with inflation.</li>
+    </ul>
+
+    <h4>Cars, kids, loans and retirement</h4>
+    <ul>
+      <li><b>Cars</b> are replaced every N years at today's price grown with inflation, with the old car's value traded in. Value drops by the first-year rate, then the yearly rate. Gas is miles ÷ MPG × the gas price. Maintenance grows as the car ages. Indiana excise starts at your figure and drops about 13% a year to a floor.</li>
+      <li><b>Kids</b> cost the amount for their age stage, plus birth costs and added health premiums. From 18, the college goal is paid in four yearly parts, from the 529 first. Parental leave cuts the chosen person's salary for those weeks.</li>
+      <li><b>Loans</b> charge a month's interest, then take the payment. Income-driven payments are a share of last year's income over a multiple of the poverty line. Forgiveness clears what's left after the number of qualifying payments you set.</li>
+      <li><b>Retirement</b> starts when you're both retired. With a target or a withdrawal rate, that amount replaces the budget categories. Withdrawals from traditional accounts are grossed up for income tax at the year's top rate, plus a 10% penalty before 59½. Roth and HSA withdrawals are treated as tax-free.</li>
+      <li><b>Financial independence</b> is the first full year when savings × the FI rate cover that year's spending.</li>
+    </ul>
+
+    <h4>Returns and the range of outcomes</h4>
+    <p>The main run uses the same return every year. The Monte Carlo run draws each year's investment return from a bell curve centered on your assumption, with the spread you set. All investment accounts move together in a given year. Cash and savings accounts keep their set return. The chart shows the middle outcome and the band that holds 8 in 10 outcomes.</p>
+
+    <h4>Checking the math</h4>
+    <p>The repository's tests (tests/finance_test.mjs) check the engine against hand-worked examples:</p>
+    <ul>
+      <li>A loan's payment and total interest.</li>
+      <li>A single filer's and a married couple's 2026 taxes.</li>
+      <li>The taxable share of Social Security.</li>
+      <li>The month a house is bought.</li>
+      <li>The monthly waterfall.</li>
+      <li>A shortfall.</li>
+    </ul>
+  </section>
+</template>
+
+<script type="module" src="/admin/personal/app.js"></script>
+</body>
+</html>

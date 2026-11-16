@@ -88,10 +88,15 @@ const PAGES = [
   ["website.html", "Website", "website", true],
   ["reports.html", "Reports", "reports", false],
   ["settings.html", "Settings", "admin", true],
+  // The private finance tool: only for PERSONAL_EMAILS, checked again on the server.
+  ["personal/", "Finances", "personal", true],
 ];
 
 /** Whether `user` may open the page with this key ("reports", "admin", ...). */
-export const canSee = (user, key) => user.role === "admin" || (key !== "admin" && user.pages.includes(key));
+export const canSee = (user, key) => {
+  if (key === "personal") return Boolean(user.personal);
+  return user.role === "admin" || (key !== "admin" && user.pages.includes(key));
+};
 
 /**
  * Render the top bar and confirm the session. Resolves to the signed-in user. Someone

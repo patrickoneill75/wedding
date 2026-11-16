@@ -72,6 +72,18 @@
     through `/_site/fonts` (its license may not allow a copy in a public repo). The
     `web_pages` and `web_photos` tables (migration 22) are no longer used.
 
+13. **The finance tool** (`/admin/personal/`, `src/personal.js`) is for `PERSONAL_EMAILS`
+    only, checked in the Worker for the page, its files and every `/api/personal/` route.
+    Wedding admins don't get it automatically, and it isn't in `ROUTE_PAGES`. Its numbers live in one
+    JSON file in a Drive folder linked with `drive.file`. D1 keeps only the link (setting
+    `_personal_drive`), never the numbers. Numbers travel only in request bodies and are
+    never logged; Drive's error replies are reduced to their status. The page's content
+    policy allows no outside script or connection. The folder picker page is the one
+    exception: it shows no numbers. The math is plain functions in
+    `public/admin/personal/engine.js`, run in the browser and in
+    `tests/finance_test.mjs` (hand-checked numbers). Default amounts there are
+    placeholders, never real figures.
+
 ## Workflow
 
 When a piece of work is finished (tests green, pushed), open a pull request for it
@@ -79,6 +91,6 @@ without waiting to be asked. If the branch's last PR already merged, open a new 
 
 ## Tests
 
-`npm test` (`node tests/worker_test.mjs`, Node 22.5+) drives the real Worker `fetch()`
+`npm test` (`node tests/worker_test.mjs`, then `node tests/finance_test.mjs` for the finance engine; Node 22.5+) drives the real Worker `fetch()`
 against an in-memory SQLite D1 stub and a stubbed `fetch` for Google. Keep it green, and
 name the bug in each regression test.

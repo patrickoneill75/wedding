@@ -67,6 +67,11 @@ A Cloudflare Worker with two sides:
     (home with the countdown, gallery, travel, FAQs, and Things to Do once published).
     Its words are in `src/website_content.js`. It previews at `/_new/` until the Website
     page switches guests to it; switching back to the Zola copy is one button.
+  - **Finances** (`/admin/personal/`): a private lifetime money model for the two of you,
+    only for the emails in `PERSONAL_EMAILS`. It covers income, taxes, budget, accounts,
+    loans, the house, cars, kids and retirement, month by month to 95, with scenarios, what-if
+    sliders and a range of outcomes. It saves as one file in a Google Drive folder you
+    pick. See SETUP.md, "Finance tool".
   - **Settings**: wedding details, 7% tax, budget, priority weights, the drinks
     calculator, the expense-form link, Google Drive, the spreadsheet import, and Users:
     the owners in `ADMIN_EMAILS` plus anyone you add, each an admin (everything) or a
@@ -122,6 +127,8 @@ src/sync.js        CSV exports and the Drive sync (cron every 5 minutes)
 src/site.js        the Zola website copy: fetch, clean, store, serve
 src/guide.js       the Things to Do page (/things-to-do) and its copy
 src/website.js     the coded website and its preview at /_new/ (words: src/website_content.js)
+src/personal.js    the finance tool's server side: the PERSONAL_EMAILS gate and its Drive file
+public/admin/personal/engine.js  the finance model's math (tests: tests/finance_test.mjs)
 scripts/zola_refresh.mjs  runs src/site.js on GitHub and sends the pages to the site
 src/importer.js    one-time import of Wedding_Data.xlsx
 src/xlsx.js        a minimal .xlsx reader (no dependencies)
