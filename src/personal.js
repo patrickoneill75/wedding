@@ -110,7 +110,10 @@ export async function servePersonalPage(request, env) {
   const asset = await env.ASSETS.fetch(request);
   const response = new Response(asset.body, asset);
   for (const [k, v] of Object.entries(NO_STORE)) response.headers.set(k, v);
-  response.headers.set("referrer-policy", "no-referrer");
+  // The picker page tells Google which site it's on (the origin only), so the picker's
+  // API key can be locked to this website. It shows no numbers; every other page sends
+  // no referrer at all.
+  response.headers.set("referrer-policy", url.pathname === PICKER_PATH ? "strict-origin" : "no-referrer");
   response.headers.set("x-content-type-options", "nosniff");
   if (url.pathname !== PICKER_PATH) response.headers.set("content-security-policy", PAGE_CSP);
   else response.headers.set("content-security-policy", "frame-ancestors 'none'; base-uri 'none'; object-src 'none'");

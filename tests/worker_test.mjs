@@ -3407,6 +3407,10 @@ test("finance page: the server sends strangers to sign in and refuses admins not
   assert.match(ok.headers.get("content-security-policy"), /script-src 'self';.*connect-src 'self'/);
   const picker = await call(env, "/admin/personal/picker.html", { cookie: await sessionCookie(env) });
   assert.ok(!/script-src/.test(picker.headers.get("content-security-policy")), "the folder picker page may load Google's picker");
+  // Bug: with no referrer at all, Google refused the picker's API key, which is locked to
+  // this website. The picker page sends the origin; the finance page still sends nothing.
+  assert.equal(picker.headers.get("referrer-policy"), "strict-origin");
+  assert.equal(ok.headers.get("referrer-policy"), "no-referrer");
   // Kaitlyn's email on the list is enough to sign in, with no wedding pages.
   const kit = await sessionCookie(env, "kit@example.com");
   const me = await call(env, "/api/auth/me", { cookie: kit });
