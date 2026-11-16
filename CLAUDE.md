@@ -77,7 +77,9 @@
     Wedding admins don't get it automatically, and it isn't in `ROUTE_PAGES`. Its numbers live in one
     JSON file in a Drive folder linked with `drive.file`. D1 keeps only the link (setting
     `_personal_drive`), never the numbers. Numbers travel only in request bodies and are
-    never logged; Drive's error replies are reduced to their status. The page's content
+    never logged; Drive's error replies are reduced to their status. Spotting the other
+    person's save uses our own marker in the file's `appProperties.rev`, never Drive's
+    `version`, which Drive raises by itself after an upload. The page's content
     policy allows no outside script or connection. The folder picker page is the one
     exception: it shows no numbers. The math is plain functions in
     `public/admin/personal/engine.js`, run in the browser and in

@@ -3438,23 +3438,30 @@ test("finance page: save, load, a conflict when the other person saved, and noth
   assert.equal((await api("/api/personal/model")).data.linked, false);
   const { savePersonalTokens } = await import("../src/personal.js");
   await savePersonalTokens(env, { refresh_token: "r", access_token: "a", expires_in: 3600 }, { email: "admin@example.com", connected_by: "admin@example.com" });
-  const drive = { file: null, version: 0 };
+  // A fake Drive that, like the real one, raises its own `version` by itself after a
+  // save (on every metadata read here), while appProperties change only when we set them.
+  const drive = { file: null, version: 0, appProperties: {} };
+  const parts = (body) => {
+    const [meta, content] = String(body).split(/--b[0-9a-f]+(?:--)?\r?\n?/).filter((x) => x.trim()).map((x) => x.split("\r\n\r\n").slice(1).join("\r\n\r\n").replace(/\r\n$/, ""));
+    return { meta: JSON.parse(meta), content };
+  };
   const secretNumber = 987654321;
   await withFetch(async (url, init) => {
     const u = new URL(url);
     if (u.pathname === "/drive/v3/files/fold1") return okJson({ id: "fold1", name: "Money", mimeType: "application/vnd.google-apps.folder" });
-    if (u.pathname === "/upload/drive/v3/files" && init.method === "POST") {
-      drive.file = String(init.body).split("\r\n\r\n")[2].split("\r\n--")[0];
-      drive.version = 1;
-      return okJson({ id: "file1", version: "1" });
-    }
-    if (u.pathname === "/upload/drive/v3/files/file1" && init.method === "PATCH") {
-      drive.file = init.body;
+    if ((u.pathname === "/upload/drive/v3/files" && init.method === "POST") || (u.pathname === "/upload/drive/v3/files/file1" && init.method === "PATCH")) {
+      assert.equal(u.searchParams.get("uploadType"), "multipart");
+      const { meta, content } = parts(init.body);
+      drive.file = content;
+      drive.appProperties = { ...drive.appProperties, ...meta.appProperties };
       drive.version++;
-      return okJson({ id: "file1", version: String(drive.version) });
+      return okJson({ id: "file1" });
     }
     if (u.pathname === "/drive/v3/files/file1" && u.searchParams.get("alt") === "media") return new Response(drive.file);
-    if (u.pathname === "/drive/v3/files/file1") return okJson({ id: "file1", version: String(drive.version), parents: ["fold1"] });
+    if (u.pathname === "/drive/v3/files/file1") {
+      drive.version += 3;
+      return okJson({ id: "file1", version: String(drive.version), parents: ["fold1"], appProperties: drive.appProperties });
+    }
     if (u.pathname === "/drive/v3/files/broken") return new Response("PRIVATE DETAILS FROM GOOGLE", { status: 500 });
     throw new Error(`unexpected ${url}`);
   }, async (calls) => {
@@ -3463,18 +3470,29 @@ test("finance page: save, load, a conflict when the other person saved, and noth
     assert.equal(linked.data.folder.name, "Money");
     const first = await api("/api/personal/model", { method: "PUT", body: { model: { cash: secretNumber }, base: null } });
     assert.equal(first.status, 200, JSON.stringify(first.data));
-    assert.equal(first.data.version, "1");
+    assert.ok(first.data.version);
     assert.equal(first.headers.get("cache-control"), "no-store");
     const loaded = await api("/api/personal/model");
     assert.deepEqual(loaded.data.model, { cash: secretNumber });
-    assert.equal(loaded.data.version, "1");
-    const saved = await api("/api/personal/model", { method: "PUT", body: { model: { cash: 1 }, base: "1" } });
-    assert.equal(saved.data.version, "2");
-    // A browser still on version 1 gets the other person's file back instead of overwriting it.
-    const stale = await api("/api/personal/model", { method: "PUT", body: { model: { cash: 5 }, base: "1" } });
+    assert.equal(loaded.data.version, first.data.version);
+    // Bug: Drive's own version number rose by itself after each save, so the next save
+    // from the same browser was reported as "the file changed while you had it open".
+    let version = loaded.data.version;
+    for (let n = 1; n <= 5; n++) {
+      const saved = await api("/api/personal/model", { method: "PUT", body: { model: { cash: n }, base: version } });
+      assert.equal(saved.status, 200, `quick save ${n}: ${JSON.stringify(saved.data)}`);
+      assert.notEqual(saved.data.version, version);
+      version = saved.data.version;
+    }
+    // A browser still on an old marker gets the other person's file back instead of overwriting it.
+    const stale = await api("/api/personal/model", { method: "PUT", body: { model: { cash: 99 }, base: first.data.version } });
     assert.equal(stale.status, 409);
-    assert.deepEqual(stale.data.model, { cash: 1 });
-    assert.equal((await api("/api/personal/model", { method: "PUT", body: { model: { cash: 5 }, base: "1", force: true } })).status, 200, "unless they choose to keep theirs");
+    assert.deepEqual(stale.data.model, { cash: 5 });
+    assert.equal(stale.data.version, version);
+    assert.equal((await api("/api/personal/model", { method: "PUT", body: { model: { cash: 99 }, base: first.data.version, force: true } })).status, 200, "unless they choose to keep theirs");
+    // A file saved before markers existed has none: the first save just gives it one.
+    drive.appProperties = {};
+    assert.equal((await api("/api/personal/model", { method: "PUT", body: { model: { cash: 7 }, base: "41" } })).status, 200);
     for (const c of calls) assert.ok(!c.url.includes(String(secretNumber)), "numbers never go in a URL");
     const broken = await api("/api/personal/drive/folder", { method: "POST", body: { id: "broken" } });
     assert.equal(broken.status, 502);

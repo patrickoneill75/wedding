@@ -92,6 +92,7 @@ async function load() {
   } else {
     state.link = { linked: r.data.linked, email: r.data.email, folder: r.data.folder, has_file: r.data.has_file, linked_by: r.data.linked_by };
     state.version = r.data.version;
+    state.lastStamp = r.data.model?.savedAt || null;
     state.model = r.data.model ? E.normalizeModel(r.data.model) : E.defaultModel();
     if (!r.data.model) state.dirty = true;
     if (!canSave()) setStatus(state.link.linked ? "Not saved yet: pick a Drive folder in Settings." : "Not saved: link Google Drive in Settings.", "err");
@@ -111,12 +112,19 @@ async function save(force = false) {
   }
   state.saving = true;
   setStatus("Saving…");
-  state.model.savedAt = new Date().toISOString();
+  const stamp = new Date().toISOString();
+  state.model.savedAt = stamp;
   state.model.savedBy = me.email;
   try {
-    const r = await call("PUT", "/api/personal/model", { model: state.model, base: state.version, force });
+    let r = await call("PUT", "/api/personal/model", { model: state.model, base: state.version, force });
+    // The file in Drive is still exactly what this browser last saved or loaded (same
+    // stamp): nobody else saved, so take its marker and save again without asking.
+    if (r.status === 409 && r.data.conflict && state.lastStamp && r.data.model?.savedAt === state.lastStamp) {
+      r = await call("PUT", "/api/personal/model", { model: state.model, base: r.data.version, force: false });
+    }
     if (r.status === 200) {
       state.version = r.data.version;
+      state.lastStamp = stamp;
       state.dirty = false;
       state.link.has_file = true;
       setStatus(`Saved to Drive at ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`, "ok");
@@ -148,6 +156,7 @@ async function resolveConflict(theirs) {
   if (choice === "theirs") {
     state.model = E.normalizeModel(theirs.model);
     state.version = theirs.version;
+    state.lastStamp = theirs.model?.savedAt || null;
     state.dirty = false;
     setStatus("Loaded their version.", "ok");
     renderAll();
@@ -628,8 +637,11 @@ const F = {
     { key: "growth", label: "Yearly raise", type: "pct", nullable: true, help: "Blank uses the default raise in Assumptions. Raises apply each January." },
     { key: "retirePct", label: "401(k)/403(b) contribution", type: "pct", help: "Share of each paycheck. It stops at the IRS limit each year. Traditional is pre-tax for income tax (FICA still applies); Roth is after tax." },
     { key: "retireAccount", label: "Into account", type: "select", opts: ACCT_OPTS(["trad401k", "roth401k"]) },
-    { key: "matchPct", label: "Employer match rate", type: "pct", help: "100 means dollar for dollar; 50 means 50 cents per dollar." },
-    { key: "matchUpTo", label: "Match on up to", type: "pct", help: "The share of pay the employer matches, for example 4." },
+    { key: "matchType", label: "Employer contribution", type: "select", opts: [["match", "Matches what I put in"], ["threshold", "A set % of pay once I put in enough"]], help: "Matches: for example 100% of the first 4% you put in. A set %: for example 10% of pay as long as you put in at least 5%; below that, nothing." },
+    { key: "matchPct", label: "Employer match rate", type: "pct", when: (o) => o.matchType !== "threshold", help: "100 means dollar for dollar; 50 means 50 cents per dollar." },
+    { key: "matchUpTo", label: "Match on up to", type: "pct", when: (o) => o.matchType !== "threshold", help: "The share of pay the employer matches, for example 4." },
+    { key: "matchThreshold", label: "I put in at least", type: "pct", when: (o) => o.matchType === "threshold", help: "The share of pay you must contribute to get the employer's money, for example 5." },
+    { key: "employerPct", label: "Employer puts in", type: "pct", when: (o) => o.matchType === "threshold", help: "The employer's share of your pay, for example 10." },
     { key: "matchAccount", label: "Match goes to", type: "select", opts: ACCT_OPTS(["trad401k", "roth401k"]), help: "Blank: the same account." },
     { key: "hsaEmployee", label: "Your HSA contribution a year", type: "money", help: "Through payroll: pre-tax for income tax and FICA." },
     { key: "hsaEmployer", label: "Employer HSA contribution a year", type: "money" },
@@ -658,7 +670,7 @@ const F = {
     { key: "name", label: "Name", type: "text" },
     { key: "type", label: "Type", type: "select", opts: () => Object.entries(E.ACCOUNT_TYPES).map(([k, v]) => [k, v.label]) },
     { key: "owner", label: "Whose", type: "select", opts: OWNER_OPTS, help: "Decides catch-up limits at 50 and the early-withdrawal penalty before 59½." },
-    { key: "balance", label: "Balance today", type: "money" },
+    { key: "balance", label: "Balance today", type: "money", help: "Or use Update balances at the top of this tab, which keeps each balance with its date." },
     { key: "monthly", label: "Monthly contribution", type: "money", help: "From take-home pay, in the savings order below. Payroll 401(k) contributions are set on the income instead." },
     { key: "ret", label: "Expected return", type: "pct", nullable: true, help: "Blank uses the return for this type in Assumptions." },
     { key: "limit", label: "Yearly limit", type: "money", nullable: true, help: "Blank uses the IRS limit for IRAs, 401(k)s and HSAs, growing as set in Assumptions. Other types have none." },
@@ -756,7 +768,7 @@ function renderTab() {
       section("People", "Each of you. Ages run until the end age in Settings.", list(inp.people, { title: "person", fields: F.person, make: () => ({ id: E.newId("p"), name: "", birthYear: 1995, birthMonth: 1, retireAge: 65, ssMonthly: 0, ssClaimAge: 67 }), name: (p) => p.name })),
       section("Income", "Every paycheck and side income. Each one stops at its owner's retirement.", list(inp.incomes, {
         title: "income", fields: F.income, name: (x) => `${inp.people.find((p) => p.id === x.owner)?.name || "?"}: ${x.name}`,
-        make: () => ({ id: E.newId("inc"), owner: inp.people[0]?.id, name: "Salary", kind: "salary", annual: 0, start: "", end: "", growth: null, payMonth: 12, jumps: [], gaps: [], retirePct: 0, retireAccount: "", matchPct: 0, matchUpTo: 0, matchAccount: "", hsaEmployee: 0, hsaEmployer: 0, hsaAccount: "" }),
+        make: () => ({ id: E.newId("inc"), owner: inp.people[0]?.id, name: "Salary", kind: "salary", annual: 0, start: "", end: "", growth: null, payMonth: 12, jumps: [], gaps: [], retirePct: 0, retireAccount: "", matchType: "match", matchPct: 0, matchUpTo: 0, matchThreshold: 0.05, employerPct: 0, matchAccount: "", hsaEmployee: 0, hsaEmployer: 0, hsaAccount: "" }),
         nested: (x) => h("div", { class: "nested" },
           h("h4", {}, "One-time jumps (promotion, job change)"),
           list(x.jumps, { title: "jump", fields: F.jump, name: (j) => j.date || "New jump", make: () => ({ date: "", pct: 0.1, newAnnual: null }) }),
@@ -788,8 +800,9 @@ function renderTab() {
     ];
   } else if (t === "accounts") {
     body = [
+      balancesPanel(inp),
       section("Accounts", null, list(inp.accounts, {
-        title: "account", fields: F.account, name: (a) => `${a.name} · ${E.ACCOUNT_TYPES[a.type]?.label || a.type}`,
+        title: "account", fields: F.account, name: (a) => `${a.name} · ${E.ACCOUNT_TYPES[a.type]?.label || a.type}${a.balanceAsOf ? ` · balance as of ${dayName(a.balanceAsOf)}` : ""}`,
         make: () => ({ id: E.newId("acct"), name: "New account", type: "savings", owner: "shared", balance: 0, monthly: 0, ret: null, limit: null }),
       })),
       section("Where money goes", null, grid(inp.settings, [
@@ -922,6 +935,80 @@ function renderTabResults() {
   } else if (state.tab === "retirement") {
     box.replaceChildren(h("div", { class: `callout ${s.lasts ? "good" : "bad"}` }, s.lasts ? `The money lasts through ${s.endYear}.` : `The money runs out in ${s.runsOutYear}.`, s.fiYear ? ` Financially independent in ${s.fiYear}.` : "", ` Net worth when you're both retired (${s.retirementYear}): ${money(s.netWorthAtRetirement)} in today's dollars.`));
   }
+}
+
+const todayIso = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+const dayName = (iso) => {
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(String(iso || "")) ? new Date(`${iso}T12:00:00`) : null;
+  return d ? d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
+};
+
+/**
+ * Type in balances from your statements with the date they're from. Each one goes into
+ * that account's history; the newest becomes its balance, and the plan's start month
+ * moves up to it so the projection begins from real numbers.
+ */
+function balancesPanel(inp) {
+  const date = h("input", { type: "date", "aria-label": "Balances as of" });
+  date.value = todayIso();
+  const rows = [...inp.accounts.map((a) => ({ item: a, kind: "Account" })), ...inp.debts.map((d) => ({ item: d, kind: "Loan" }))];
+  const inputsFor = new Map();
+  const tbody = h("tbody", {}, rows.map(({ item, kind }) => {
+    const box = h("input", { type: "number", step: "any", inputmode: "decimal", placeholder: "New balance", "aria-label": `New balance for ${item.name}` });
+    inputsFor.set(item, box);
+    return h("tr", {},
+      h("td", {}, item.name, kind === "Loan" ? h("span", { class: "muted" }, " (loan, what you owe)") : null),
+      h("td", { class: "num" }, money(Number(item.balance) || 0)),
+      h("td", { class: "muted" }, item.balanceAsOf ? dayName(item.balanceAsOf) : "Not dated yet"),
+      h("td", {}, box));
+  }));
+  const note = h("p", { class: "msg" });
+  const saveBtn = h("button", { class: "primary", onclick: () => {
+    const when = date.value;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(when)) return (note.textContent = "Pick the date these balances are from.");
+    let n = 0;
+    for (const [item, box] of inputsFor) {
+      if (box.value.trim() === "") continue;
+      const v = Number(box.value);
+      if (!Number.isFinite(v)) continue;
+      item.history = (item.history || []).filter((x) => x.date !== when);
+      item.history.push({ date: when, balance: v });
+      item.history.sort((a, b) => (a.date < b.date ? -1 : 1));
+      // An older statement only fills in history; the newest one is the balance.
+      const newest = item.history[item.history.length - 1];
+      item.balance = newest.balance;
+      item.balanceAsOf = newest.date;
+      n++;
+    }
+    if (!n) return (note.textContent = "Type at least one new balance.");
+    const month = when.slice(0, 7);
+    if (month > String(inp.settings.start || "")) inp.settings.start = month;
+    changed({ rerender: true });
+    setTimeout(() => setStatus(`Updated ${n} balance${n === 1 ? "" : "s"} as of ${dayName(when)}. Saving…`), 0);
+  } }, "Save these balances");
+  const history = h("details", { class: "history" }, h("summary", {}, "Balance history"),
+    ...rows.filter(({ item }) => item.history?.length).map(({ item }) => h("div", { class: "fitem" },
+      h("div", { class: "fhead" }, h("b", {}, item.name)),
+      h("table", {}, h("tbody", {}, item.history.slice().reverse().map((x) => h("tr", {},
+        h("td", {}, dayName(x.date)), h("td", { class: "num" }, money(x.balance)),
+        h("td", {}, h("button", { class: "small danger", "aria-label": `Delete the ${dayName(x.date)} balance for ${item.name}`, onclick: () => {
+          if (!confirm(`Delete the ${dayName(x.date)} balance for ${item.name}?`)) return;
+          item.history = item.history.filter((y) => y !== x);
+          const newest = item.history[item.history.length - 1];
+          if (newest && x.date === item.balanceAsOf) {
+            item.balance = newest.balance;
+            item.balanceAsOf = newest.date;
+          } else if (!newest) delete item.balanceAsOf;
+          changed({ rerender: true });
+        } }, "Delete")))))))),
+    rows.some(({ item }) => item.history?.length) ? null : h("p", { class: "desc" }, "Nothing yet. Each update you save shows here with its date."));
+  return section("Update balances", "Type balances from your statements, with the date they're from. Each one is kept with its date, and the plan starts from the month of the newest update. Leave a box blank to keep that balance.",
+    h("div", { class: "row" }, h("label", { class: "field" }, "Balances as of", date), saveBtn),
+    h("div", { class: "table-wrap" }, h("table", { class: "balances" }, h("thead", {}, h("tr", {}, h("th", {}, "Account"), h("th", { class: "num" }, "Balance now"), h("th", {}, "As of"), h("th", {}, "New balance"))), tbody)),
+    note, history);
 }
 
 function priorityList(inp) {
