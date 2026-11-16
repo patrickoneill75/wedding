@@ -26,6 +26,9 @@ const state = {
   tab: "savings",
   expanded: new Set(),
   mc: null,
+  // The one-month chart's choices are a per-browser view setting, not part of the model.
+  flowHide: new Set(readJsonPref("fin-flow-hide", [])),
+  flowByPerson: readPref("fin-flow-person", "1") === "1",
 };
 const scenario = () => state.model.scenarios.find((x) => x.id === state.model.active) || state.model.scenarios[0];
 const inputs = () => scenario().inputs;
@@ -33,6 +36,14 @@ const inputs = () => scenario().inputs;
 function readPref(key, fallback) {
   try {
     return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+function readJsonPref(key, fallback) {
+  try {
+    const v = JSON.parse(readPref(key, "null"));
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : fallback;
   } catch {
     return fallback;
   }
@@ -384,30 +395,65 @@ function renderCashFlow(r) {
 }
 
 /* One month as a Sankey chart: where the money came from, and where it went. */
-const FLOW_COLORS = { taxes: "var(--series-8)", housing: "var(--series-2)", cars: "var(--stage-2)", kids: "var(--series-4)", health: "var(--series-6)", categories: "var(--series-5)", pets: "var(--series-5)", events: "var(--series-7)", debt: "var(--series-7)", savings: "var(--series-3)", adjust: "var(--text-muted)" };
+const FLOW_COLORS = { taxes: "var(--series-8)", housing: "var(--series-2)", cars: "var(--stage-2)", kids: "var(--series-4)", health: "var(--series-6)", categories: "var(--series-5)", pets: "var(--series-5)", events: "var(--series-7)", debt: "var(--series-7)", retirement: "var(--stage-4)", savings: "var(--series-3)", leftover: "color-mix(in srgb, var(--series-3) 55%, var(--page))", adjust: "var(--text-muted)" };
+const PERSON_COLORS = ["var(--series-1)", "var(--series-5)", "var(--series-6)", "var(--series-4)"];
+
+function renderFlowOptions() {
+  const box = $("flowOpts");
+  const toggle = (label, checked, onchange) => {
+    const cb = h("input", { type: "checkbox", checked });
+    cb.addEventListener("change", () => onchange(cb.checked));
+    return h("label", { class: "check" }, cb, label);
+  };
+  box.replaceChildren(
+    h("span", { class: "muted" }, "Show:"),
+    ...E.FLOW_ORDER.map((key) => toggle(E.FLOW_GROUP_LABELS[key], !state.flowHide.has(key), (on) => {
+      if (on) state.flowHide.delete(key);
+      else state.flowHide.add(key);
+      writePref("fin-flow-hide", JSON.stringify([...state.flowHide]));
+      renderFlow(state.result);
+    })),
+    h("span", { class: "sep" }),
+    toggle("Split income by person", state.flowByPerson, (on) => {
+      state.flowByPerson = on;
+      writePref("fin-flow-person", on ? "1" : "0");
+      renderFlow(state.result);
+    }));
+}
 function renderFlow(r) {
   const pick = $("flowMonth");
   pick.min = r.start;
   pick.max = r.end;
   if (state.flowMonth > r.end) state.flowMonth = r.end;
   pick.value = state.flowMonth;
-  const f = E.monthFlows(r, state.flowMonth, { real: state.real });
+  if (!$("flowOpts").childElementCount) renderFlowOptions();
+  const f = E.monthFlows(r, state.flowMonth, { real: state.real, byPerson: state.flowByPerson, hide: [...state.flowHide] });
+  if (f && !f.groups.length) {
+    $("flowChart").replaceChildren(h("p", { class: "desc" }, "Everything is unticked. Tick a group above to see it."));
+    $("flowNote").textContent = "";
+    return;
+  }
   if (!f) {
     $("flowChart").replaceChildren(h("p", { class: "desc" }, "Pick a month inside the plan."));
     return;
   }
   const nodes = [];
   const links = [];
+  const people = (r.people || []).map((p) => p.id);
   f.inflows.forEach((x, n) => {
-    nodes.push({ id: `in${n}`, label: x.label, col: 0, value: x.value, color: x.drawn ? "var(--series-4)" : "var(--series-1)" });
-    links.push({ source: `in${n}`, target: "hub", value: x.value, color: x.drawn ? "var(--series-4)" : "var(--series-1)" });
+    const color = x.drawn ? "var(--series-4)" : x.person ? PERSON_COLORS[Math.max(0, people.indexOf(x.person)) % PERSON_COLORS.length] : "var(--series-1)";
+    nodes.push({ id: `in${n}`, label: x.direct ? `${x.label} → ${E.FLOW_GROUP_LABELS[x.direct] || x.direct}` : x.label, col: 0, value: x.value, color });
+    // A fund paying for something specific goes straight to it, past "money in".
+    links.push({ source: `in${n}`, target: x.direct ? `g-${x.direct}` : "hub", value: x.value, color });
   });
-  nodes.push({ id: "hub", label: "Money in", col: 1, value: f.total, color: "var(--text-secondary)" });
+  const direct = (key) => f.inflows.filter((x) => x.direct === key).reduce((t, x) => t + x.value, 0);
+  const hubValue = f.inflows.filter((x) => !x.direct).reduce((t, x) => t + x.value, 0);
+  nodes.push({ id: "hub", label: f.hidden.length ? "Money in, shown" : "Money in", col: 1, value: hubValue, color: "var(--text-secondary)" });
   const deep = f.groups.some((g) => g.items.length > 1 || (g.items[0] && g.items[0].label !== g.label));
   for (const g of f.groups) {
     const color = FLOW_COLORS[g.key] || "var(--text-muted)";
     nodes.push({ id: `g-${g.key}`, label: g.label, col: 2, value: g.value, color });
-    links.push({ source: "hub", target: `g-${g.key}`, value: g.value, color });
+    if (g.value - direct(g.key) > 0.005) links.push({ source: "hub", target: `g-${g.key}`, value: g.value - direct(g.key), color });
     if (!deep || (g.items.length === 1 && g.items[0].label === g.label)) continue;
     g.items.forEach((it, n) => {
       nodes.push({ id: `i-${g.key}-${n}`, label: it.label, col: 3, value: it.value, color });
@@ -417,7 +463,8 @@ function renderFlow(r) {
   sankey($("flowChart"), { nodes, links, fmt: (v) => money(v), onHover: (title, rows, ev) => showTooltip(ev, title, rows), onLeave: hideTooltip });
   const ms = r.milestones.filter((m) => m.month === state.flowMonth).map((m) => m.label);
   const drawn = f.inflows.filter((x) => x.drawn).reduce((t, x) => t + x.value, 0);
-  $("flowNote").textContent = `${monthName(state.flowMonth)}, ${state.real ? "in today's dollars" : "in that month's dollars"}. ${money(f.total)} moved through the month${drawn > 0.5 ? `, ${money(drawn)} of it drawn from savings` : ""}.${ms.length ? ` This month: ${ms.join(", ")}.` : ""} December includes settling the year's taxes.`;
+  const left = f.hidden.length ? ` Left out: ${f.hidden.map((x) => `${x.label} ${money(x.value)}`).join(", ")}; the money in is reduced to match${f.hidden.some((x) => x.key === "retirement") ? ", employer money first" : ""}.` : "";
+  $("flowNote").textContent = `${monthName(state.flowMonth)}, ${state.real ? "in today's dollars" : "in that month's dollars"}. ${money(f.fullTotal)} moved through the month${drawn > 0.5 ? `, ${money(drawn)} of it drawn from savings` : ""}.${left}${ms.length ? ` This month: ${ms.join(", ")}.` : ""} December includes settling the year's taxes.`;
   $("flowTable").replaceChildren(
     h("thead", {}, h("tr", {}, h("th", {}, "Where it came from"), h("th", { class: "num" }, "Amount"))),
     h("tbody", {}, f.inflows.map((x) => h("tr", {}, h("td", {}, x.label), h("td", { class: "num" }, money(x.value))))),

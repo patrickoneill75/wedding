@@ -173,7 +173,7 @@ export function sankey(el, { nodes, links, fmt, onHover, onLeave }) {
   const minSlot = 15;
   // Room for the longest label on each side (about 7px a character).
   const longest = (c) => Math.max(0, ...nodes.filter((n) => n.col === c).map((n) => `${n.label}  ${fmt(n.value)}`.length));
-  const pad = { t: 10, b: 10, l: Math.min(260, 20 + longest(0) * 7), r: Math.min(280, 24 + longest(cols - 1) * 7) };
+  const pad = { t: 10, b: 10, l: Math.min(360, 24 + longest(0) * 7), r: Math.min(300, 24 + longest(cols - 1) * 7) };
   const colX = (c) => pad.l + (c / (cols - 1)) * (width - pad.l - pad.r - nodeW);
   const byCol = Array.from({ length: cols }, (_, c) => nodes.filter((n) => n.col === c));
   const total = Math.max(...byCol.map((list) => list.reduce((t, n) => t + n.value, 0)), 1);

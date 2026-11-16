@@ -104,3 +104,6 @@ button.link.small { padding: 0 4px; min-height: 0; font-weight: 700; }
 .feeds { border-top: 1px solid var(--border); padding-top: 6px; display: flex; flex-direction: column; gap: 6px; }
 .feed .desc, .feed p { margin: 2px 0; font-size: 12.5px; }
 .chart.spark text { font-size: 10.5px; }
+.flow-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 4px 0 6px; font-size: 13px; }
+.flow-opts .check { font-size: 13px; }
+.flow-opts .sep { width: 1px; height: 18px; background: var(--border); }
