@@ -274,6 +274,30 @@ test("a set-aside fund pays the pets' costs first, and pay covers what it can't"
   near(y.balances.pet, 700, 0.01);
 });
 
+// Asked for: "I pay my student loans out of my savings." $300 a month from a $5,000
+// savings account for a year leaves 5,000 − 3,600 = $1,400 there, and pay keeps the $300
+// each month (the leftover grows by 12 × 300 = $3,600 compared with paying from pay).
+// With only $1,000 saved, the account covers the first 3⅓ payments, then pay takes over.
+test("a loan paid from a savings account, with pay covering what the account can't", () => {
+  const make = (fund, balance) => {
+    const inp = bare();
+    inp.incomes = [salary(60000)];
+    inp.accounts.push({ id: "sav", name: "Savings", type: "savings", owner: "shared", balance, monthly: 0 });
+    inp.debts = [{ id: "sl", name: "Student loan", kind: "student", balance: 20000, rate: 0, minPayment: 300, extra: 0, plan: "standard", fundAccount: fund }];
+    return simulate(inp);
+  };
+  const fromPay = make("", 5000).years[0];
+  const r = make("sav", 5000);
+  const y = r.years[0];
+  near(y.debt.payment, 3600, 0.01, "the loan is paid either way");
+  near(y.withdrawals.sav, 3600, 0.01);
+  near(y.balances.sav, 1400, 0.01);
+  near(y.surplus - fromPay.surplus, 3600, 0.5, "pay keeps the $300 a month");
+  const short = make("sav", 1000);
+  near(short.years[0].withdrawals.sav, 1000, 0.01);
+  assert.ok(short.flags.some((f) => /Savings ran short for Student loan in 2026-04/.test(f.message)), JSON.stringify(short.flags));
+});
+
 // A $500-a-month savings goal with a $2,000 target fills in four months and stops.
 test("a target balance stops contributions once it's reached, and says when", () => {
   const inp = bare();

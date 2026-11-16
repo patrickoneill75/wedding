@@ -709,6 +709,13 @@ export function simulate(rawInputs, opts = {}) {
     add(yr.withdrawals, a.id, take);
     return take;
   }
+  /** A loan payment from its savings account (d.fundAccount), flagged once if it runs dry. */
+  function loanFund(d, amount, i) {
+    if (!d.fundAccount || !acct.get(d.fundAccount)) return 0;
+    const got = fromFund(d.fundAccount, amount);
+    if (got < amount - 0.5) flag(i, "warn", `${acct.get(d.fundAccount).name} ran short for ${d.name || "a loan"} in ${ymOf(i)}; pay covered the rest from then on.`, `loanfund-${d.id}`);
+    return got;
+  }
   /** An account's target balance in month i (future dollars), or null for none. */
   function targetFor(a, i, emergencyTarget) {
     if (a.type === "house" && H.enabled && a.id === H.fundAccount) return house.owned ? null : housePrice(i) * (num(H.downPct) + num(H.closingPct));
@@ -989,7 +996,10 @@ export function simulate(rawInputs, opts = {}) {
       }
       pay = Math.min(pay, d.bal);
       d.bal -= pay;
-      spend("debt", "payment", pay);
+      // Paid from savings (d.fundAccount) first, when chosen; pay covers the rest.
+      const fromSavings = loanFund(d, pay, i);
+      required += pay - fromSavings;
+      add(yr.debt, "payment", pay);
       d.made++;
       if (d.forgive && d.made >= num(d.forgiveAfterMonths) && d.bal > 0.005) {
         add(yr.debt, "forgiven", d.bal);
@@ -1027,13 +1037,17 @@ export function simulate(rawInputs, opts = {}) {
     // Each account's target this month (the first month it's reached is noted below).
     for (const a of accounts) curTarget[a.id] = targetFor(a, i, emergencyTarget);
     for (const g of goals) {
-      if (cash <= 0.005) break;
       if (g.kind === "debt") {
         const d = debts.find((x) => x.id === g.id);
         if (!d || d.done || d.bal <= 0 || !(num(d.extra) > 0) || (d.startIdx != null && i < d.startIdx)) continue;
-        const pay = Math.min(cash, num(d.extra), d.bal);
+        // Extra payments come from the loan's savings account first, then what's left of pay.
+        const want = Math.min(num(d.extra), d.bal);
+        const fromSavings = loanFund(d, want, i);
+        const fromPay = Math.max(0, Math.min(cash, want - fromSavings));
+        const pay = fromSavings + fromPay;
+        if (!(pay > 0)) continue;
         d.bal -= pay;
-        cash -= pay;
+        cash -= fromPay;
         add(yr.debt, "extra", pay);
         if (d.bal <= 0.005) {
           d.done = true;
@@ -1042,6 +1056,7 @@ export function simulate(rawInputs, opts = {}) {
         }
         continue;
       }
+      if (cash <= 0.005) continue;
       const a = acct.get(g.id);
       if (!a) continue;
       let want = g.kind === "kid529" ? num(g.monthly) : num(a.monthly);
