@@ -70,6 +70,7 @@
       <input type="month" id="flowMonth" aria-label="Month to show">
       <button class="small" id="flowNext" aria-label="Next month">›</button>
     </div>
+    <div class="flow-opts" id="flowOpts" role="group" aria-label="What the chart shows"></div>
     <p class="desc" id="flowNote"></p>
     <div class="chart sankey-wrap" id="flowChart"></div>
     <details class="flow-table">
@@ -163,7 +164,8 @@
       <li>Each account can have a target. The house fund's target is the down payment plus closing costs at that month's price. The emergency fund's target is your months of required spending. Any other account's target is the amount you set, in today's dollars. Monthly contributions stop once the balance reaches it.</li>
       <li>A set-aside fund holds money for costs you'd rather pay yourselves than insure. A pet or budget category set to "Paid from" a fund draws on it first. Whatever the fund can't cover comes out of that month's pay. Set-aside funds are never used to cover other shortfalls.</li>
       <li>A loan can be "Paid from" a savings account too. Its payment and any extra come from that account first, and pay covers the rest once it runs low. "Things to check" says when that happens.</li>
-      <li>The "One month" chart shows where a month's money came from and where it went. December includes settling the year's taxes. "Held for later" is tax held back on a withdrawal until December, or a similar timing gap. Payments a fund makes directly, like closing costs from the house fund, show as money drawn from that fund.</li>
+      <li>The "One month" chart shows where a month's money came from and where it went. December includes settling the year's taxes. "Held for later" is tax held back on a withdrawal until December, or a similar timing gap. A fund that pays for something specific (a loan, the pets, a budget category) shows as its own band, straight from the fund to what it paid. Closing costs from the house fund show as money drawn from that fund.</li>
+      <li>The tick boxes leave groups out. The money coming in shrinks by the same amount, starting with employer money when retirement is left out (that's where it goes), then every other source in proportion. "Split income by person" shows each of your paychecks, employer money and Social Security separately. Spending stays shared.</li>
     </ul>
 
     <h4>Returns and the range of outcomes</h4>

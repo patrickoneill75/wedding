@@ -241,7 +241,8 @@ test("one month's flows: money in equals money out, with the right pieces", () =
   near(g.taxes, 12542.3 / 12, 0.05, "a twelfth of the year's tax");
   near(g.housing, 1500, 0.01);
   near(g.categories, 500, 0.01);
-  near(g.savings, 300 + 1654.81, 0.05, "the savings goal plus the leftover");
+  near(g.savings, 300, 0.01, "the savings goal");
+  near(g.leftover, 1654.81, 0.05, "and the leftover, on its own");
   // The default plan's busy months: the wedding (drawing from savings), a December
   // settling taxes, the house purchase and a retirement month.
   const def = defaultInputs(new Date(2026, 10, 1));
@@ -255,6 +256,33 @@ test("one month's flows: money in equals money out, with the right pieces", () =
     assert.ok(x.inflows.every((y) => y.value > 0) && x.groups.every((y) => y.value > 0), `${ym} has no negative pieces`);
   }
   assert.equal(monthFlows(simulate(def), "2027-05"), null, "only the month asked for is recorded");
+});
+
+// Asked for: tick boxes to leave out taxes, retirement, savings and the rest, and income
+// split between the two of you. Patrick earns $60,000 with 5% into his 401(k) and a 4%
+// match ($250 + $200 a month); Kit earns $40,000 with nothing withheld for retirement.
+test("one month's flows by person, and with groups left out", () => {
+  const inp = bare();
+  inp.people.push({ id: "p2", name: "Kit", birthYear: 1995, birthMonth: 1, retireAge: 65, ssMonthly: 0, ssClaimAge: 67 });
+  inp.accounts.push({ id: "k", name: "401k", type: "trad401k", owner: "p1", balance: 0, monthly: 0 });
+  inp.incomes = [salary(60000, { retirePct: 0.05, retireAccount: "k", matchPct: 1, matchUpTo: 0.04 }), { ...salary(40000), id: "inc2", owner: "p2" }];
+  const r = simulate(inp, { flowMonth: "2026-03" });
+  const sum = (xs) => xs.reduce((t, x) => t + x.value, 0);
+  const f = monthFlows(r, "2026-03", { byPerson: true });
+  const ins = Object.fromEntries(f.inflows.map((x) => [x.label, x.value]));
+  near(ins["Pat: Salary"], 5000, 0.01);
+  near(ins["Pat: Employer money"], 200, 0.01);
+  near(ins["Kit: Salary"], 40000 / 12, 0.01);
+  near(f.groups.find((g) => g.key === "retirement").value, 450, 0.01, "his $250 and the employer's $200");
+  near(f.groups.find((g) => g.key === "leftover").value, sum(f.inflows) - sum(f.groups.filter((g) => g.key !== "leftover")), 0.01);
+  // Leaving out taxes and retirement: the employer's $200 goes first, then every source
+  // shrinks in proportion, and the two sides still match.
+  const cut = monthFlows(r, "2026-03", { byPerson: true, hide: ["taxes", "retirement"] });
+  assert.ok(!cut.groups.some((g) => g.key === "taxes" || g.key === "retirement"));
+  assert.ok(!cut.inflows.some((x) => /Employer/.test(x.label)), "employer money only goes to retirement");
+  near(sum(cut.inflows), sum(cut.groups), 0.01);
+  near(sum(cut.inflows), f.total - f.groups.filter((g) => g.key === "taxes" || g.key === "retirement").reduce((t, g) => t + g.value, 0), 0.01);
+  assert.deepEqual(cut.hidden.map((x) => x.key), ["taxes", "retirement"]);
 });
 
 /* ------------------------------------------------------- savings goals -- */
@@ -293,6 +321,18 @@ test("a loan paid from a savings account, with pay covering what the account can
   near(y.withdrawals.sav, 3600, 0.01);
   near(y.balances.sav, 1400, 0.01);
   near(y.surplus - fromPay.surplus, 3600, 0.5, "pay keeps the $300 a month");
+  // On the one-month chart the $300 goes straight from Savings to the loan.
+  const flowRun = (() => {
+    const inp = bare();
+    inp.incomes = [salary(60000)];
+    inp.accounts.push({ id: "sav", name: "Savings", type: "savings", owner: "shared", balance: 5000, monthly: 0 });
+    inp.debts = [{ id: "sl", name: "Student loan", kind: "student", balance: 20000, rate: 0, minPayment: 300, extra: 0, plan: "standard", fundAccount: "sav" }];
+    return simulate(inp, { flowMonth: "2026-03" });
+  })();
+  const fl = monthFlows(flowRun, "2026-03");
+  assert.deepEqual(fl.inflows.filter((x) => x.direct).map((x) => [x.label, x.direct, Math.round(x.value)]), [["From Savings", "debt", 300]]);
+  assert.ok(!fl.inflows.some((x) => !x.direct && /Savings/.test(x.label)), "none of it goes through money in");
+  assert.ok(!monthFlows(flowRun, "2026-03", { hide: ["debt"] }).inflows.some((x) => x.direct), "leaving out loans leaves out its fund payment too");
   const short = make("sav", 1000);
   near(short.years[0].withdrawals.sav, 1000, 0.01);
   assert.ok(short.flags.some((f) => /Savings ran short for Student loan in 2026-04/.test(f.message)), JSON.stringify(short.flags));

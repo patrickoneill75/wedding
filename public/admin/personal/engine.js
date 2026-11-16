@@ -481,7 +481,10 @@ export function simulate(rawInputs, opts = {}) {
     const out = [];
     for (let mo = 0; mo < 12; mo++) {
       const i = year * 12 + mo;
-      const rec = { i, pay: [], ss: 0, ssBy: {}, wagesBy: {}, ficaBy: {}, pretax401: 0, roth401: 0, hsaEmp: 0, employer: 0, contribs: [], gross: 0, byKind: { salary: 0, bonus: 0, side: 0 } };
+      const rec = { i, pay: [], ss: 0, ssBy: {}, wagesBy: {}, ficaBy: {}, pretax401: 0, roth401: 0, hsaEmp: 0, employer: 0, contribs: [], gross: 0, byKind: { salary: 0, bonus: 0, side: 0 }, byPerson: {} };
+      const mine = (pid, kind, v) => {
+        rec.byPerson[`${pid}.${kind}`] = (rec.byPerson[`${pid}.${kind}`] || 0) + v;
+      };
       for (const inc of incomes) {
         const p = pById.get(inc.owner);
         if (!p) continue;
@@ -495,6 +498,7 @@ export function simulate(rawInputs, opts = {}) {
         if (!(pay > 0)) continue;
         rec.gross += pay;
         rec.byKind[inc.kind in rec.byKind ? inc.kind : "salary"] += pay;
+        mine(p.id, inc.kind in rec.byKind ? inc.kind : "salary", pay);
         rec.wagesBy[p.id] = (rec.wagesBy[p.id] || 0) + pay;
         rec.ficaBy[p.id] = (rec.ficaBy[p.id] || 0) + pay;
         // Employee retirement contribution, within the yearly limit (plus catch-up at 50).
@@ -521,6 +525,7 @@ export function simulate(rawInputs, opts = {}) {
           if (m > 0) {
             rec.contribs.push({ acct: matchTo.id, amount: m, source: "employer" });
             rec.employer += m;
+            mine(p.id, "employer", m);
           }
         }
         // HSA through payroll: pre-tax for income tax and FICA.
@@ -534,6 +539,7 @@ export function simulate(rawInputs, opts = {}) {
           if (er) {
             rec.contribs.push({ acct: ha.id, amount: er, source: "employer" });
             rec.employer += er;
+            mine(p.id, "employer", er);
           }
           if (ee) {
             rec.contribs.push({ acct: ha.id, amount: ee, source: "employee" });
@@ -549,6 +555,7 @@ export function simulate(rawInputs, opts = {}) {
           const amt = num(p.ssMonthly) * (1 + infl) ** ((i - start) / 12);
           rec.ss += amt;
           rec.ssBy[p.id] = amt;
+          mine(p.id, "ss", amt);
         }
       }
       out.push(rec);
@@ -630,6 +637,8 @@ export function simulate(rawInputs, opts = {}) {
   const emptyYear = (year) => ({
     year, months: 0, married: marriedIn(year), ages: people.map((p) => Math.floor(year - p.birthYear)),
     income: { salary: 0, bonus: 0, side: 0, ss: 0, employer: 0, windfall: 0 },
+    incomeBy: {},
+    paidFrom: {},
     pretax: { retirement: 0, hsa: 0, cafeteria: 0 },
     taxes: { federal: 0, fica: 0, state: 0, county: 0, total: 0 },
     housing: { rent: 0, utilities: 0, mortgage: 0, propertyTax: 0, insurance: 0, hoa: 0, upkeep: 0, pmi: 0, bigItems: 0, closing: 0 },
@@ -701,18 +710,20 @@ export function simulate(rawInputs, opts = {}) {
   const reached = {};
   const startPlan = { beforeGoals: 0, leftover: 0, goals: [], payroll: [] };
   /** Pay `v` from a set-aside or savings fund as far as it goes; returns what it covered. */
-  function fromFund(id, v) {
+  function fromFund(id, v, group) {
     const a = id ? acct.get(id) : null;
     if (!a || !(v > 0) || a.bal <= 0) return 0;
     const take = Math.min(a.bal, v);
     a.bal -= take;
     add(yr.withdrawals, a.id, take);
+    // What the fund paid for, so the one-month chart can draw it straight there.
+    add(yr.paidFrom, `${a.id}|${group}`, take);
     return take;
   }
   /** A loan payment from its savings account (d.fundAccount), flagged once if it runs dry. */
   function loanFund(d, amount, i) {
     if (!d.fundAccount || !acct.get(d.fundAccount)) return 0;
-    const got = fromFund(d.fundAccount, amount);
+    const got = fromFund(d.fundAccount, amount, "debt");
     if (got < amount - 0.5) flag(i, "warn", `${acct.get(d.fundAccount).name} ran short for ${d.name || "a loan"} in ${ymOf(i)}; pay covered the rest from then on.`, `loanfund-${d.id}`);
     return got;
   }
@@ -777,6 +788,7 @@ export function simulate(rawInputs, opts = {}) {
     yr.income.side += rec.byKind.side;
     yr.income.ss += rec.ss;
     yr.income.employer += rec.employer;
+    for (const [k, v] of Object.entries(rec.byPerson)) add(yr.incomeBy, k, v);
     yr.pretax.retirement += rec.pretax401;
     yr.pretax.hsa += rec.hsaEmp;
     yr.pretax.cafeteria += cafeteria;
@@ -900,7 +912,7 @@ export function simulate(rawInputs, opts = {}) {
       const st = monthIndex(p.start) ?? start;
       if (i < st || (opt(p.endYear) != null && year > num(p.endYear))) continue;
       const v = (num(p.annual) / 12) * f + (i === st ? num(p.oneTime) * f : 0);
-      required += v - fromFund(p.fundAccount, v);
+      required += v - fromFund(p.fundAccount, v, "pets");
       yr.pets += v;
     }
     // Budget categories (replaced in retirement when a target or rate is set)
@@ -916,7 +928,7 @@ export function simulate(rawInputs, opts = {}) {
         lifestyle += v;
         continue;
       }
-      lifestyle += v - fromFund(c.fundAccount, v);
+      lifestyle += v - fromFund(c.fundAccount, v, "categories");
       add(yr.categories, c.name || "Other", v);
     }
     if (retired && R.mode === "target") {
@@ -1194,7 +1206,7 @@ export function simulate(rawInputs, opts = {}) {
     seen.add(key);
     return true;
   });
-  return { start: ymOf(start), end: ymOf(end - 1), years, months: monthsOut, summary, milestones: uniqueMilestones, flags, accounts: accounts.map((a) => ({ id: a.id, name: a.name, type: a.type, group: a.info.group })) };
+  return { start: ymOf(start), end: ymOf(end - 1), years, months: monthsOut, summary, milestones: uniqueMilestones, flags, people: people.map((p) => ({ id: p.id, name: p.name })), surplusAccount: surplusAcct?.id || null, accounts: accounts.map((a) => ({ id: a.id, name: a.name, type: a.type, group: a.info.group })) };
 
   function annualLimit(a, i) {
     const L = T.limits;
@@ -1239,9 +1251,9 @@ export function simulate(rawInputs, opts = {}) {
 
 /* ----------------------------------------------------- one month's flows -- */
 
-const FLOW_GROUPS = ["income", "taxes", "housing", "cars", "kids", "health", "categories", "debt", "savings", "withdrawals"];
+const FLOW_GROUPS = ["income", "incomeBy", "paidFrom", "taxes", "housing", "cars", "kids", "health", "categories", "debt", "savings", "withdrawals"];
 function flatFlows(y) {
-  const o = { pets: y.pets, events: y.events };
+  const o = { pets: y.pets, events: y.events, surplus: y.surplus };
   for (const g of FLOW_GROUPS) for (const [k, v] of Object.entries(y[g] || {})) o[`${g}.${k}`] = v;
   return o;
 }
@@ -1255,21 +1267,32 @@ const FLOW_LABELS = {
   premium: "Health premiums", outOfPocket: "Out-of-pocket",
   payment: "Required payments", extra: "Extra payments",
 };
-export const FLOW_GROUP_LABELS = { taxes: "Taxes", housing: "Housing", cars: "Cars", kids: "Kids", health: "Health", categories: "Spending", pets: "Pets", events: "One-time events", debt: "Loan payments", savings: "Saved", adjust: "Held for later" };
+export const FLOW_GROUP_LABELS = { taxes: "Taxes", housing: "Housing", cars: "Cars", kids: "Kids", health: "Health", categories: "Spending", pets: "Pets", events: "One-time events", debt: "Loan payments", retirement: "Retirement and HSA", savings: "Savings", leftover: "Leftover", adjust: "Held for later" };
+export const FLOW_ORDER = ["taxes", "housing", "cars", "kids", "health", "categories", "pets", "events", "debt", "retirement", "savings", "leftover", "adjust"];
+const RETIREMENT_GROUPS = new Set(["traditional", "roth", "hsa"]);
 
 /**
  * Where one month's money came from and went, for a Sankey chart: `inflows` (pay,
  * Social Security, employer money, money drawn from savings...) add up to `total`, and so
- * do the `groups` (taxes, housing, ... saved), each with its line items. Anything that
- * only settles later (tax held back on a withdrawal, a refund, a house down payment paid
- * straight from its fund) shows as "Held for later" or "From savings, other", so the two
- * sides always match. `real` divides by that month's inflation.
+ * do the `groups` (taxes, housing, ... retirement, savings, leftover), each with its line
+ * items. Anything that only settles later (tax held back on a withdrawal, a refund,
+ * closing costs paid straight from the house fund) shows as "Held for later" or "From
+ * savings, other", so the two sides always match.
+ *   real      divide by that month's inflation
+ *   byPerson  income by person ("Patrick: Salary"); spending stays shared
+ *   hide      group keys to leave out. The money in shrinks to match: employer money
+ *             first when retirement is hidden (it only goes there), then every other
+ *             source in proportion. `hidden` lists what was left out.
+ * An inflow with `direct` (a fund paying a loan, the pets or a category) goes straight
+ * to that group instead of through "money in".
  */
-export function monthFlows(result, ym, { real = false } = {}) {
+export function monthFlows(result, ym, { real = false, byPerson = false, hide = [] } = {}) {
   const m = result.months.find((x) => x.month === ym);
   if (!m?.flows) return null;
   const d = real ? m.deflator || 1 : 1;
-  const names = Object.fromEntries((result.accounts || []).map((a) => [a.id, a.name]));
+  const accts = new Map((result.accounts || []).map((a) => [a.id, a]));
+  const who = Object.fromEntries((result.people || []).map((p) => [p.id, p.name]));
+  const hidden = new Set(hide);
   const inflows = [];
   const groups = new Map();
   const refunds = [];
@@ -1279,35 +1302,85 @@ export function monthFlows(result, ym, { real = false } = {}) {
     if (!groups.has(group)) groups.set(group, { key: group, label: FLOW_GROUP_LABELS[group] || group, items: [] });
     groups.get(group).items.push({ label, value: v / d });
   };
+  const split = byPerson && Object.keys(m.flows).some((k) => k.startsWith("incomeBy."));
+  // Fund payments for a particular thing (a loan, the pets, a category) go straight
+  // there: { acct, group, value }. They come out of that account's withdrawal.
+  const earmarks = [];
+  const earmarked = {};
+  for (const [k, v] of Object.entries(m.flows)) {
+    if (!k.startsWith("paidFrom.") || !(v > 0.005)) continue;
+    const [acctId, group] = k.slice("paidFrom.".length).split("|");
+    earmarks.push({ acct: acctId, group, value: v / d });
+    earmarked[acctId] = (earmarked[acctId] || 0) + v / d;
+  }
+  const leftover = Math.max(0, m.flows.surplus || 0);
   for (const [k, v] of Object.entries(m.flows)) {
     const dot = k.indexOf(".");
     const g = dot < 0 ? k : k.slice(0, dot);
     const key = dot < 0 ? k : k.slice(dot + 1);
     if (g === "income") {
-      if (v > 0.005) inflows.push({ label: FLOW_LABELS[key] || key, value: v / d });
+      if (v > 0.005 && (!split || key === "windfall")) inflows.push({ label: FLOW_LABELS[key] || key, value: v / d, employer: key === "employer" });
+    } else if (g === "incomeBy") {
+      const [pid, kind] = key.split(".");
+      if (split && v > 0.005) inflows.push({ label: `${who[pid] || pid}: ${FLOW_LABELS[kind] || kind}`, value: v / d, employer: kind === "employer", person: pid });
     } else if (g === "withdrawals") {
-      if (v > 0.005) inflows.push({ label: `From ${names[key] || key}`, value: v / d, drawn: true });
+      const rest = v / d - (earmarked[key] || 0);
+      if (rest > 0.005) inflows.push({ label: `From ${accts.get(key)?.name || key}`, value: rest, drawn: true });
+    } else if (g === "paidFrom") {
+      // Added below, as direct inflows.
     } else if (g === "taxes") {
       if (key !== "total") outItem("taxes", FLOW_LABELS[key] || key, v);
     } else if (g === "debt") {
       if (key === "payment" || key === "extra") outItem("debt", FLOW_LABELS[key], v);
-    } else if (g === "savings") outItem("savings", names[key] || key, v);
-    else if (g === "categories") outItem("categories", key, v);
+    } else if (g === "savings") {
+      const a = accts.get(key);
+      // The leftover account's share that's this month's leftover gets its own group.
+      const v2 = key === result.surplusAccount ? v - leftover : v;
+      outItem(a && RETIREMENT_GROUPS.has(a.group) ? "retirement" : "savings", a?.name || key, v2);
+    } else if (g === "categories") outItem("categories", key, v);
     else if (g === "pets" || g === "events") outItem(g, FLOW_GROUP_LABELS[g], v);
-    else outItem(g, FLOW_LABELS[key] || key, v);
+    else if (g === "surplus") {
+      if (leftover > 0.005) outItem("leftover", `To ${accts.get(result.surplusAccount)?.name || "checking"}`, leftover);
+    } else outItem(g, FLOW_LABELS[key] || key, v);
   }
   for (const r of refunds) inflows.push(r);
-  const groupList = [...groups.values()].map((g) => ({ ...g, value: g.items.reduce((t, x) => t + x.value, 0) }));
+  for (const e of earmarks) inflows.push({ label: `From ${accts.get(e.acct)?.name || e.acct}`, value: e.value, drawn: true, direct: e.group });
+  let groupList = [...groups.values()].map((g) => ({ ...g, value: g.items.reduce((t, x) => t + x.value, 0) }));
   const tin = inflows.reduce((t, x) => t + x.value, 0);
   const tout = groupList.reduce((t, x) => t + x.value, 0);
   if (tin - tout > 0.5) groupList.push({ key: "adjust", label: FLOW_GROUP_LABELS.adjust, value: tin - tout, items: [{ label: "Tax held back, refunds and other timing", value: tin - tout }] });
   // Closing costs in a purchase month come straight from the house fund.
   else if (tout - tin > 0.5) inflows.push({ label: result.milestones.some((x) => x.month === ym && x.kind === "house") ? "From the house fund" : "From savings, other", value: tout - tin, drawn: true });
-  const order = ["taxes", "housing", "cars", "kids", "health", "categories", "pets", "events", "debt", "savings", "adjust"];
-  groupList.sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
+  const fullTotal = Math.max(tin, tout);
+
+  // Leaving groups out: the money in shrinks by the same amount.
+  const left = groupList.filter((g) => hidden.has(g.key));
+  groupList = groupList.filter((g) => !hidden.has(g.key));
+  let cut = left.reduce((t, g) => t + g.value, 0);
+  // A fund's payment for a group that's left out goes with it.
+  let ins = inflows.filter((x) => !(x.direct && hidden.has(x.direct)));
+  cut -= inflows.filter((x) => x.direct && hidden.has(x.direct)).reduce((t, x) => t + x.value, 0);
+  if (cut > 0.005) {
+    if (hidden.has("retirement")) {
+      const ret = left.find((g) => g.key === "retirement")?.value || 0;
+      let fromEmployer = Math.min(ret, ins.filter((x) => x.employer).reduce((t, x) => t + x.value, 0));
+      cut -= fromEmployer;
+      ins = ins.map((x) => {
+        if (!x.employer || fromEmployer <= 0) return x;
+        const take = Math.min(x.value, fromEmployer);
+        fromEmployer -= take;
+        return { ...x, value: x.value - take };
+      });
+    }
+    const rest = ins.filter((x) => !x.direct).reduce((t, x) => t + x.value, 0);
+    const keep = rest > 0 ? Math.max(0, (rest - cut) / rest) : 0;
+    ins = ins.map((x) => (x.direct ? x : { ...x, value: x.value * keep })).filter((x) => x.value > 0.005);
+  }
+  groupList.sort((a, b) => FLOW_ORDER.indexOf(a.key) - FLOW_ORDER.indexOf(b.key));
   for (const g of groupList) g.items.sort((a, b) => b.value - a.value);
-  inflows.sort((a, b) => (a.drawn === b.drawn ? b.value - a.value : a.drawn ? 1 : -1));
-  return { month: ym, inflows, groups: groupList, total: Math.max(tin, tout) };
+  ins.sort((a, b) => (a.drawn === b.drawn ? (a.person || "").localeCompare(b.person || "") || b.value - a.value : a.drawn ? 1 : -1));
+  const total = groupList.reduce((t, g) => t + g.value, 0);
+  return { month: ym, inflows: ins, groups: groupList, total: hidden.size ? total : fullTotal, fullTotal, hidden: left.map((g) => ({ key: g.key, label: g.label, value: g.value })) };
 }
 
 /** The goal order: settings.priority first, then accounts with a monthly amount, debts with extra, and kids' 529s. */
