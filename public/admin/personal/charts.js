@@ -45,8 +45,12 @@ function frame(el, { height = 320, labels, min, max }) {
     svg.append(s("text", { x: pad.l - 6, y: y(t) + 4, "text-anchor": "end", class: "axis-label" }, compact(t)));
   }
   const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(w / 60))));
+  // Every few years, plus the last, never closer than 36px to the one before.
+  let lastX = -Infinity;
   labels.forEach((lab, i) => {
-    if (i % every === 0 || i === n - 1) svg.append(s("text", { x: x(i), y: height - 8, "text-anchor": "middle", class: "axis-label" }, String(lab)));
+    if (!(i % every === 0 || i === n - 1) || x(i) - lastX < 36) return;
+    lastX = x(i);
+    svg.append(s("text", { x: x(i), y: height - 8, "text-anchor": "middle", class: "axis-label" }, String(lab)));
   });
   return { svg, x, y, w, hgt, pad, width, height, n };
 }
@@ -154,4 +158,113 @@ export function bandChart(el, { labels, low, mid, high, onHover, onLeave, height
   f.svg.append(s("path", { d: mid.map((v, i) => `${i ? "L" : "M"}${f.x(i)},${f.y(v)}`).join(""), fill: "none", stroke: "var(--series-1)", "stroke-width": 2.2 }));
   hoverLayer(f, onHover, onLeave);
   el.replaceChildren(legend([{ label: "Middle outcome", color: "var(--series-1)" }, { label: "Range of 8 in 10 outcomes", color: "color-mix(in srgb, var(--series-1) 30%, transparent)" }]), f.svg);
+}
+
+/**
+ * A Sankey chart in columns. nodes: [{ id, label, col, color, value }]; links:
+ * [{ source, target, value, color }]. Node heights follow their value; links are bands
+ * whose width is their value. fmt(n) formats amounts; onHover(text, rows, ev).
+ */
+export function sankey(el, { nodes, links, fmt, onHover, onLeave }) {
+  const width = Math.max(720, el.clientWidth || 900);
+  const cols = Math.max(...nodes.map((n) => n.col)) + 1;
+  const nodeW = 14;
+  const gap = 10;
+  const minSlot = 15;
+  // Room for the longest label on each side (about 7px a character).
+  const longest = (c) => Math.max(0, ...nodes.filter((n) => n.col === c).map((n) => `${n.label}  ${fmt(n.value)}`.length));
+  const pad = { t: 10, b: 10, l: Math.min(260, 20 + longest(0) * 7), r: Math.min(280, 24 + longest(cols - 1) * 7) };
+  const colX = (c) => pad.l + (c / (cols - 1)) * (width - pad.l - pad.r - nodeW);
+  const byCol = Array.from({ length: cols }, (_, c) => nodes.filter((n) => n.col === c));
+  const total = Math.max(...byCol.map((list) => list.reduce((t, n) => t + n.value, 0)), 1);
+  const target = 420;
+  const k = Math.min(...byCol.map((list) => (target - (list.length - 1) * gap) / total));
+  let height = 0;
+  for (const list of byCol) {
+    const used = list.reduce((t, n) => t + Math.max(n.value * k, minSlot), 0) + (list.length - 1) * gap;
+    height = Math.max(height, used);
+  }
+  height += pad.t + pad.b;
+  for (const list of byCol) {
+    const used = list.reduce((t, n) => t + Math.max(n.value * k, minSlot), 0) + (list.length - 1) * gap;
+    let y = pad.t + (height - pad.t - pad.b - used) / 2;
+    for (const n of list) {
+      n.x = colX(n.col);
+      n.h = Math.max(1, n.value * k);
+      n.slot = Math.max(n.h, minSlot);
+      n.y = y + (n.slot - n.h) / 2;
+      n.outY = n.y;
+      n.inY = n.y;
+      y += n.slot + gap;
+    }
+  }
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const svg = s("svg", { viewBox: `0 0 ${width} ${height}`, role: "img" });
+  const bands = s("g", {});
+  svg.append(bands);
+  for (const l of links) {
+    const a = byId.get(l.source);
+    const b = byId.get(l.target);
+    if (!a || !b || !(l.value > 0)) continue;
+    const w = l.value * k;
+    const x0 = a.x + nodeW;
+    const x1 = b.x;
+    const y0 = a.outY;
+    const y1 = b.inY;
+    a.outY += w;
+    b.inY += w;
+    const xm = (x0 + x1) / 2;
+    const p = s("path", {
+      d: `M${x0},${y0} C${xm},${y0} ${xm},${y1} ${x1},${y1} L${x1},${y1 + w} C${xm},${y1 + w} ${xm},${y0 + w} ${x0},${y0 + w} Z`,
+      fill: l.color || b.color || "var(--text-muted)", "fill-opacity": 0.32, class: "band",
+    });
+    const show = (ev) => {
+      p.setAttribute("fill-opacity", 0.6);
+      onHover?.(`${a.label} → ${b.label}`, [["Amount", fmt(l.value)]], ev);
+    };
+    p.addEventListener("mousemove", show);
+    p.addEventListener("touchstart", (ev) => show(ev.touches[0]), { passive: true });
+    p.addEventListener("mouseleave", () => {
+      p.setAttribute("fill-opacity", 0.32);
+      onLeave?.();
+    });
+    bands.append(p);
+  }
+  for (const n of nodes) {
+    const r = s("rect", { x: n.x, y: n.y, width: nodeW, height: n.h, fill: n.color || "var(--text-muted)", rx: 2 });
+    r.addEventListener("mousemove", (ev) => onHover?.(n.label, [["Amount", fmt(n.value)]], ev));
+    r.addEventListener("mouseleave", () => onLeave?.());
+    svg.append(r);
+    const left = n.col === 0;
+    const last = n.col === cols - 1;
+    const tx = left ? n.x - 8 : last ? n.x + nodeW + 8 : n.x + nodeW + 6;
+    const t = s("text", { x: tx, y: n.y + n.h / 2 + 4, "text-anchor": left ? "end" : "start", class: n.col > 0 && !last ? "sk-mid" : "" });
+    t.append(s("tspan", { "font-weight": 600 }, n.label), s("tspan", { dx: 6, class: "axis-label" }, fmt(n.value)));
+    svg.append(t);
+  }
+  el.replaceChildren(svg);
+}
+
+/** A small balance-over-time chart: `values` by year, an optional dashed `target` line. */
+export function sparkline(el, { labels, values, target, color = "var(--series-3)", onHover, onLeave, height = 110 }) {
+  const all = [...values, ...(target || []).filter((v) => v != null), 0];
+  const f = frame(el, { height, labels, min: Math.min(...all), max: Math.max(...all) });
+  const pts = values.map((v, i) => `${f.x(i)},${f.y(v)}`);
+  f.svg.append(s("polygon", { points: [`${f.x(0)},${f.y(0)}`, ...pts, `${f.x(values.length - 1)},${f.y(0)}`].join(" "), fill: color, "fill-opacity": 0.18 }));
+  f.svg.append(s("path", { d: values.map((v, i) => `${i ? "L" : "M"}${f.x(i)},${f.y(v)}`).join(""), fill: "none", stroke: color, "stroke-width": 2 }));
+  if (target?.some((v) => v != null)) {
+    let d = "";
+    let pen = false;
+    target.forEach((v, i) => {
+      if (v == null) {
+        pen = false;
+        return;
+      }
+      d += `${pen ? "L" : "M"}${f.x(i)},${f.y(v)}`;
+      pen = true;
+    });
+    f.svg.append(s("path", { d, fill: "none", stroke: "var(--text-secondary)", "stroke-width": 1.5, "stroke-dasharray": "5 4" }));
+  }
+  hoverLayer(f, onHover, onLeave);
+  el.replaceChildren(f.svg);
 }

@@ -81,3 +81,26 @@ button.link.small { padding: 0 4px; min-height: 0; font-weight: 700; }
 .balances input { width: 150px; }
 .history summary { cursor: pointer; color: var(--text-secondary); font-size: 13px; margin: 6px 0; }
 .history table { width: auto; }
+.sankey-wrap { overflow-x: auto; }
+.sankey-wrap svg { min-width: 720px; }
+.sankey-wrap .band { transition: fill-opacity .12s; }
+.sankey-wrap text.sk-mid { paint-order: stroke; stroke: var(--surface-1); stroke-width: 4px; stroke-linejoin: round; }
+#flowMonth { width: auto; }
+.flow-table summary { cursor: pointer; color: var(--text-secondary); font-size: 13px; margin-top: 8px; }
+.flow-table td.indent { padding-left: 24px; color: var(--text-secondary); }
+.alloc { display: flex; height: 22px; border-radius: 6px; overflow: hidden; margin: 10px 0 8px; background: var(--wash); }
+.alloc span { min-width: 2px; }
+.alloc-legend { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; }
+.alloc-legend .dot { display: inline-block; width: 9px; height: 9px; border-radius: 3px; background: var(--swatch); margin-right: 6px; }
+.warn-text { color: var(--bad); }
+.goals { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; margin: 8px 0; }
+.goal { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--surface-1); display: flex; flex-direction: column; gap: 6px; }
+.goal-nums { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 13.5px; }
+.gmeter { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.gbar { flex: 1; height: 8px; border-radius: 999px; background: var(--wash); overflow: hidden; }
+.gfill { height: 100%; border-radius: 999px; }
+.goal-status { margin: 0; font-size: 13px; }
+.goal .fgrid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+.feeds { border-top: 1px solid var(--border); padding-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.feed .desc, .feed p { margin: 2px 0; font-size: 12.5px; }
+.chart.spark text { font-size: 10.5px; }

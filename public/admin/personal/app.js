@@ -4,7 +4,7 @@
 
 import { initPage, h, showTooltip, hideTooltip, openDialog } from "/admin/admin.js";
 import * as E from "./engine.js";
-import { bandChart, compact, stackedArea, stackedBars } from "./charts.js";
+import { bandChart, compact, sankey, sparkline, stackedArea, stackedBars } from "./charts.js";
 
 const $ = (id) => document.getElementById(id);
 const me = await initPage("personal/");
@@ -23,7 +23,7 @@ const state = {
   dirty: false,
   saving: false,
   saveAgain: false,
-  tab: "people",
+  tab: "savings",
   expanded: new Set(),
   mc: null,
 };
@@ -261,7 +261,9 @@ $("sliderReset").addEventListener("click", () => {
 
 function recompute() {
   const t = performance.now();
-  state.result = E.simulate(inputs(), { overrides: state.overrides });
+  const r0 = inputs().settings.start;
+  if (!state.flowMonth || state.flowMonth < r0) state.flowMonth = r0;
+  state.result = E.simulate(inputs(), { overrides: state.overrides, flowMonth: state.flowMonth });
   const b = state.model.scenarios.find((x) => x.id === state.compare);
   state.resultB = b ? E.simulate(b.inputs, { overrides: state.overrides }) : null;
   state.calcMs = performance.now() - t;
@@ -284,10 +286,12 @@ function renderResults() {
   renderSliders();
   renderNetWorth(r);
   renderCashFlow(r);
+  renderFlow(r);
   renderChecks(r);
   renderTable(r);
   renderMilestones(r);
   if (state.tab === "house" || state.tab === "debts" || state.tab === "retirement") renderTabResults();
+  if (state.tab === "savings") refreshSavingsWhenIdle();
 }
 
 function tile(label, value, note, kind = "") {
@@ -378,6 +382,65 @@ function renderCashFlow(r) {
     onLeave: hideTooltip,
   });
 }
+
+/* One month as a Sankey chart: where the money came from, and where it went. */
+const FLOW_COLORS = { taxes: "var(--series-8)", housing: "var(--series-2)", cars: "var(--stage-2)", kids: "var(--series-4)", health: "var(--series-6)", categories: "var(--series-5)", pets: "var(--series-5)", events: "var(--series-7)", debt: "var(--series-7)", savings: "var(--series-3)", adjust: "var(--text-muted)" };
+function renderFlow(r) {
+  const pick = $("flowMonth");
+  pick.min = r.start;
+  pick.max = r.end;
+  if (state.flowMonth > r.end) state.flowMonth = r.end;
+  pick.value = state.flowMonth;
+  const f = E.monthFlows(r, state.flowMonth, { real: state.real });
+  if (!f) {
+    $("flowChart").replaceChildren(h("p", { class: "desc" }, "Pick a month inside the plan."));
+    return;
+  }
+  const nodes = [];
+  const links = [];
+  f.inflows.forEach((x, n) => {
+    nodes.push({ id: `in${n}`, label: x.label, col: 0, value: x.value, color: x.drawn ? "var(--series-4)" : "var(--series-1)" });
+    links.push({ source: `in${n}`, target: "hub", value: x.value, color: x.drawn ? "var(--series-4)" : "var(--series-1)" });
+  });
+  nodes.push({ id: "hub", label: "Money in", col: 1, value: f.total, color: "var(--text-secondary)" });
+  const deep = f.groups.some((g) => g.items.length > 1 || (g.items[0] && g.items[0].label !== g.label));
+  for (const g of f.groups) {
+    const color = FLOW_COLORS[g.key] || "var(--text-muted)";
+    nodes.push({ id: `g-${g.key}`, label: g.label, col: 2, value: g.value, color });
+    links.push({ source: "hub", target: `g-${g.key}`, value: g.value, color });
+    if (!deep || (g.items.length === 1 && g.items[0].label === g.label)) continue;
+    g.items.forEach((it, n) => {
+      nodes.push({ id: `i-${g.key}-${n}`, label: it.label, col: 3, value: it.value, color });
+      links.push({ source: `g-${g.key}`, target: `i-${g.key}-${n}`, value: it.value, color });
+    });
+  }
+  sankey($("flowChart"), { nodes, links, fmt: (v) => money(v), onHover: (title, rows, ev) => showTooltip(ev, title, rows), onLeave: hideTooltip });
+  const ms = r.milestones.filter((m) => m.month === state.flowMonth).map((m) => m.label);
+  const drawn = f.inflows.filter((x) => x.drawn).reduce((t, x) => t + x.value, 0);
+  $("flowNote").textContent = `${monthName(state.flowMonth)}, ${state.real ? "in today's dollars" : "in that month's dollars"}. ${money(f.total)} moved through the month${drawn > 0.5 ? `, ${money(drawn)} of it drawn from savings` : ""}.${ms.length ? ` This month: ${ms.join(", ")}.` : ""} December includes settling the year's taxes.`;
+  $("flowTable").replaceChildren(
+    h("thead", {}, h("tr", {}, h("th", {}, "Where it came from"), h("th", { class: "num" }, "Amount"))),
+    h("tbody", {}, f.inflows.map((x) => h("tr", {}, h("td", {}, x.label), h("td", { class: "num" }, money(x.value))))),
+    h("thead", {}, h("tr", {}, h("th", {}, "Where it went"), h("th", { class: "num" }, "Amount"))),
+    h("tbody", {}, f.groups.flatMap((g) => [
+      h("tr", { class: "group" }, h("td", {}, h("b", {}, g.label)), h("td", { class: "num" }, h("b", {}, money(g.value)))),
+      ...(g.items.length > 1 || g.items[0]?.label !== g.label ? g.items.map((it) => h("tr", {}, h("td", { class: "indent" }, it.label), h("td", { class: "num" }, money(it.value)))) : []),
+    ])));
+}
+const stepMonth = (by) => {
+  const i = E.monthIndex(state.flowMonth) + by;
+  const next = E.ymOf(i);
+  if (next < state.result.start || next > state.result.end) return;
+  state.flowMonth = next;
+  recompute();
+};
+$("flowMonth").addEventListener("change", (e) => {
+  if (!/^\d{4}-\d{2}$/.test(e.target.value)) return;
+  state.flowMonth = e.target.value;
+  recompute();
+});
+$("flowPrev").addEventListener("click", () => stepMonth(-1));
+$("flowNext").addEventListener("click", () => stepMonth(1));
 
 function renderMilestones(r) {
   $("milestones").replaceChildren(...r.milestones.filter((m) => m.kind !== "event").map((m) => h("li", {}, h("span", { class: "dot", style: `--swatch: ${MARKER_COLORS[m.kind] || "var(--accent)"}` }), h("b", {}, monthName(m.month)), " ", m.label)));
@@ -513,11 +576,11 @@ $("importFile").addEventListener("change", async (e) => {
 /* -------------------------------------------------------------------- inputs -- */
 
 const TABS = [
-  ["people", "People & income"], ["taxes", "Taxes"], ["budget", "Budget"], ["accounts", "Accounts"], ["debts", "Debts"],
+  ["savings", "Savings goals"], ["people", "People & income"], ["taxes", "Taxes"], ["budget", "Budget"], ["accounts", "Accounts"], ["debts", "Debts"],
   ["house", "House"], ["cars", "Cars"], ["kids", "Kids & pets"], ["events", "One-time events"], ["retirement", "Retirement"],
   ["assumptions", "Assumptions"], ["scenarios", "Scenarios"], ["settings", "Settings & Drive"], ["method", "Methodology"],
 ];
-const TAB_FOR = { People: "people", Income: "people", Taxes: "taxes", Budget: "budget", Accounts: "accounts", Debts: "debts", House: "house", Cars: "cars", Kids: "kids", Events: "events", Retirement: "retirement", Assumptions: "assumptions", Settings: "settings" };
+const TAB_FOR = { Savings: "savings", People: "people", Income: "people", Taxes: "taxes", Budget: "budget", Accounts: "accounts", Debts: "debts", House: "house", Cars: "cars", Kids: "kids", Events: "events", Retirement: "retirement", Assumptions: "assumptions", Settings: "settings" };
 
 function renderTabs() {
   $("tabs").replaceChildren(...TABS.map(([key, label]) => h("button", { role: "tab", class: state.tab === key ? "active" : "", "aria-selected": String(state.tab === key), onclick: () => openTab(key) }, label)));
@@ -585,7 +648,7 @@ function input(obj, f) {
 const grid = (obj, fields) => h("div", { class: "fgrid" }, fields.filter((f) => !f.when || f.when(obj)).map((f) => input(obj, f)));
 
 /** A list with add, duplicate, delete and reorder. */
-function list(arr, { title, fields, make, name, nested, empty, addLabel }) {
+function list(arr, { title, fields, make, name, nested, empty, addLabel, onDelete }) {
   const box = h("div", { class: "flist" });
   arr.forEach((item, n) => {
     const actions = h("span", { class: "actions" },
@@ -603,6 +666,7 @@ function list(arr, { title, fields, make, name, nested, empty, addLabel }) {
       h("button", { class: "small danger", onclick: () => {
         if (!confirm(`Delete ${name(item) || "this"}?`)) return;
         arr.splice(n, 1);
+        onDelete?.(item);
         changed({ rerender: true });
       } }, "Delete"));
     box.append(h("div", { class: "fitem" }, h("div", { class: "fhead" }, h("b", {}, name(item) || "(unnamed)"), actions), grid(item, fields), nested ? nested(item) : null));
@@ -665,6 +729,7 @@ const F = {
     { key: "start", label: "Starts", type: "month" },
     { key: "end", label: "Ends", type: "month" },
     { key: "owner", label: "Whose", type: "select", opts: OWNER_OPTS },
+    { key: "fundAccount", label: "Paid from", type: "select", opts: ACCT_OPTS(["sinking", "savings"]), help: "A set-aside fund (for travel, car repairs...) pays this first; whatever it can't cover comes out of the month's pay." },
   ],
   account: [
     { key: "name", label: "Name", type: "text" },
@@ -673,6 +738,7 @@ const F = {
     { key: "balance", label: "Balance today", type: "money", help: "Or use Update balances at the top of this tab, which keeps each balance with its date." },
     { key: "monthly", label: "Monthly contribution", type: "money", help: "From take-home pay, in the savings order below. Payroll 401(k) contributions are set on the income instead." },
     { key: "ret", label: "Expected return", type: "pct", nullable: true, help: "Blank uses the return for this type in Assumptions." },
+    { key: "target", label: "Target balance", type: "money", nullable: true, when: (o) => !["house", "emergency", "checking"].includes(o.type), help: "In today's dollars. Monthly contributions stop once it's reached. The house and emergency funds work out their own targets." },
     { key: "limit", label: "Yearly limit", type: "money", nullable: true, help: "Blank uses the IRS limit for IRAs, 401(k)s and HSAs, growing as set in Assumptions. Other types have none." },
   ],
   debt: [
@@ -748,6 +814,7 @@ const F = {
     { key: "oneTime", label: "One-time cost", type: "money", help: "Paid in the start month (adoption, supplies)." },
     { key: "start", label: "Starts", type: "month" },
     { key: "endYear", label: "Last year", type: "int", nullable: true },
+    { key: "fundAccount", label: "Paid from", type: "select", opts: ACCT_OPTS(["sinking", "savings"]), help: "A set-aside fund pays these costs first; whatever it can't cover comes out of the month's pay. None: straight from pay." },
   ],
   event: [
     { key: "name", label: "Name", type: "text" },
@@ -776,7 +843,8 @@ function renderTab() {
           list(x.gaps, { title: "gap", fields: F.gap, name: (g) => `${g.start || "?"} to ${g.end || "?"}`, make: () => ({ start: "", end: "", pctPaid: 0 }) })),
       })),
     ];
-  } else if (t === "taxes") body = taxTab(inp);
+  } else if (t === "savings") body = savingsTab(inp);
+  else if (t === "taxes") body = taxTab(inp);
   else if (t === "budget") {
     body = [
       section("Rent", "Stops when you buy a house, and starts again if you sell without buying.", grid(inp.budget.rent, [
@@ -804,6 +872,7 @@ function renderTab() {
       section("Accounts", null, list(inp.accounts, {
         title: "account", fields: F.account, name: (a) => `${a.name} · ${E.ACCOUNT_TYPES[a.type]?.label || a.type}${a.balanceAsOf ? ` · balance as of ${dayName(a.balanceAsOf)}` : ""}`,
         make: () => ({ id: E.newId("acct"), name: "New account", type: "savings", owner: "shared", balance: 0, monthly: 0, ret: null, limit: null }),
+        onDelete: (a) => dropAccountRefs(inp, a.id),
       })),
       section("Where money goes", null, grid(inp.settings, [
         { key: "surplusAccount", label: "Leftover money goes to", type: "select", opts: ACCT_OPTS(null), help: "Whatever is left each month after spending and the goals below. Shortfalls draw from it first." },
@@ -1009,6 +1078,169 @@ function balancesPanel(inp) {
     h("div", { class: "row" }, h("label", { class: "field" }, "Balances as of", date), saveBtn),
     h("div", { class: "table-wrap" }, h("table", { class: "balances" }, h("thead", {}, h("tr", {}, h("th", {}, "Account"), h("th", { class: "num" }, "Balance now"), h("th", {}, "As of"), h("th", {}, "New balance"))), tbody)),
     note, history);
+}
+
+/** After an account is deleted, nothing may still point at it. */
+function dropAccountRefs(inp, id) {
+  for (const inc of inp.incomes) for (const k of ["retireAccount", "matchAccount", "hsaAccount"]) if (inc[k] === id) inc[k] = "";
+  for (const x of [...inp.pets, ...inp.budget.categories]) if (x.fundAccount === id) x.fundAccount = "";
+  for (const k of inp.kids) if (k.account === id) k.account = "";
+  if (inp.house.fundAccount === id) inp.house.fundAccount = "";
+  if (inp.settings.surplusAccount === id) inp.settings.surplusAccount = inp.accounts.find((a) => a.type === "checking")?.id || inp.accounts[0]?.id || "";
+  inp.settings.priority = (inp.settings.priority || []).filter((k) => k !== id);
+}
+
+/* ------------------------------------------------------------- savings goals -- */
+
+// The savings tab redraws after each recalculation, but never under someone's cursor:
+// while a box in it has focus, it waits until they leave the tab's boxes.
+function refreshSavingsWhenIdle() {
+  const box = $("tabBody");
+  const busy = () => box.contains(document.activeElement) && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
+  if (!busy()) return renderTab();
+  if (box.dataset.pending) return;
+  box.dataset.pending = "1";
+  const onOut = () => setTimeout(() => {
+    if (busy()) return;
+    box.removeEventListener("focusout", onOut);
+    delete box.dataset.pending;
+    if (state.tab === "savings") renderTab();
+  }, 0);
+  box.addEventListener("focusout", onOut);
+}
+
+const GOAL_GROUPS = [
+  { key: "house", label: "House", types: ["house"], color: "var(--series-2)" },
+  { key: "emergency", label: "Emergency fund", types: ["emergency"], color: "var(--series-1)" },
+  { key: "retirement", label: "Retirement", types: ["trad401k", "roth401k", "tradIRA", "rothIRA", "hsa"], color: "var(--series-7)" },
+  { key: "kids", label: "Kids", types: ["college529"], color: "var(--series-4)" },
+  { key: "sinking", label: "Set-aside funds", types: ["sinking"], color: "var(--series-5)" },
+  { key: "other", label: "Other savings and investing", types: ["savings", "brokerage"], color: "var(--series-3)" },
+];
+
+function savingsTab(inp) {
+  const r = state.result;
+  const sp = r.summary.startPlan;
+  const names = Object.fromEntries(inp.accounts.map((a) => [a.id, a.name]));
+  const yours = sp.payroll.filter((p) => p.source === "employee").reduce((t, p) => t + p.amount, 0);
+  const employer = sp.payroll.filter((p) => p.source === "employer").reduce((t, p) => t + p.amount, 0);
+  const segs = [
+    { label: "Your payroll retirement and HSA", value: yours, color: "var(--series-7)" },
+    { label: "Employer money", value: employer, color: "color-mix(in srgb, var(--series-7) 55%, var(--page))" },
+    ...sp.goals.map((g, n) => ({ label: g.label, value: g.amount, color: `var(--series-${[2, 1, 3, 4, 5, 6][n % 6]})`, short: g.amount + 0.5 < g.wanted ? g.wanted : null })),
+    { label: `Leftover to ${names[inp.settings.surplusAccount] || "checking"}`, value: sp.leftover, color: "var(--text-muted)" },
+  ].filter((x) => x.value > 0.5 || x.short);
+  const total = segs.reduce((t, x) => t + x.value, 0) || 1;
+  const short = segs.filter((x) => x.short);
+  const overview = section(`Where ${monthName(r.start)}'s savings go`, `Take-home pay left after spending and loan payments: ${money(sp.beforeGoals)}. It goes to the goals below in the savings order, then the rest to ${names[inp.settings.surplusAccount] || "checking"}. Payroll contributions come out before that.`,
+    h("div", { class: "alloc" }, segs.map((x) => h("span", { style: `flex: ${Math.max(x.value, total * 0.004)}; background: ${x.color}`, title: `${x.label}: ${money(x.value)}` }))),
+    h("ul", { class: "alloc-legend" }, segs.map((x) => h("li", {}, h("span", { class: "dot", style: `--swatch: ${x.color}` }), x.label, " ", h("b", {}, money(x.value)), x.short ? h("span", { class: "warn-text" }, ` (only this fits of the ${money(x.short)} planned)`) : null))),
+    short.length ? h("p", { class: "msg err" }, "Some goals don't get their full amount this month: pay doesn't stretch that far. Lower one, or move the important ones up the savings order below.") : null);
+
+  const cards = GOAL_GROUPS.map((g) => {
+    const accts = inp.accounts.filter((a) => g.types.includes(a.type));
+    if (!accts.length && !["house", "emergency", "sinking"].includes(g.key)) return null;
+    return section(g.label, null,
+      h("div", { class: "goals" }, accts.map((a) => goalCard(inp, a, g))),
+      accts.length ? null : h("p", { class: "desc" }, g.key === "sinking" ? "None yet. A set-aside fund holds money for costs you'd rather pay yourselves than insure: pets, car repairs, travel." : `No ${g.label.toLowerCase()} account yet.`),
+      g.key === "sinking" ? h("button", { class: "small add", onclick: () => {
+        const name = prompt("Name for the fund", "Pet fund");
+        if (!name) return;
+        inp.accounts.push({ id: E.newId("acct"), name: name.slice(0, 60), type: "sinking", owner: "shared", balance: 0, monthly: 100, ret: null, limit: null, target: null, history: [] });
+        changed({ rerender: true });
+      } }, "Add a set-aside fund") : null,
+      g.key === "house" && !accts.length ? h("button", { class: "small add", onclick: () => {
+        const id = E.newId("acct");
+        inp.accounts.push({ id, name: "House fund", type: "house", owner: "shared", balance: 0, monthly: 500, ret: null, limit: null, history: [] });
+        inp.house.fundAccount = id;
+        changed({ rerender: true });
+      } }, "Add a house fund") : null,
+      g.key === "emergency" && !accts.length ? h("button", { class: "small add", onclick: () => {
+        inp.accounts.push({ id: E.newId("acct"), name: "Emergency fund", type: "emergency", owner: "shared", balance: 0, monthly: 300, ret: null, limit: null, history: [] });
+        changed({ rerender: true });
+      } }, "Add an emergency fund") : null);
+  });
+  return [overview, ...cards.filter(Boolean), h("section", { class: "fsec" }, priorityList(inp))];
+}
+
+function goalCard(inp, a, g) {
+  const r = state.result;
+  const ys = r.years;
+  const values = ys.map((y) => shown(y.balances?.[a.id] ?? 0, y));
+  const targets = ys.map((y) => (y.targets?.[a.id] != null ? shown(y.targets[a.id], y) : null));
+  const targetNow = r.years[0]?.targets?.[a.id];
+  const bal = Number(a.balance) || 0;
+  const pct = targetNow > 0 ? Math.min(1, bal / targetNow) : null;
+  const H = inp.house;
+  const reached = r.summary.reached?.[a.id];
+  const retYear = r.summary.retirementYear;
+  const atRet = ys.find((y) => y.year === retYear);
+  let status = "";
+  if (a.type === "house") {
+    const m = r.milestones.find((x) => x.kind === "house");
+    status = !H.enabled ? "House planning is off (House tab)." : m ? `Buy the house in ${monthName(m.month)}.` : "Doesn't reach the target before 95 at this rate.";
+  } else if (["trad401k", "roth401k", "tradIRA", "rothIRA", "hsa"].includes(a.type)) {
+    status = atRet ? `About ${money(shown(atRet.balances?.[a.id] || 0, atRet))} when you're both retired (${retYear}).` : "";
+  } else if (targetNow > 0) status = reached ? `Reaches its target in ${monthName(reached)}.` : "Doesn't reach its target before 95 at this rate.";
+
+  const mini = (obj, f) => input(obj, { ...f, rerender: f.type === "select" || f.type === "bool" });
+  // A 401(k)/403(b) is only fed through payroll, so it has no take-home amount here.
+  const edits = ["trad401k", "roth401k"].includes(a.type) ? [] : [mini(a, { key: "monthly", label: "From take-home pay, a month", type: "money", help: "Comes out after spending and loan payments, in the savings order. The same number as on the Accounts tab." })];
+  if (a.type === "house") {
+    if (H.fundAccount !== a.id) edits.push(h("p", { class: "msg err" }, "This isn't the house's down payment fund. Choose it on the House tab."));
+    edits.push(mini(H, { key: "price", label: "House price", type: "money", help: "Today's dollars; it grows with home appreciation until you buy. Same as the House tab." }),
+      mini(H, { key: "downPct", label: "Down payment", type: "pct" }),
+      mini(H, { key: "closingPct", label: "Closing costs", type: "pct" }),
+      mini(H, { key: "mode", label: "When to buy", type: "select", opts: [["auto", "When this fund reaches the target"], ["year", "In a year I pick"]] }));
+    if (H.mode === "year") edits.push(mini(H, { key: "year", label: "Year", type: "int" }));
+  } else if (a.type === "emergency") {
+    edits.push(mini(inp.settings, { key: "emergencyMonths", label: "Target, months of spending", type: "num", help: "Months of required spending. Contributions stop once it's reached." }));
+  } else if (a.type !== "checking") {
+    edits.push(mini(a, { key: "target", label: "Target balance", type: "money", nullable: true, help: "Today's dollars. Contributions stop once it's reached. Blank: no target." }));
+  }
+  // What feeds it besides take-home pay: payroll, kids' 529 amounts, and what it pays for.
+  const feeds = [];
+  for (const inc of inp.incomes) {
+    const who = inp.people.find((p) => p.id === inc.owner)?.name || "?";
+    if (inc.retireAccount === a.id) {
+      const rule = inc.matchType === "threshold"
+        ? `Employer puts in ${pctText(Number(inc.employerPct) || 0)} of pay when ${who} puts in at least ${pctText(Number(inc.matchThreshold) || 0)}.`
+        : Number(inc.matchPct) > 0 ? `Employer matches ${pctText(Number(inc.matchPct) || 0, 0)} of the first ${pctText(Number(inc.matchUpTo) || 0)} of pay.` : "No employer match.";
+      feeds.push(h("div", { class: "feed" }, mini(inc, { key: "retirePct", label: `${who}'s ${inc.name}: share of pay`, type: "pct", help: "Through payroll, before tax for a traditional account. The same number as on People & income." }), h("p", { class: "desc" }, rule)));
+    }
+    if (inc.hsaAccount === a.id) feeds.push(h("div", { class: "feed" }, mini(inc, { key: "hsaEmployee", label: `${who}'s payroll HSA a year`, type: "money" }), mini(inc, { key: "hsaEmployer", label: "Employer HSA a year", type: "money" })));
+  }
+  for (const k of inp.kids) if (k.account === a.id) feeds.push(h("div", { class: "feed" }, mini(k, { key: "college529Monthly", label: `For ${k.name || `the kid born ${k.birthYear}`}, a month`, type: "money" })));
+  if (a.type === "college529") feeds.push(mini(inp.kidCosts, { key: "collegeGoal", label: "College goal per kid", type: "money", help: "Today's dollars. The same as on Kids & pets." }));
+  const paysFor = [...inp.pets.filter((p) => p.fundAccount === a.id).map((p) => ({ label: `Pet: ${p.name || "pet"}`, obj: p, key: "annual", yearly: Number(p.annual) || 0 })),
+    ...inp.budget.categories.filter((c) => c.fundAccount === a.id).map((c) => ({ label: c.name, obj: c, key: "amount", yearly: (Number(c.amount) || 0) * (c.freq === "yearly" ? 1 : 12) }))];
+  if (paysFor.length) {
+    const yearly = paysFor.reduce((t, x) => t + x.yearly, 0);
+    const putIn = (Number(a.monthly) || 0) * 12;
+    feeds.push(h("div", { class: "feed" }, h("p", {}, h("b", {}, "Pays for: "), paysFor.map((x) => `${x.label} (${money(x.yearly)} a year)`).join(", ")),
+      h("p", { class: putIn + 0.5 < yearly ? "msg err" : "desc" }, `You put in ${money(putIn)} a year and it pays out about ${money(yearly)} a year in today's dollars${putIn + 0.5 < yearly ? `: ${money((yearly - putIn) / 12)} a month short, so the rest comes out of pay` : ""}.`),
+      ...paysFor.filter((x) => x.obj.freq !== "monthly").map((x) => mini(x.obj, { key: x.key, label: `${x.label}: a year`, type: "money" }))));
+  } else if (a.type === "sinking") feeds.push(h("p", { class: "desc" }, "Nothing is paid from it yet. Choose it under \"Paid from\" on a pet (Kids & pets) or a budget category."));
+
+  // The house fund's story ends a year after the purchase; an empty account has no chart.
+  const houseYear = a.type === "house" ? r.summary.houseYear : null;
+  const upTo = houseYear ? ys.findIndex((y) => y.year === houseYear + 1) + 1 || ys.length : ys.length;
+  const chart = h("div", { class: "chart spark" });
+  if (values.slice(0, upTo).some((v) => Math.abs(v) > 0.5) || targets.some((v) => v)) {
+    queueMicrotask(() => sparkline(chart, {
+      labels: ys.slice(0, upTo).map((y) => y.year), values: values.slice(0, upTo), target: targets.slice(0, upTo), color: g.color,
+      onHover: (i, ev) => showTooltip(ev, String(ys[i].year), [["Balance", money(values[i])], ...(targets[i] != null ? [["Target", money(targets[i])]] : [])]),
+      onLeave: hideTooltip,
+    }));
+  } else chart.append(h("p", { class: "desc" }, "Nothing goes into it yet."));
+  return h("div", { class: "goal" },
+    h("div", { class: "fhead" }, h("b", {}, a.name), h("span", { class: "muted" }, E.ACCOUNT_TYPES[a.type]?.label || a.type)),
+    h("div", { class: "goal-nums" }, h("span", {}, h("b", {}, money(bal)), a.balanceAsOf ? ` as of ${dayName(a.balanceAsOf)}` : " now"), targetNow > 0 ? h("span", {}, "Target ", h("b", {}, money(shown(targetNow, ys[0])))) : null),
+    pct != null ? h("div", { class: "gmeter" }, h("div", { class: "gbar" }, h("div", { class: "gfill", style: `width: ${Math.round(pct * 100)}%; background: ${g.color}` })), h("span", { class: "muted" }, `${Math.round(pct * 100)}%`)) : null,
+    status ? h("p", { class: "goal-status" }, status) : null,
+    chart,
+    h("div", { class: "fgrid" }, edits),
+    feeds.length ? h("div", { class: "feeds" }, feeds) : null);
 }
 
 function priorityList(inp) {
