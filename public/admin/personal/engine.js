@@ -121,8 +121,8 @@ export function defaultInputs(now = new Date()) {
       { id: "p2", name: "Kaitlyn", birthYear: 1995, birthMonth: 1, retireAge: 65, ssMonthly: 2500, ssClaimAge: 67 },
     ],
     incomes: [
-      { id: "inc-1", owner: "p1", name: "Salary", kind: "salary", annual: 70000, start: "", end: "", growth: null, payMonth: 12, jumps: [], gaps: [], retirePct: 0.06, retireAccount: "acct-401k-1", matchPct: 1, matchUpTo: 0.04, matchAccount: "", hsaEmployee: 0, hsaEmployer: 0, hsaAccount: "" },
-      { id: "inc-2", owner: "p2", name: "Salary", kind: "salary", annual: 70000, start: "", end: "", growth: null, payMonth: 12, jumps: [], gaps: [], retirePct: 0.06, retireAccount: "acct-401k-2", matchPct: 1, matchUpTo: 0.04, matchAccount: "", hsaEmployee: 0, hsaEmployer: 0, hsaAccount: "" },
+      { id: "inc-1", owner: "p1", name: "Salary", kind: "salary", annual: 70000, start: "", end: "", growth: null, payMonth: 12, jumps: [], gaps: [], retirePct: 0.06, retireAccount: "acct-401k-1", matchType: "match", matchPct: 1, matchUpTo: 0.04, matchThreshold: 0.05, employerPct: 0.1, matchAccount: "", hsaEmployee: 0, hsaEmployer: 0, hsaAccount: "" },
+      { id: "inc-2", owner: "p2", name: "Salary", kind: "salary", annual: 70000, start: "", end: "", growth: null, payMonth: 12, jumps: [], gaps: [], retirePct: 0.06, retireAccount: "acct-401k-2", matchType: "match", matchPct: 1, matchUpTo: 0.04, matchThreshold: 0.05, employerPct: 0.1, matchAccount: "", hsaEmployee: 0, hsaEmployer: 0, hsaAccount: "" },
     ],
     budget: {
       rent: { monthly: 1600, increase: 0.03 },
@@ -222,6 +222,7 @@ export function normalizeInputs(raw, now = new Date()) {
     inc.gaps = arr(inc.gaps, []);
   }
   for (const k of out.kids) k.leave = arr(k.leave, []);
+  for (const a of [...out.accounts, ...out.debts]) a.history = arr(a.history, []);
   return out;
 }
 
@@ -326,6 +327,9 @@ export function validate(inputs, now = new Date()) {
     if (!peopleIds.has(inc.owner)) add("error", "Income", `"${inc.name}" isn't assigned to a person.`);
     if (inc.start && inc.end && monthIndex(inc.end) < monthIndex(inc.start)) add("error", "Income", `"${inc.name}" ends before it starts.`);
     if (num(inc.retirePct) > 0 && !accounts.has(inc.retireAccount)) add("error", "Income", `"${inc.name}" puts ${Math.round(inc.retirePct * 100)}% toward retirement but no retirement account is chosen.`);
+    if (inc.matchType === "threshold" && num(inc.employerPct) > 0 && num(inc.retirePct) + 1e-9 < num(inc.matchThreshold)) {
+      add("warn", "Income", `"${inc.name}": you put in ${+(num(inc.retirePct) * 100).toFixed(2)}%, under the ${+(num(inc.matchThreshold) * 100).toFixed(2)}% needed for the employer's ${+(num(inc.employerPct) * 100).toFixed(2)}%, so that money is left on the table.`);
+    }
     if ((num(inc.hsaEmployee) || num(inc.hsaEmployer)) && !accounts.has(inc.hsaAccount)) add("error", "Income", `"${inc.name}" has HSA contributions but no HSA account is chosen.`);
     if (num(inc.annual) < 0) add("error", "Income", `"${inc.name}" has a negative amount.`);
   }
@@ -335,6 +339,13 @@ export function validate(inputs, now = new Date()) {
     else if (d.plan !== "idr" && num(d.minPayment) > 0 && num(d.minPayment) + num(d.extra) <= interest) add("warn", "Debts", `"${d.name}"'s payment doesn't cover its interest, so it never shrinks.`);
     if (num(d.rate) > 1) add("warn", "Debts", `"${d.name}"'s rate looks like a whole number. Enter 6.5% as 6.5, which saves as 0.065.`);
   }
+  // Balances last updated more than 90 days ago.
+  const stale = (x, what) => {
+    const d = /^\d{4}-\d{2}-\d{2}$/.test(String(x.balanceAsOf || "")) ? new Date(`${x.balanceAsOf}T12:00:00`) : null;
+    if (d && now - d > 90 * 864e5) add("warn", what, `"${x.name}"'s balance is from ${d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}. Update it on the Accounts tab.`);
+  };
+  for (const a of inputs.accounts || []) stale(a, "Accounts");
+  for (const d of inputs.debts || []) stale(d, "Accounts");
   for (const a of inputs.accounts || []) {
     if (!ACCOUNT_TYPES[a.type]) add("error", "Accounts", `"${a.name}" has an unknown type.`);
     if (num(a.balance) < 0) add("warn", "Accounts", `"${a.name}" starts below zero.`);
@@ -497,7 +508,11 @@ export function simulate(rawInputs, opts = {}) {
             }
           }
           const matchTo = acct.get(inc.matchAccount) || ra;
-          const m = pay * Math.min(num(inc.retirePct), num(inc.matchUpTo)) * num(inc.matchPct);
+          // Two kinds of employer money: a match on what you put in (rate × the first
+          // "up to" % of pay), or a set % of pay once you put in at least a threshold.
+          const m = inc.matchType === "threshold"
+            ? (num(inc.retirePct) + 1e-9 >= num(inc.matchThreshold) ? pay * num(inc.employerPct) : 0)
+            : pay * Math.min(num(inc.retirePct), num(inc.matchUpTo)) * num(inc.matchPct);
           if (m > 0) {
             rec.contribs.push({ acct: matchTo.id, amount: m, source: "employer" });
             rec.employer += m;

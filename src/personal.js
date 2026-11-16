@@ -18,6 +18,11 @@
  *
  *   GET  model            { linked, drive, model, version }
  *   PUT  model            { model, base, force } -> { version }; 409 if the file
+ *                         changed since `base`. The version is our own marker, kept in
+ *                         the file's appProperties.rev and changed only by a save here.
+ *                         (Drive's own `version` number also rises by itself while Drive
+ *                         processes a file after an upload, so comparing it reported a
+ *                         conflict on almost every second save.)
  *                         changed since `base` (someone else saved), with theirs
  *   GET  drive/link       start Google's consent (drive.file, offline)
  *   GET  drive/picker     { token, apiKey, appId } for the folder picker page
@@ -186,10 +191,13 @@ function publicLink(link) {
   };
 }
 
+/** The file's save marker; a file saved before markers existed has none. */
+const revOf = (meta) => (typeof meta?.appProperties?.rev === "string" && meta.appProperties.rev) || null;
+
 async function fileMeta(env, link) {
   if (!link.file_id) return null;
   try {
-    const r = await drive(env, link, `${DRIVE_API}/files/${encodeURIComponent(link.file_id)}?fields=id,version,trashed,parents`, {}, "find the file");
+    const r = await drive(env, link, `${DRIVE_API}/files/${encodeURIComponent(link.file_id)}?fields=id,trashed,parents,appProperties`, {}, "find the file");
     const meta = await r.json();
     return meta.trashed ? null : meta;
   } catch (error) {
@@ -208,20 +216,28 @@ async function readModel(env, link) {
   } catch {
     throw new Error("The finance file in Drive isn't valid JSON. Import a backup to replace it.");
   }
-  return { model, version: String(meta.version) };
+  return { model, version: revOf(meta) };
 }
 
-async function createFile(env, link, text) {
+/** Upload the file and a fresh save marker together: a new file (POST) or a new revision (PATCH). */
+async function upload(env, link, text, { create }) {
+  const rev = crypto.randomUUID();
   const boundary = `b${crypto.randomUUID().replace(/-/g, "")}`;
-  const metadata = { name: FILE_NAME, mimeType: "application/json", parents: [link.folder.id] };
+  const metadata = create
+    ? { name: FILE_NAME, mimeType: "application/json", parents: [link.folder.id], appProperties: { rev } }
+    : { appProperties: { rev } };
   const body = `--${boundary}\r\ncontent-type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`
     + `--${boundary}\r\ncontent-type: application/json\r\n\r\n${text}\r\n--${boundary}--`;
-  const r = await drive(env, link, `${DRIVE_UPLOAD}/files?uploadType=multipart&fields=id,version`, {
-    method: "POST",
+  const url = create
+    ? `${DRIVE_UPLOAD}/files?uploadType=multipart&fields=id`
+    : `${DRIVE_UPLOAD}/files/${encodeURIComponent(link.file_id)}?uploadType=multipart&fields=id`;
+  const r = await drive(env, link, url, {
+    method: create ? "POST" : "PATCH",
     headers: { "content-type": `multipart/related; boundary=${boundary}` },
     body,
-  }, "save a file in that folder");
-  return r.json();
+  }, create ? "save a file in that folder" : "save the file");
+  const saved = await r.json();
+  return { id: saved.id, rev };
 }
 
 /* ------------------------------------------------------------------------ routes -- */
@@ -267,24 +283,19 @@ async function routes(route, method, request, env, user) {
     }
     const body = JSON.stringify(input.model);
     const meta = await fileMeta(env, link);
-    if (meta && !input.force && String(meta.version) !== String(input.base ?? "")) {
+    // A file from before save markers has none to compare: this save gives it one.
+    const current = revOf(meta);
+    if (meta && current && !input.force && current !== String(input.base ?? "")) {
       // Someone saved since this browser loaded: hand back theirs so the page can ask.
       const theirs = await readModel(env, link);
       return reply({ error: "The file changed since you opened it.", conflict: true, ...theirs }, 409);
     }
+    const saved = await upload(env, link, body, { create: !meta });
     if (!meta) {
-      const created = await createFile(env, link, body);
-      link.file_id = created.id;
+      link.file_id = saved.id;
       await setSetting(env, KEY, link);
-      return reply({ version: String(created.version), saved_at: new Date().toISOString() });
     }
-    const r = await drive(env, link, `${DRIVE_UPLOAD}/files/${encodeURIComponent(link.file_id)}?uploadType=media&fields=id,version`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body,
-    }, "save the file");
-    const saved = await r.json();
-    return reply({ version: String(saved.version), saved_at: new Date().toISOString() });
+    return reply({ version: saved.rev, saved_at: new Date().toISOString() });
   }
 
   if (route === "drive/picker" && method === "GET") {

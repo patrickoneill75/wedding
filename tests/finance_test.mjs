@@ -3,7 +3,7 @@
  * worked out by hand. Each test shows its arithmetic. Run with `npm test`.
  */
 import assert from "node:assert/strict";
-import { amortizedPayment, bracketTax, defaultInputs, defaultModel, defaultTax, monteCarlo, simulate, toCsv, validate, yearRows, yearTax } from "../public/admin/personal/engine.js";
+import { amortizedPayment, bracketTax, defaultInputs, defaultModel, defaultTax, monteCarlo, normalizeInputs, simulate, toCsv, validate, yearRows, yearTax } from "../public/admin/personal/engine.js";
 
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
@@ -187,6 +187,42 @@ test("buying in a chosen year, and PMI until 20% equity", () => {
   const r = simulate(inp);
   assert.equal(r.milestones.find((m) => m.kind === "house").month, "2028-03");
   assert.ok(r.years[1].housing.pmi > 0, "90% loan-to-value pays PMI");
+});
+
+/* ---------------------------------------------------------- employer money -- */
+
+// Asked for: "as long as I contribute 5% of my salary, my employer contributes 10% of my
+// salary." $60,000 at 5%: you put in $3,000 and the employer $6,000. At 4%: $2,400 and
+// nothing from the employer, with a warning.
+test("employer puts in a set 10% of pay once you put in at least 5%", () => {
+  const inp = bare();
+  inp.accounts.push({ id: "k", name: "401k", type: "trad401k", owner: "p1", balance: 0, monthly: 0 });
+  inp.incomes = [salary(60000, { retirePct: 0.05, retireAccount: "k", matchType: "threshold", matchThreshold: 0.05, employerPct: 0.1 })];
+  let y = simulate(inp).years[0];
+  near(y.income.employer, 6000, 0.01, "employer");
+  near(y.savings.k, 9000, 0.01, "3,000 yours + 6,000 theirs");
+  assert.deepEqual(validate(inp).filter((x) => /left on the table/.test(x.message)), []);
+  inp.incomes[0].retirePct = 0.04;
+  y = simulate(inp).years[0];
+  near(y.income.employer, 0, 0.01, "under the threshold: nothing");
+  near(y.savings.k, 2400, 0.01);
+  assert.ok(validate(inp).some((x) => /under the 5% needed for the employer's 10%/.test(x.message)));
+  // The usual kind still works: 100% of the first 4% on $60,000 is $2,400.
+  inp.incomes[0] = salary(60000, { retirePct: 0.06, retireAccount: "k", matchType: "match", matchPct: 1, matchUpTo: 0.04 });
+  near(simulate(inp).years[0].income.employer, 2400, 0.01);
+});
+
+/* ------------------------------------------------------- balance updates -- */
+
+test("dated balances: old files gain an empty history, and a balance older than 90 days is flagged", () => {
+  const inp = bare();
+  delete inp.accounts[0].history;
+  assert.deepEqual(normalizeInputs(inp).accounts[0].history, []);
+  inp.accounts[0].balanceAsOf = "2026-06-01";
+  const now = new Date(2026, 10, 16);
+  assert.ok(validate(inp, now).some((x) => x.where === "Accounts" && /balance is from Jun 1, 2026/.test(x.message)));
+  inp.accounts[0].balanceAsOf = "2026-10-01";
+  assert.ok(!validate(inp, now).some((x) => /balance is from/.test(x.message)));
 });
 
 /* ------------------------------------------------------------- Monte Carlo -- */

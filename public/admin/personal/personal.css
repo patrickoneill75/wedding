@@ -78,3 +78,6 @@ button.link.small { padding: 0 4px; min-height: 0; font-weight: 700; }
 .flist > button.add { align-self: flex-start; }
 .row select, .head select { width: auto; }
 #comparePick { max-width: 320px; }
+.balances input { width: 150px; }
+.history summary { cursor: pointer; color: var(--text-secondary); font-size: 13px; margin: 6px 0; }
+.history table { width: auto; }
