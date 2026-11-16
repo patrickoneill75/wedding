@@ -3,7 +3,7 @@
  * worked out by hand. Each test shows its arithmetic. Run with `npm test`.
  */
 import assert from "node:assert/strict";
-import { amortizedPayment, bracketTax, defaultInputs, defaultModel, defaultTax, monteCarlo, normalizeInputs, simulate, toCsv, validate, yearRows, yearTax } from "../public/admin/personal/engine.js";
+import { amortizedPayment, bracketTax, defaultInputs, defaultModel, defaultTax, monteCarlo, monthFlows, normalizeInputs, simulate, toCsv, validate, yearRows, yearTax } from "../public/admin/personal/engine.js";
 
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
@@ -223,6 +223,67 @@ test("dated balances: old files gain an empty history, and a balance older than 
   assert.ok(validate(inp, now).some((x) => x.where === "Accounts" && /balance is from Jun 1, 2026/.test(x.message)));
   inp.accounts[0].balanceAsOf = "2026-10-01";
   assert.ok(!validate(inp, now).some((x) => /balance is from/.test(x.message)));
+});
+
+/* ------------------------------------------------------ one month's flows -- */
+
+// Asked for: pick any month and see a Sankey chart of income and expenses. Whatever comes
+// in has to equal whatever goes out, in every kind of month.
+test("one month's flows: money in equals money out, with the right pieces", () => {
+  const inp = bare();
+  inp.incomes = [salary(60000)];
+  inp.budget.rent.monthly = 1500;
+  inp.budget.categories = [{ id: "c", name: "Groceries", amount: 500, freq: "monthly", inflation: null, start: "", end: "", owner: "shared" }];
+  inp.accounts.push({ id: "sav", name: "Savings", type: "savings", owner: "shared", balance: 0, monthly: 300 });
+  const f = monthFlows(simulate(inp, { flowMonth: "2026-03" }), "2026-03");
+  near(f.total, 5000, 0.01, "a month of a $60,000 salary");
+  const g = Object.fromEntries(f.groups.map((x) => [x.key, x.value]));
+  near(g.taxes, 12542.3 / 12, 0.05, "a twelfth of the year's tax");
+  near(g.housing, 1500, 0.01);
+  near(g.categories, 500, 0.01);
+  near(g.savings, 300 + 1654.81, 0.05, "the savings goal plus the leftover");
+  // The default plan's busy months: the wedding (drawing from savings), a December
+  // settling taxes, the house purchase and a retirement month.
+  const def = defaultInputs(new Date(2026, 10, 1));
+  const house = simulate(def).milestones.find((m) => m.kind === "house").month;
+  for (const ym of ["2027-05", "2027-12", house, "2063-03"]) {
+    const r = simulate(def, { flowMonth: ym });
+    const x = monthFlows(r, ym, { real: true });
+    const tin = x.inflows.reduce((t, y) => t + y.value, 0);
+    const tout = x.groups.reduce((t, y) => t + y.value, 0);
+    near(tin, tout, 0.5, `${ym} balances`);
+    assert.ok(x.inflows.every((y) => y.value > 0) && x.groups.every((y) => y.value > 0), `${ym} has no negative pieces`);
+  }
+  assert.equal(monthFlows(simulate(def), "2027-05"), null, "only the month asked for is recorded");
+});
+
+/* ------------------------------------------------------- savings goals -- */
+
+// Asked for: self-insure the pets from a set-aside fund. Pet costs $1,200 a year ($100 a
+// month); the fund gets $150 a month and starts empty. Costs come before contributions,
+// so January's $100 comes out of pay, then the fund pays February to December: $1,100.
+// The fund ends the year at 12 × 150 − 1,100 = $700.
+test("a set-aside fund pays the pets' costs first, and pay covers what it can't", () => {
+  const inp = bare();
+  inp.incomes = [salary(60000)];
+  inp.accounts.push({ id: "pet", name: "Pet fund", type: "sinking", owner: "shared", balance: 0, monthly: 150 });
+  inp.pets = [{ id: "dog", name: "Rex", annual: 1200, oneTime: 0, start: "2026-01", endYear: null, fundAccount: "pet" }];
+  const y = simulate(inp).years[0];
+  near(y.pets, 1200, 0.01, "the full cost still shows as pet spending");
+  near(y.withdrawals.pet, 1100, 0.01, "paid by the fund");
+  near(y.balances.pet, 700, 0.01);
+});
+
+// A $500-a-month savings goal with a $2,000 target fills in four months and stops.
+test("a target balance stops contributions once it's reached, and says when", () => {
+  const inp = bare();
+  inp.incomes = [salary(60000)];
+  inp.accounts.push({ id: "sav", name: "Trip fund", type: "savings", owner: "shared", balance: 0, monthly: 500, target: 2000 });
+  const r = simulate(inp);
+  near(r.years[0].savings.sav, 2000, 0.01);
+  assert.equal(r.summary.reached.sav, "2026-04", "April's $500 brings it to $2,000");
+  assert.equal(r.years[0].targets.sav, 2000);
+  assert.deepEqual(r.summary.startPlan.goals.map((g) => [g.id, g.amount]), [["sav", 500]]);
 });
 
 /* ------------------------------------------------------------- Monte Carlo -- */

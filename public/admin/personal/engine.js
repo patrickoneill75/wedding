@@ -53,6 +53,9 @@ export const ACCOUNT_TYPES = {
   rothIRA: { label: "Roth IRA", group: "roth", ret: "retirement", limit: "ira" },
   hsa: { label: "HSA", group: "hsa", ret: "hsa", limit: "hsa" },
   college529: { label: "529 college savings", group: "college", ret: "college" },
+  // Money set aside for costs you'd rather pay yourselves than insure (pets, car repairs,
+  // travel). Pets and budget categories can be paid from one. Never drawn for shortfalls.
+  sinking: { label: "Set-aside fund (self-insure)", group: "cash", ret: "hysa", cash: true },
 };
 export const GROUP_LABELS = {
   cash: "Cash and savings",
@@ -375,6 +378,7 @@ const DRAW_ORDER_CASH = ["checking", "savings", "emergency", "house"];
 /**
  * Run the model. opts:
  *   overrides  { returnDelta, inflation, salaryGrowth, housePriceMult } (sliders)
+ *   flowMonth  "YYYY-MM": record that month's flows for monthFlows()
  *   returns    (yearOffset) => { brokerage, retirement, hsa, college } random returns
  *   lean       skip month records (Monte Carlo)
  */
@@ -389,6 +393,7 @@ export function simulate(rawInputs, opts = {}) {
   const returnDelta = num(ov.returnDelta);
   const housePriceMult = ov.housePriceMult != null ? ov.housePriceMult : 1;
   const start = monthIndex(s.start) ?? monthIndex(`${new Date().getFullYear()}-01`);
+  const flowIdx = monthIndex(opts.flowMonth);
   const startYear = Math.floor(start / 12);
   const people = (inputs.people || []).filter((p) => p.birthYear > 1900);
   const pById = new Map(people.map((p) => [p.id, p]));
@@ -692,6 +697,29 @@ export function simulate(rawInputs, opts = {}) {
   const emergencyTargetMonths = num(s.emergencyMonths, 6);
   let lastRequired = 0;
   const goals = goalOrder(inputs, kids);
+  const curTarget = {};
+  const reached = {};
+  const startPlan = { beforeGoals: 0, leftover: 0, goals: [], payroll: [] };
+  /** Pay `v` from a set-aside or savings fund as far as it goes; returns what it covered. */
+  function fromFund(id, v) {
+    const a = id ? acct.get(id) : null;
+    if (!a || !(v > 0) || a.bal <= 0) return 0;
+    const take = Math.min(a.bal, v);
+    a.bal -= take;
+    add(yr.withdrawals, a.id, take);
+    return take;
+  }
+  /** An account's target balance in month i (future dollars), or null for none. */
+  function targetFor(a, i, emergencyTarget) {
+    if (a.type === "house" && H.enabled && a.id === H.fundAccount) return house.owned ? null : housePrice(i) * (num(H.downPct) + num(H.closingPct));
+    if (a.type === "emergency") return emergencyTarget;
+    if (opt(a.target) != null && num(a.target) > 0) return num(a.target) * F(i);
+    if (a.type === "college529") {
+      const n = kids.filter((k) => k.account === a.id && i < k.born + 18 * 12).length;
+      return n ? n * num(KC.collegeGoal) * F(i) : null;
+    }
+    return null;
+  }
   let netWorthStart = null;
   let thisYearSurplus = 0;
   let thisYearMonths = 0;
@@ -716,6 +744,9 @@ export function simulate(rawInputs, opts = {}) {
       }
     }
     yr.months++;
+    // Each month's own flows (for the one-month chart) are the change in the year's totals.
+    // Only for the month asked for (opts.flowMonth): every month would triple the run time.
+    const snap = !opts.lean && i === flowIdx ? flatFlows(yr) : null;
     const rec = planYear(year)[mo];
     const f = F(i);
     const retired = i >= allRetiredIdx;
@@ -791,6 +822,7 @@ export function simulate(rawInputs, opts = {}) {
           return need;
         });
         houseYear = houseYear ?? year;
+        if (fund && H.mode === "auto" && !reached[fund.id]) reached[fund.id] = ymOf(i);
         // What's left in the fund goes to the leftover account.
         if (fund && surplusAcct && fund !== surplusAcct && fund.bal > 0) {
           surplusAcct.bal += fund.bal;
@@ -856,12 +888,12 @@ export function simulate(rawInputs, opts = {}) {
       add(yr.kids, "college", k.college);
       required += left;
     }
-    // Pets
+    // Pets (from their set-aside fund first, when they have one)
     for (const p of inputs.pets || []) {
       const st = monthIndex(p.start) ?? start;
       if (i < st || (opt(p.endYear) != null && year > num(p.endYear))) continue;
       const v = (num(p.annual) / 12) * f + (i === st ? num(p.oneTime) * f : 0);
-      required += v;
+      required += v - fromFund(p.fundAccount, v);
       yr.pets += v;
     }
     // Budget categories (replaced in retirement when a target or rate is set)
@@ -873,8 +905,12 @@ export function simulate(rawInputs, opts = {}) {
       const g = c.inflation != null && c.inflation !== "" ? num(c.inflation) : infl;
       const scale = (1 + g) ** ((i - start) / 12);
       const v = c.freq === "yearly" ? (mo === ((st ?? 0) % 12) ? num(c.amount) * scale : 0) : num(c.amount) * scale;
-      lifestyle += v;
-      if (!(retired && R.mode !== "budget")) add(yr.categories, c.name || "Other", v);
+      if (retired && R.mode !== "budget") {
+        lifestyle += v;
+        continue;
+      }
+      lifestyle += v - fromFund(c.fundAccount, v);
+      add(yr.categories, c.name || "Other", v);
     }
     if (retired && R.mode === "target") {
       lifestyle = num(R.targetMonthly) * f;
@@ -988,6 +1024,8 @@ export function simulate(rawInputs, opts = {}) {
     // order set on the page, while cash lasts. Limits, the emergency target and the
     // house target stop a goal once met.
     const emergencyTarget = emergencyTargetMonths * required;
+    // Each account's target this month (the first month it's reached is noted below).
+    for (const a of accounts) curTarget[a.id] = targetFor(a, i, emergencyTarget);
     for (const g of goals) {
       if (cash <= 0.005) break;
       if (g.kind === "debt") {
@@ -1009,9 +1047,11 @@ export function simulate(rawInputs, opts = {}) {
       let want = g.kind === "kid529" ? num(g.monthly) : num(a.monthly);
       if (g.kind === "kid529" && g.until != null && i >= g.until) continue;
       if (!(want > 0)) continue;
-      if (a.type === "emergency" && a.bal >= emergencyTarget) continue;
       if (a.type === "house" && (house.owned || !H.enabled)) continue;
-      if (a.type === "house" && H.mode === "auto" && a.bal >= housePrice(i) * (num(H.downPct) + num(H.closingPct))) continue;
+      // Contributions stop at the target (house: auto-buy target; emergency: months of
+      // spending; any account: its own target, in today's dollars).
+      const t = curTarget[a.id];
+      if (t != null && t > 0 && a.bal >= t && !(a.type === "house" && H.mode === "year")) continue;
       const lim = annualLimit(a, i);
       if (lim != null) want = Math.min(want, Math.max(0, lim - a.ytd));
       const c = Math.min(cash, want);
@@ -1020,12 +1060,22 @@ export function simulate(rawInputs, opts = {}) {
       a.ytd += c;
       cash -= c;
       add(yr.savings, a.id, c);
+      if (i === start) startPlan.goals.push({ key: g.key, id: a.id, label: g.label, amount: c, wanted: g.kind === "kid529" ? num(g.monthly) : num(a.monthly) });
       if (a.info.group === "traditional" && a.type === "tradIRA") yearExtra.ordinary -= c; // deductible IRA
     }
     if (cash > 0 && surplusAcct) {
       surplusAcct.bal += cash;
       add(yr.savings, surplusAcct.id, cash);
       yr.surplus += cash;
+    }
+    for (const a of accounts) {
+      const t = curTarget[a.id];
+      if (t != null && t > 0 && a.bal >= t - 0.5 && !reached[a.id]) reached[a.id] = ymOf(i);
+    }
+    if (i === start) {
+      startPlan.beforeGoals = surplusBeforeGoals;
+      startPlan.leftover = Math.max(0, cash);
+      startPlan.payroll = rec.contribs.map((c) => ({ id: c.acct, amount: c.amount, source: c.source }));
     }
 
     /* 5. December: settle the year's tax on what actually happened */
@@ -1067,6 +1117,7 @@ export function simulate(rawInputs, opts = {}) {
       yr.netWorth = netWorth;
       yr.deflator = F(i);
       yr.debtBalances = Object.fromEntries(debts.map((d) => [d.id, Math.max(0, d.bal)]));
+      yr.targets = { ...curTarget };
       yr.required = required;
       // Financial independence: invested assets at the FI rate cover this year's spending.
       const invested = byGroup.brokerage + byGroup.traditional + byGroup.roth + byGroup.hsa + Math.max(0, byGroup.cash);
@@ -1078,7 +1129,15 @@ export function simulate(rawInputs, opts = {}) {
       }
     }
     if (!opts.lean) {
-      monthsOut.push({ i, month: ymOf(i), netWorth, cash: byGroup.cash, required });
+      let flows = null;
+      if (snap) {
+        flows = {};
+        for (const [k, v] of Object.entries(flatFlows(yr))) {
+          const d = v - (snap[k] || 0);
+          if (Math.abs(d) > 0.005) flows[k] = d;
+        }
+      }
+      monthsOut.push({ i, month: ymOf(i), year, netWorth, cash: byGroup.cash, required, deflator: F(i), flows });
     }
   }
   if (debtFreeAt != null) mile(debtFreeAt, "debt", "Debt free (not counting the mortgage)");
@@ -1108,6 +1167,8 @@ export function simulate(rawInputs, opts = {}) {
     runsOutYear: runsOut,
     endYear: Math.floor((end - 1) / 12),
     totalInterest: debts.reduce((t, d) => t + d.interest, 0),
+    reached,
+    startPlan,
     debts: debts.map((d) => ({ id: d.id, name: d.name, interest: d.interest, paidOff: d.paidAt != null ? ymOf(d.paidAt) : null, forgiven: d.forgive && d.paidAt != null })),
   };
   milestones.sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
@@ -1159,6 +1220,79 @@ export function simulate(rawInputs, opts = {}) {
     });
     return out;
   }
+}
+
+/* ----------------------------------------------------- one month's flows -- */
+
+const FLOW_GROUPS = ["income", "taxes", "housing", "cars", "kids", "health", "categories", "debt", "savings", "withdrawals"];
+function flatFlows(y) {
+  const o = { pets: y.pets, events: y.events };
+  for (const g of FLOW_GROUPS) for (const [k, v] of Object.entries(y[g] || {})) o[`${g}.${k}`] = v;
+  return o;
+}
+
+const FLOW_LABELS = {
+  salary: "Salary", bonus: "Bonus", side: "Side income", ss: "Social Security", employer: "Employer money", windfall: "Windfalls",
+  federal: "Federal", fica: "FICA", state: "Indiana", county: "County",
+  rent: "Rent", utilities: "Utilities", mortgage: "Mortgage", propertyTax: "Property tax", insurance: "Insurance", hoa: "HOA", upkeep: "Upkeep", pmi: "PMI", bigItems: "Big repairs", closing: "Closing costs",
+  purchase: "Car purchase", loan: "Car loan", gas: "Gas", registration: "Registration", excise: "Excise tax", maintenance: "Maintenance",
+  care: "Care and activities", birth: "Birth", college: "College",
+  premium: "Health premiums", outOfPocket: "Out-of-pocket",
+  payment: "Required payments", extra: "Extra payments",
+};
+export const FLOW_GROUP_LABELS = { taxes: "Taxes", housing: "Housing", cars: "Cars", kids: "Kids", health: "Health", categories: "Spending", pets: "Pets", events: "One-time events", debt: "Loan payments", savings: "Saved", adjust: "Held for later" };
+
+/**
+ * Where one month's money came from and went, for a Sankey chart: `inflows` (pay,
+ * Social Security, employer money, money drawn from savings...) add up to `total`, and so
+ * do the `groups` (taxes, housing, ... saved), each with its line items. Anything that
+ * only settles later (tax held back on a withdrawal, a refund, a house down payment paid
+ * straight from its fund) shows as "Held for later" or "From savings, other", so the two
+ * sides always match. `real` divides by that month's inflation.
+ */
+export function monthFlows(result, ym, { real = false } = {}) {
+  const m = result.months.find((x) => x.month === ym);
+  if (!m?.flows) return null;
+  const d = real ? m.deflator || 1 : 1;
+  const names = Object.fromEntries((result.accounts || []).map((a) => [a.id, a.name]));
+  const inflows = [];
+  const groups = new Map();
+  const refunds = [];
+  const outItem = (group, label, v) => {
+    if (!(Math.abs(v) > 0.005)) return;
+    if (v < 0) return refunds.push({ label: `${label} (back)`, value: -v / d });
+    if (!groups.has(group)) groups.set(group, { key: group, label: FLOW_GROUP_LABELS[group] || group, items: [] });
+    groups.get(group).items.push({ label, value: v / d });
+  };
+  for (const [k, v] of Object.entries(m.flows)) {
+    const dot = k.indexOf(".");
+    const g = dot < 0 ? k : k.slice(0, dot);
+    const key = dot < 0 ? k : k.slice(dot + 1);
+    if (g === "income") {
+      if (v > 0.005) inflows.push({ label: FLOW_LABELS[key] || key, value: v / d });
+    } else if (g === "withdrawals") {
+      if (v > 0.005) inflows.push({ label: `From ${names[key] || key}`, value: v / d, drawn: true });
+    } else if (g === "taxes") {
+      if (key !== "total") outItem("taxes", FLOW_LABELS[key] || key, v);
+    } else if (g === "debt") {
+      if (key === "payment" || key === "extra") outItem("debt", FLOW_LABELS[key], v);
+    } else if (g === "savings") outItem("savings", names[key] || key, v);
+    else if (g === "categories") outItem("categories", key, v);
+    else if (g === "pets" || g === "events") outItem(g, FLOW_GROUP_LABELS[g], v);
+    else outItem(g, FLOW_LABELS[key] || key, v);
+  }
+  for (const r of refunds) inflows.push(r);
+  const groupList = [...groups.values()].map((g) => ({ ...g, value: g.items.reduce((t, x) => t + x.value, 0) }));
+  const tin = inflows.reduce((t, x) => t + x.value, 0);
+  const tout = groupList.reduce((t, x) => t + x.value, 0);
+  if (tin - tout > 0.5) groupList.push({ key: "adjust", label: FLOW_GROUP_LABELS.adjust, value: tin - tout, items: [{ label: "Tax held back, refunds and other timing", value: tin - tout }] });
+  // Closing costs in a purchase month come straight from the house fund.
+  else if (tout - tin > 0.5) inflows.push({ label: result.milestones.some((x) => x.month === ym && x.kind === "house") ? "From the house fund" : "From savings, other", value: tout - tin, drawn: true });
+  const order = ["taxes", "housing", "cars", "kids", "health", "categories", "pets", "events", "debt", "savings", "adjust"];
+  groupList.sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
+  for (const g of groupList) g.items.sort((a, b) => b.value - a.value);
+  inflows.sort((a, b) => (a.drawn === b.drawn ? b.value - a.value : a.drawn ? 1 : -1));
+  return { month: ym, inflows, groups: groupList, total: Math.max(tin, tout) };
 }
 
 /** The goal order: settings.priority first, then accounts with a monthly amount, debts with extra, and kids' 529s. */
