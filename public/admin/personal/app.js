@@ -748,7 +748,8 @@ const F = {
     { key: "rate", label: "Interest rate", type: "pct" },
     { key: "minPayment", label: "Monthly payment", type: "money", help: "The required payment. For an income-driven plan, this caps the payment (enter the standard payment)." },
     { key: "termMonths", label: "Or months to pay off", type: "int", nullable: true, help: "Used only when the payment is blank: the payment that clears it in this many months." },
-    { key: "extra", label: "Extra a month", type: "money", help: "Paid from what's left after required spending, in the savings order." },
+    { key: "extra", label: "Extra a month", type: "money", help: "Paid from what's left after required spending, in the savings order (or from the account below, when one is chosen)." },
+    { key: "fundAccount", label: "Paid from", type: "select", opts: ACCT_OPTS(["savings", "sinking", "emergency", "checking"]), help: "Pay this loan out of a savings account instead of from pay. The payment and any extra come from that account first; whatever it can't cover comes out of the month's pay. None: straight from pay." },
     { key: "start", label: "Starts", type: "month", help: "For a loan you'll take out later. Blank: now." },
     { key: "plan", label: "Repayment plan", type: "select", opts: [["standard", "Standard"], ["idr", "Income-driven"]], help: "Income-driven: a share of last year's income above a multiple of the poverty line, recalculated each year." },
     { key: "idrPct", label: "Share of discretionary income", type: "pct", when: (o) => o.plan === "idr", help: "For example 10. Set it to your plan's current rule." },
@@ -1083,7 +1084,7 @@ function balancesPanel(inp) {
 /** After an account is deleted, nothing may still point at it. */
 function dropAccountRefs(inp, id) {
   for (const inc of inp.incomes) for (const k of ["retireAccount", "matchAccount", "hsaAccount"]) if (inc[k] === id) inc[k] = "";
-  for (const x of [...inp.pets, ...inp.budget.categories]) if (x.fundAccount === id) x.fundAccount = "";
+  for (const x of [...inp.pets, ...inp.budget.categories, ...inp.debts]) if (x.fundAccount === id) x.fundAccount = "";
   for (const k of inp.kids) if (k.account === id) k.account = "";
   if (inp.house.fundAccount === id) inp.house.fundAccount = "";
   if (inp.settings.surplusAccount === id) inp.settings.surplusAccount = inp.accounts.find((a) => a.type === "checking")?.id || inp.accounts[0]?.id || "";
@@ -1213,13 +1214,15 @@ function goalCard(inp, a, g) {
   for (const k of inp.kids) if (k.account === a.id) feeds.push(h("div", { class: "feed" }, mini(k, { key: "college529Monthly", label: `For ${k.name || `the kid born ${k.birthYear}`}, a month`, type: "money" })));
   if (a.type === "college529") feeds.push(mini(inp.kidCosts, { key: "collegeGoal", label: "College goal per kid", type: "money", help: "Today's dollars. The same as on Kids & pets." }));
   const paysFor = [...inp.pets.filter((p) => p.fundAccount === a.id).map((p) => ({ label: `Pet: ${p.name || "pet"}`, obj: p, key: "annual", yearly: Number(p.annual) || 0 })),
-    ...inp.budget.categories.filter((c) => c.fundAccount === a.id).map((c) => ({ label: c.name, obj: c, key: "amount", yearly: (Number(c.amount) || 0) * (c.freq === "yearly" ? 1 : 12) }))];
+    ...inp.budget.categories.filter((c) => c.fundAccount === a.id).map((c) => ({ label: c.name, obj: c, key: "amount", yearly: (Number(c.amount) || 0) * (c.freq === "yearly" ? 1 : 12) })),
+    ...inp.debts.filter((d) => d.fundAccount === a.id && Number(d.balance) > 0).map((d) => ({ label: `Loan: ${d.name}`, obj: d, key: "minPayment", freq: "monthly", yearly: ((Number(d.minPayment) || 0) + (Number(d.extra) || 0)) * 12, loan: true }))];
   if (paysFor.length) {
     const yearly = paysFor.reduce((t, x) => t + x.yearly, 0);
     const putIn = (Number(a.monthly) || 0) * 12;
     feeds.push(h("div", { class: "feed" }, h("p", {}, h("b", {}, "Pays for: "), paysFor.map((x) => `${x.label} (${money(x.yearly)} a year)`).join(", ")),
-      h("p", { class: putIn + 0.5 < yearly ? "msg err" : "desc" }, `You put in ${money(putIn)} a year and it pays out about ${money(yearly)} a year in today's dollars${putIn + 0.5 < yearly ? `: ${money((yearly - putIn) / 12)} a month short, so the rest comes out of pay` : ""}.`),
-      ...paysFor.filter((x) => x.obj.freq !== "monthly").map((x) => mini(x.obj, { key: x.key, label: `${x.label}: a year`, type: "money" }))));
+      h("p", { class: putIn + 0.5 < yearly ? "msg err" : "desc" }, `You put in ${money(putIn)} a year and it pays out about ${money(yearly)} a year${paysFor.some((x) => x.loan) ? " while the loans last" : ""}${putIn + 0.5 < yearly ? `: ${money((yearly - putIn) / 12)} a month more than goes in, so the balance${bal > 0 ? ` (${money(bal)})` : ""} runs down and then pay covers the rest` : ""}.`),
+      ...paysFor.filter((x) => !x.loan && x.obj.freq !== "monthly").map((x) => mini(x.obj, { key: x.key, label: `${x.label}: a year`, type: "money" })),
+      ...paysFor.filter((x) => x.loan).flatMap((x) => [mini(x.obj, { key: "minPayment", label: `${x.label}: payment a month`, type: "money" }), mini(x.obj, { key: "extra", label: "Extra a month", type: "money" })])));
   } else if (a.type === "sinking") feeds.push(h("p", { class: "desc" }, "Nothing is paid from it yet. Choose it under \"Paid from\" on a pet (Kids & pets) or a budget category."));
 
   // The house fund's story ends a year after the purchase; an empty account has no chart.
