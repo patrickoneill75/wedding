@@ -11,6 +11,7 @@ import { serveGuide } from "./guide.js";
 import { PREVIEW_BASE, serveWebsite } from "./website.js";
 import { loadSettings } from "./store.js";
 import { handleDayOf } from "./runofshow.js";
+import { handlePersonalApi, isPersonalPath, savePersonalTokens, servePersonalPage } from "./personal.js";
 
 /**
  * Worker entry point. Every request comes here first (run_worker_first in
@@ -26,6 +27,7 @@ import { handleDayOf } from "./runofshow.js";
  *   /api/auth/logout
  *   /api/admin/*         control panel (src/admin_api.js): admins, or users with the
  *                        page a route belongs to (ROUTE_PAGES)
+ *   /api/personal/*      the private finance tool (src/personal.js): PERSONAL_EMAILS only
  *   /api/public/*        RSVP and the unlisted expense form (src/public_api.js)
  *   /api/dayof/*         the coordinator's run of show for /dayof/ (src/runofshow.js):
  *                        the day-of link's key, or a sign-in with Run of show
@@ -58,7 +60,7 @@ import { handleDayOf } from "./runofshow.js";
  */
 
 const SECRETS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "ADMIN_EMAILS"];
-const OPTIONAL_SECRETS = ["ZOLA_INGEST_SECRET", "GH_DISPATCH_TOKEN", "ANTHROPIC_API_KEY"];
+const OPTIONAL_SECRETS = ["ZOLA_INGEST_SECRET", "GH_DISPATCH_TOKEN", "ANTHROPIC_API_KEY", "PERSONAL_EMAILS", "GOOGLE_PICKER_API_KEY"];
 
 async function handleSiteApi(route, request, env) {
   const auth = request.headers.get("authorization") || "";
@@ -100,13 +102,14 @@ async function handleApi(route, request, env) {
   if (route === "auth/login" && method === "GET") {
     return startOAuth(request, env, "login", { next: new URL(request.url).searchParams.get("next") });
   }
-  if (route === "auth/callback" && method === "GET") return handleOAuthCallback(request, env, { drive: saveDriveTokens, gmail: saveGmailTokens });
+  if (route === "auth/callback" && method === "GET") return handleOAuthCallback(request, env, { drive: saveDriveTokens, gmail: saveGmailTokens, personal: savePersonalTokens });
   if (route === "auth/logout" && method === "POST") return logoutResponse();
   if (route === "auth/me" && method === "GET") {
     const user = await currentUser(request, env);
     return user ? json({ user }) : json({ error: "Not signed in." }, 401);
   }
   if (route.startsWith("admin/")) return handleAdminApi(route.slice("admin/".length), request, env);
+  if (route.startsWith("personal/")) return handlePersonalApi(route.slice("personal/".length), request, env);
   if (route.startsWith("public/")) return handlePublicApi(route.slice("public/".length), request, env);
   if (route.startsWith("site/")) return handleSiteApi(route, request, env);
   if (route === "dayof" || route.startsWith("dayof/")) return handleDayOf(route, request, env);
@@ -130,6 +133,12 @@ export default {
       }
     }
     if (url.pathname.startsWith("/_site/fonts/")) return serveFont(url.pathname);
+    // The private finance tool: checked here, on the server, before any of its files go out.
+    if (isPersonalPath(url.pathname)) {
+      if (!env.DB) return json({ error: "The D1 database isn't bound to this Worker." }, 500);
+      await ensureSchema(env);
+      return servePersonalPage(request, env);
+    }
     const method = request.method.toUpperCase();
     const pageLike = url.pathname === "/index.html" || !url.pathname.includes(".", url.pathname.lastIndexOf("/"));
     // The coded website: a preview at /_new/ for the Website page, and for guests once

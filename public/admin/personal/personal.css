@@ -1,0 +1,80 @@
+/* The finance page, on top of the control panel's admin.css. */
+.head { gap: 10px; flex-wrap: wrap; }
+.head h1 { margin: 0; }
+.head select { max-width: 240px; }
+.callout { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin: 0 0 14px; }
+.callout.good { border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+.callout.bad, .warnbox { border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+.warnbox { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: space-between; }
+.tile.bad .value { color: var(--bad); }
+.tile.good .value { color: var(--good); }
+.tile.warn .value { color: color-mix(in srgb, var(--warn) 70%, var(--text-primary)); }
+
+.sliders { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px 22px; margin: 8px 0; }
+.slider { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-secondary); }
+.slider b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.slider input[type="range"] { width: 100%; padding: 0; min-height: 28px; }
+
+.legend span.dashed::before { background: none; border-top: 2px dashed var(--swatch); height: 0; border-radius: 0; vertical-align: 3px; }
+.milestones-box summary { cursor: pointer; color: var(--text-secondary); font-size: 13px; }
+.milestones { list-style: none; padding: 0; margin: 8px 0 0; columns: 2 280px; font-size: 13px; }
+.milestones li { break-inside: avoid; padding: 2px 0; }
+.milestones .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--swatch); margin-right: 6px; }
+
+.checks { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; max-height: 360px; overflow-y: auto; }
+.checks li { padding: 6px 10px; border-radius: 8px; background: var(--wash); }
+.checks li.error .pill { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+.checks li.warn .pill { background: color-mix(in srgb, var(--warn) 25%, transparent); }
+.checks li.ok { color: var(--text-secondary); }
+
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border); margin: 6px 0 14px; padding-bottom: 8px; }
+.tabs button { background: none; border: 1px solid transparent; padding: 6px 10px; border-radius: 8px; font-weight: 550; color: var(--text-secondary); }
+.tabs button.active { background: var(--surface-2); border-color: var(--border); color: var(--text-primary); }
+
+.fsec { margin: 0 0 22px; }
+.fsec h3 { margin: 0 0 4px; font-size: 15px; }
+.fsec h4, .nested h4 { margin: 12px 0 6px; font-size: 13px; color: var(--text-secondary); }
+.fgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 14px; margin: 8px 0; }
+.field { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 4px; font-size: 12.5px; color: var(--text-secondary); }
+.field > label { grid-column: 1; }
+.field > .help { grid-column: 2; }
+.field > input, .field > select { grid-column: 1 / -1; width: 100%; }
+.field.wide { grid-column: 1 / -1; }
+.field.boolf { grid-template-columns: 1fr auto; align-items: center; }
+.field.boolf .check { font-size: 13px; color: var(--text-primary); }
+.help { width: 22px; height: 22px; min-height: 0; padding: 0; border-radius: 50%; font-size: 12px; line-height: 1; color: var(--text-secondary); }
+.helptext { grid-column: 1 / -1; background: var(--surface-2); border-radius: 8px; padding: 8px 10px; color: var(--text-primary); font-size: 12.5px; line-height: 1.45; }
+.flist { display: flex; flex-direction: column; gap: 10px; margin: 8px 0; }
+.fitem { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface-1); }
+.fhead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: space-between; }
+.fhead .actions, .order .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.nested { border-left: 3px solid var(--border); padding-left: 10px; margin-top: 6px; }
+.nested .fitem { background: var(--page); }
+.order { padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.order li { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.brackets { width: auto; margin: 6px 0; }
+.brackets input { width: 140px; }
+.sources { margin: 8px 0; padding-left: 18px; font-size: 12.5px; color: var(--text-secondary); }
+
+.yt { max-height: 560px; overflow: auto; }
+.yt table { font-size: 12.5px; white-space: nowrap; }
+.yt th.grp { text-align: center; border-bottom: 1px solid var(--border); }
+.yt th.sub { font-weight: 500; color: var(--text-muted); }
+.yt thead th { position: sticky; top: 0; background: var(--surface-1); z-index: 1; }
+.yt thead tr:nth-child(2) th { top: 31px; }
+.yt td:first-child, .yt th:first-child { position: sticky; left: 0; background: var(--surface-1); }
+.yt tr.short td { color: var(--bad); }
+button.link.small { padding: 0 4px; min-height: 0; font-weight: 700; }
+.method p, .method li { max-width: 78ch; line-height: 1.55; }
+
+@media (max-width: 640px) {
+  .fgrid { grid-template-columns: 1fr 1fr; }
+  .head select { max-width: 100%; flex: 1 1 100%; }
+  .milestones { columns: 1; }
+}
+@media (max-width: 420px) {
+  .fgrid { grid-template-columns: 1fr; }
+}
+.flist > button.add { align-self: flex-start; }
+.row select, .head select { width: auto; }
+#comparePick { max-width: 320px; }

@@ -43,6 +43,9 @@ export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 export const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.send";
+// The finance tool's own Drive link (src/personal.js): only files this app created or
+// that someone picked for it in Google's file picker.
+export const DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 
 export function json(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), {
@@ -162,15 +165,26 @@ export const PAGES = ["dashboard", "expenses", "vendors", "guests", "seating", "
 export async function accessFor(env, email) {
   const clean = String(email || "").trim().toLowerCase();
   if (!clean) return null;
-  if (adminEmails(env).includes(clean)) return { role: "admin", pages: [...PAGES], owner: true };
+  // The finance page (/admin/personal/) has its own list, PERSONAL_EMAILS. Being on it
+  // is enough to sign in; being a wedding admin is not enough to see the finances.
+  const personal = personalEmails(env).includes(clean);
+  if (adminEmails(env).includes(clean)) return { role: "admin", pages: [...PAGES], owner: true, personal };
   const row = await first(env, "SELECT role, pages FROM users WHERE email = ?", clean);
-  if (!row) return null;
-  if (row.role === "admin") return { role: "admin", pages: [...PAGES], owner: false };
+  if (!row) return personal ? { role: "user", pages: [], owner: false, personal } : null;
+  if (row.role === "admin") return { role: "admin", pages: [...PAGES], owner: false, personal };
   let pages = [];
   try {
     pages = JSON.parse(row.pages);
   } catch {}
-  return { role: "user", pages: (Array.isArray(pages) ? pages : []).filter((p) => PAGES.includes(p)), owner: false };
+  return { role: "user", pages: (Array.isArray(pages) ? pages : []).filter((p) => PAGES.includes(p)), owner: false, personal };
+}
+
+/** PERSONAL_EMAILS (a Cloudflare secret): who may open the finance page. */
+export function personalEmails(env) {
+  return String(env.PERSONAL_EMAILS || "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 /** The signed-in person, or null. Re-checks access on every request, so removing someone locks them out. */
@@ -233,8 +247,8 @@ export async function startOAuth(request, env, purpose, extra = {}) {
     state,
     prompt: "select_account",
   };
-  if (purpose === "drive" || purpose === "gmail") {
-    scopes.push(purpose === "drive" ? DRIVE_SCOPE : GMAIL_SCOPE);
+  if (purpose === "drive" || purpose === "gmail" || purpose === "personal") {
+    scopes.push({ drive: DRIVE_SCOPE, gmail: GMAIL_SCOPE, personal: DRIVE_FILE_SCOPE }[purpose]);
     params.access_type = "offline";
     // consent forces Google to issue a refresh token even if one was issued before.
     params.prompt = "consent select_account";
@@ -296,8 +310,9 @@ export async function handleOAuthCallback(request, env, onTokens) {
   if (!state || state.kind !== "oauth" || state.nonce !== readCookie(request, STATE_COOKIE)) {
     return fail("/admin/login.html", "That sign-in link expired or was already used. Try again.");
   }
-  const page = state.purpose === "drive" || state.purpose === "gmail" ? "/admin/settings.html" : "/admin/login.html";
-  const failHere = (msg) => fail(page, msg, page === "/admin/settings.html" ? state.purpose : "");
+  const page = state.purpose === "drive" || state.purpose === "gmail" ? "/admin/settings.html"
+    : state.purpose === "personal" ? "/admin/personal/" : "/admin/login.html";
+  const failHere = (msg) => fail(page, msg, page === "/admin/settings.html" ? state.purpose : state.purpose === "personal" ? "drive" : "");
   if (url.searchParams.get("error")) return failHere(`Google said: ${url.searchParams.get("error")}`);
   const code = url.searchParams.get("code");
   if (!code) return failHere("Google didn't return a sign-in code.");
@@ -323,6 +338,20 @@ export async function handleOAuthCallback(request, env, onTokens) {
     }
     await onTokens.drive(env, tokens, { email, connected_by: user.email });
     return redirect("/admin/settings.html?drive=connected#drive", [clearState]);
+  }
+
+  // The finance tool's Drive link: only someone on PERSONAL_EMAILS, with drive.file.
+  if (state.purpose === "personal") {
+    const user = await currentUser(request, env);
+    if (!user?.personal) return fail("/admin/login.html", "Sign in with an account on the finance list before linking Drive.");
+    if (!tokens.refresh_token) {
+      return failHere("Google didn't grant offline access. Remove the app at myaccount.google.com/permissions and try again.");
+    }
+    if (!String(tokens.scope || "").split(" ").includes(DRIVE_FILE_SCOPE)) {
+      return failHere("Drive access wasn't granted. Tick the Google Drive box on the consent screen.");
+    }
+    await onTokens.personal(env, tokens, { email, connected_by: user.email });
+    return redirect("/admin/personal/?drive=linked#drive", [clearState]);
   }
 
   // Gmail: an admin connects the account the guest emails come from (send only).

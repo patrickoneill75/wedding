@@ -3378,6 +3378,113 @@ test("RSVP page wording saves, blanks fall back to the default, and the sender n
   assert.equal(r.data.rsvp.rsvp_open, false);
 });
 
+/* --------------------------------------------------------- the finance tool -- */
+
+// Asked for: a private finance page at /admin/personal/, checked on the server, only for
+// the emails in PERSONAL_EMAILS (not every wedding admin), with the numbers kept in a
+// Drive file and never in a URL, a log or the repo.
+const personalEnv = () => makeEnv({ PERSONAL_EMAILS: "admin@example.com, kit@example.com", GOOGLE_PICKER_API_KEY: "picker-key", GOOGLE_CLIENT_ID: "123456-abc.apps.googleusercontent.com" });
+
+test("finance page: the server sends strangers to sign in and refuses admins not on PERSONAL_EMAILS", async () => {
+  const env = personalEnv();
+  const anon = await call(env, "/admin/personal/");
+  assert.equal(anon.status, 302);
+  assert.equal(anon.headers.get("location"), "/admin/login.html?next=%2Fadmin%2Fpersonal%2F");
+  assert.equal((await call(env, "/admin/personal/app.js")).status, 401, "its scripts too");
+  for (const sneaky of ["/admin/%70ersonal/", "//admin/personal/app.js", "/admin//personal/", "/Admin/Personal/", "/admin/personal%2Fapp.js"]) {
+    assert.notEqual((await call(env, sneaky)).data, "asset", `${sneaky} is gated too`);
+  }
+  const partner = await sessionCookie(env, "partner@example.com"); // a wedding owner, not on the list
+  const denied = await call(env, "/admin/personal/", { cookie: partner });
+  assert.equal(denied.status, 403);
+  assert.ok(!String(denied.data).includes("asset"), "nothing of the page goes out");
+  assert.equal((await call(env, "/api/personal/model", { cookie: partner })).status, 403, "nor its data");
+  assert.equal((await call(env, "/api/personal/model")).status, 401);
+  const ok = await call(env, "/admin/personal/", { cookie: await sessionCookie(env) });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers.get("cache-control"), "no-store");
+  assert.equal(ok.headers.get("x-robots-tag"), "noindex, nofollow");
+  assert.match(ok.headers.get("content-security-policy"), /script-src 'self';.*connect-src 'self'/);
+  const picker = await call(env, "/admin/personal/picker.html", { cookie: await sessionCookie(env) });
+  assert.ok(!/script-src/.test(picker.headers.get("content-security-policy")), "the folder picker page may load Google's picker");
+  // Kaitlyn's email on the list is enough to sign in, with no wedding pages.
+  const kit = await sessionCookie(env, "kit@example.com");
+  const me = await call(env, "/api/auth/me", { cookie: kit });
+  assert.equal(me.data.user.personal, true);
+  assert.deepEqual(me.data.user.pages, []);
+  assert.equal((await call(env, "/api/admin/settings", { cookie: kit, headers: { "x-wedding": "1" } })).status, 403);
+  assert.equal((await call(env, "/admin/personal/", { cookie: kit })).status, 200);
+  assert.equal((await call(env, "/api/personal/drive/unlink", { method: "POST", cookie: kit })).status, 403, "writes need the X-Wedding header");
+});
+
+test("finance page: linking Drive asks only for drive.file, offline", async () => {
+  const env = personalEnv();
+  const r = await call(env, "/api/personal/drive/link", { cookie: await sessionCookie(env) });
+  assert.equal(r.status, 302);
+  const url = new URL(r.headers.get("location"));
+  assert.equal(url.searchParams.get("scope"), "openid email profile https://www.googleapis.com/auth/drive.file");
+  assert.equal(url.searchParams.get("access_type"), "offline");
+  assert.equal((await call(env, "/api/personal/drive/link", { cookie: await sessionCookie(env, "partner@example.com") })).status, 403);
+});
+
+test("finance page: save, load, a conflict when the other person saved, and nothing in URLs or errors", async () => {
+  const env = personalEnv();
+  const cookie = await sessionCookie(env);
+  const api = (p, opts = {}) => call(env, p, { ...opts, cookie, headers: { "x-wedding": "1" } });
+  assert.equal((await api("/api/personal/model")).data.linked, false);
+  const { savePersonalTokens } = await import("../src/personal.js");
+  await savePersonalTokens(env, { refresh_token: "r", access_token: "a", expires_in: 3600 }, { email: "admin@example.com", connected_by: "admin@example.com" });
+  const drive = { file: null, version: 0 };
+  const secretNumber = 987654321;
+  await withFetch(async (url, init) => {
+    const u = new URL(url);
+    if (u.pathname === "/drive/v3/files/fold1") return okJson({ id: "fold1", name: "Money", mimeType: "application/vnd.google-apps.folder" });
+    if (u.pathname === "/upload/drive/v3/files" && init.method === "POST") {
+      drive.file = String(init.body).split("\r\n\r\n")[2].split("\r\n--")[0];
+      drive.version = 1;
+      return okJson({ id: "file1", version: "1" });
+    }
+    if (u.pathname === "/upload/drive/v3/files/file1" && init.method === "PATCH") {
+      drive.file = init.body;
+      drive.version++;
+      return okJson({ id: "file1", version: String(drive.version) });
+    }
+    if (u.pathname === "/drive/v3/files/file1" && u.searchParams.get("alt") === "media") return new Response(drive.file);
+    if (u.pathname === "/drive/v3/files/file1") return okJson({ id: "file1", version: String(drive.version), parents: ["fold1"] });
+    if (u.pathname === "/drive/v3/files/broken") return new Response("PRIVATE DETAILS FROM GOOGLE", { status: 500 });
+    throw new Error(`unexpected ${url}`);
+  }, async (calls) => {
+    const linked = await api("/api/personal/drive/folder", { method: "POST", body: { id: "fold1" } });
+    assert.equal(linked.status, 200, JSON.stringify(linked.data));
+    assert.equal(linked.data.folder.name, "Money");
+    const first = await api("/api/personal/model", { method: "PUT", body: { model: { cash: secretNumber }, base: null } });
+    assert.equal(first.status, 200, JSON.stringify(first.data));
+    assert.equal(first.data.version, "1");
+    assert.equal(first.headers.get("cache-control"), "no-store");
+    const loaded = await api("/api/personal/model");
+    assert.deepEqual(loaded.data.model, { cash: secretNumber });
+    assert.equal(loaded.data.version, "1");
+    const saved = await api("/api/personal/model", { method: "PUT", body: { model: { cash: 1 }, base: "1" } });
+    assert.equal(saved.data.version, "2");
+    // A browser still on version 1 gets the other person's file back instead of overwriting it.
+    const stale = await api("/api/personal/model", { method: "PUT", body: { model: { cash: 5 }, base: "1" } });
+    assert.equal(stale.status, 409);
+    assert.deepEqual(stale.data.model, { cash: 1 });
+    assert.equal((await api("/api/personal/model", { method: "PUT", body: { model: { cash: 5 }, base: "1", force: true } })).status, 200, "unless they choose to keep theirs");
+    for (const c of calls) assert.ok(!c.url.includes(String(secretNumber)), "numbers never go in a URL");
+    const broken = await api("/api/personal/drive/folder", { method: "POST", body: { id: "broken" } });
+    assert.equal(broken.status, 502);
+    assert.ok(!JSON.stringify(broken.data).includes("PRIVATE"), "Drive's reply never reaches the browser");
+    assert.equal((await api("/api/personal/model", { method: "PUT", body: { model: [1] } })).status, 400);
+  });
+});
+
+test("finance page: the Finances link shows only for people on PERSONAL_EMAILS", async () => {
+  const js = fs.readFileSync(path.join(ROOT, "public/admin/admin.js"), "utf8");
+  assert.match(js, /\["personal\/", "Finances", "personal", true\]/);
+  assert.match(js, /key === "personal"\) return Boolean\(user\.personal\)/);
+});
+
 /* ------------------------------------------------------------------------- runner -- */
 let failed = 0;
 for (const { name, fn } of tests) {

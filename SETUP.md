@@ -128,6 +128,63 @@ reports whether each secret is set, never its value.
 The website is `YOUR_URL/` and the RSVP page is `YOUR_URL/rsvp/`. Until the first copy
 is made, `YOUR_URL/` sends visitors to the RSVP page.
 
+## Finance tool (/admin/personal/)
+
+A private page for your own finances, separate from the wedding. Only the emails in the
+`PERSONAL_EMAILS` secret can open it or its data. Being a wedding admin isn't enough. The
+numbers are saved as one file in a Google Drive folder you pick. They never go into this
+repo or the database. Everything below happens in web dashboards.
+
+### Google Cloud (the same project as section 3)
+
+1. **Turn on the folder picker:** **APIs & Services → Library**, search **Google Picker
+   API**, click it, then click **Enable**.
+2. **Make a browser key for the picker:** **APIs & Services → Credentials → Create
+   credentials → API key**. Copy the key, then click **Edit API key**:
+   - **Application restrictions:** choose **Websites** and add
+     `https://www.patrickandkaitlyn.com/*`.
+   - **API restrictions:** choose **Restrict key** and tick only **Google Picker API**.
+   - Click **Save**.
+3. **Allow the narrow Drive permission:** **Google Auth Platform → Data access → Add or
+   remove scopes**. Find `.../auth/drive.file` ("See, edit, create, and delete only the
+   specific Google Drive files you use with this app"), tick it, then click **Update**
+   and **Save**. This permission lets the tool see only the files it makes and the folder
+   you pick, not the rest of your Drive.
+
+### Cloudflare
+
+Go to **Workers & Pages → wedding → Settings → Variables and Secrets → Add**. Add each of
+these with **Type: Secret**, then click **Deploy**:
+
+| Name | Value |
+|---|---|
+| `PERSONAL_EMAILS` | your Google address and Kaitlyn's, comma-separated |
+| `GOOGLE_PICKER_API_KEY` | the key from step 2 |
+
+To add or remove someone later, edit `PERSONAL_EMAILS` the same way. You can also keep
+them as GitHub repository secrets and run **Set Cloudflare secrets** (section 4), which
+sends both.
+
+### First use
+
+1. Open `/admin/personal/` (the **Finances** link in the control panel's top bar).
+2. Go to **Settings & Drive → Link Google Drive** and pick the Google account whose Drive
+   should hold the file.
+3. Click **Choose a folder** and pick one in Google's window. If Google won't let the
+   tool use that folder, click **Make a "Finances" folder for me** instead. You can drag
+   that folder anywhere in Drive afterwards.
+4. From then on, changes save to `lifetime-finances.json` in that folder about two
+   seconds after you stop typing. Use **Export JSON** now and then for a backup.
+
+### Check that strangers are blocked
+
+1. In a private browser window (signed out), open `/admin/personal/`. You land on the
+   sign-in page.
+2. In the same window, open `/api/personal/model`. It answers `{"error":"Not signed in."}`.
+3. Sign in with a Google account that's on the wedding Users list but not in
+   `PERSONAL_EMAILS`, then open `/admin/personal/`. You get "This page is private" with
+   no numbers, and `/api/personal/model` answers `{"error":"This page is private."}`.
+
 ## Your own domain
 
 The site is served at `patrickandkaitlyn.com` and `www.patrickandkaitlyn.com` as well as
